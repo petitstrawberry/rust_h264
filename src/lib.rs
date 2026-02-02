@@ -1,5 +1,10 @@
 pub mod bitstream;
+pub mod cavlc;
+pub mod decoder;
+pub mod intra_pred;
 pub mod nal;
 pub mod pps;
+pub mod residual;
 pub mod sei;
+pub mod slice;
 pub mod sps;

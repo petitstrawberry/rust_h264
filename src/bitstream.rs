@@ -100,6 +100,10 @@ impl<'a> BitstreamReader<'a> {
         self.bit_offset < data_bits_in_byte
     }
 
+    pub fn position(&self) -> (usize, u8) {
+        (self.byte_offset, self.bit_offset)
+    }
+
     pub fn bits_remaining(&self) -> usize {
         if self.byte_offset >= self.data.len() {
             return 0;
