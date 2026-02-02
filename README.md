@@ -4,3 +4,9 @@ While working on rust_media, it was found that there isn't any sufficiently good
 
 Hence, the idea is to attempt to create an open source h264 decoder.
 Yes, most devices have hardware h264 decoder, but if we want to be truly portable, then software implementation of h264 decoder is needed.
+
+## Design
+
+- **Input:** Annex B bytestream format (start code delimited `00 00 00 01` / `00 00 01`). AVCC (length-prefixed) format is not supported — callers must convert to Annex B before feeding data to the decoder.
+- **Streaming:** The decoder exposes a streaming API. NAL units are fed incrementally and decoded frames are emitted as they become available.
+- **Performance:** The decoder aims to be fast, with performance relative to ffmpeg's software H.264 decoder as the target benchmark.

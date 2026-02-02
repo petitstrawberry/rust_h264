@@ -23,6 +23,12 @@ This is a Rust project using Cargo:
 2. Finish implementation of decoder
 3. Compare performance of decoder against ffmpeg
 
+## Design Decisions
+
+- **Input format:** Annex B bytestream (start code delimited), not AVCC (length-prefixed). Callers must provide raw Annex B NAL units.
+- **Streaming API:** The decoder API is streaming — callers feed NAL units incrementally and receive decoded frames as they become available. No requirement to buffer an entire stream upfront.
+- **Performance:** The decoder should be fast. Prefer efficient algorithms, minimize allocations, and avoid unnecessary copies. Performance relative to ffmpeg's software decoder is a key benchmark.
+
 ## Status
 
-Project is in early stages — no Cargo.toml or src/ directory has been created yet.
+Project is in early stages — SPS, PPS, and SEI parsing implemented. Slice decoding not yet started.
