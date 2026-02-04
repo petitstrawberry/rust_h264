@@ -100,6 +100,14 @@ impl<'a> BitstreamReader<'a> {
         self.bit_offset < data_bits_in_byte
     }
 
+    /// Advance to the next byte boundary.
+    pub fn align_to_byte(&mut self) {
+        if self.bit_offset != 0 {
+            self.bit_offset = 0;
+            self.byte_offset += 1;
+        }
+    }
+
     pub fn position(&self) -> (usize, u8) {
         (self.byte_offset, self.bit_offset)
     }

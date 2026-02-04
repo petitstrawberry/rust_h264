@@ -125,7 +125,7 @@ pub fn dequant_4x4(block: &mut [i32; 16], qp: i32) {
             let (r, c) = ZIGZAG_4X4[idx];
             let v = LEVEL_SCALE[qp_rem][position_category(r, c)];
             if qp_per >= 0 {
-                block[idx] = block[idx] * v << qp_per;
+                block[idx] = (block[idx] * v) << qp_per;
             } else {
                 block[idx] = (block[idx] * v + (1 << (-qp_per - 1))) >> -qp_per;
             }
@@ -142,7 +142,7 @@ pub fn dequant_luma_dc_i16x16(dc: &mut [i32; 16], qp: i32) {
 
     if qp_per >= 2 {
         for d in dc.iter_mut() {
-            *d = *d * v << (qp_per - 2);
+            *d = (*d * v) << (qp_per - 2);
         }
     } else {
         let round = 1 << (1 - qp_per);
@@ -161,7 +161,7 @@ pub fn dequant_chroma_dc(dc: &mut [i32; 4], qp: i32) {
 
     if qp_per >= 1 {
         for d in dc.iter_mut() {
-            *d = *d * v << (qp_per - 1);
+            *d = (*d * v) << (qp_per - 1);
         }
     } else {
         for d in dc.iter_mut() {
@@ -194,6 +194,37 @@ pub const BLOCK_INDEX_TO_OFFSET: [(usize, usize); 16] = [
     (8, 0), (8, 4), (12, 0), (12, 4),    // block 8-11 (bottom-left 8x8)
     (8, 8), (8, 12), (12, 8), (12, 12),  // block 12-15 (bottom-right 8x8)
 ];
+
+/// coded_block_pattern mapping for I macroblocks (H.264 Table 9-4).
+/// Index is the code_number from ue(v); value is the CBP.
+/// Low 4 bits = luma CBP (one bit per 8x8 block), bits 4-5 = chroma CBP (0/1/2).
+#[rustfmt::skip]
+pub const CBP_INTRA_TABLE: [u8; 48] = [
+    47, 31, 15,  0, 23, 27, 29, 30,  7, 11, 13, 14, 39, 43, 45, 46,
+    16,  3,  5, 10, 12, 19, 21, 26, 28, 35, 37, 42, 44,  1,  2,  4,
+     8, 17, 18, 20, 24,  6,  9, 22, 25, 32, 33, 34, 36, 40, 38, 41,
+];
+
+/// Dequantize a full 4x4 block (including DC at position [0][0]) in raster order.
+pub fn dequant_4x4_full(block: &mut [i32; 16], qp: i32) {
+    let qp_per = qp / 6;
+    let qp_rem = (qp % 6) as usize;
+
+    for r in 0..4 {
+        for c in 0..4 {
+            let idx = r * 4 + c;
+            if block[idx] != 0 {
+                let pc = match (r % 2, c % 2) {
+                    (0, 0) => 0,
+                    (1, 1) => 1,
+                    _ => 2,
+                };
+                let v = LEVEL_SCALE[qp_rem][pc];
+                block[idx] = (block[idx] * v) << qp_per;
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

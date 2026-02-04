@@ -61,18 +61,19 @@ pub fn parse_residual_block_cavlc(
         0
     };
 
-    // Run before
+    // Run before — parse from highest frequency (tc-1) down to 1; run[0] is inferred
     let mut zeros_left = total_zeros;
     let mut run = vec![0u8; tc];
-    for i in 0..tc.saturating_sub(1) {
+    for i in (1..tc).rev() {
         if zeros_left > 0 {
             run[i] = parse_run_before(reader, zeros_left)?;
             zeros_left -= run[i];
         }
     }
     if tc > 0 {
-        run[tc - 1] = zeros_left;
+        run[0] = zeros_left;
     }
+
 
 
 
@@ -122,7 +123,7 @@ fn parse_level(
     let mut level_prefix: u32 = 0;
     while reader.read_bit()? == 0 {
         level_prefix += 1;
-        if level_prefix > 15 {
+        if level_prefix > 20 {
             return Err("level_prefix too large");
         }
     }
