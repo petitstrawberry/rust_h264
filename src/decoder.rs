@@ -117,8 +117,11 @@ impl Decoder {
                 // === I_NxN (I4x4) macroblock ===
 
                 if mb_idx == 0 {
+                    let pos = reader.position();
                     eprintln!("MB 0: mb_type={}, reader pos=({}, {})",
-                              mb_type, reader.byte_offset(), reader.bit_offset());
+                              mb_type, pos.0, pos.1);
+                    // Debug: print next few bytes of bitstream
+                    eprintln!("MB 0: Next bytes at pos: looking for debug...");
                 }
 
                 // Parse 16 I4x4 prediction modes
@@ -133,6 +136,10 @@ impl Decoder {
                     } else {
                         let rem = reader.read_bits(3)? as u8;
                         pred_modes[blk] = if rem < predicted { rem } else { rem + 1 };
+                    }
+                    if mb_idx == 0 && blk < 4 {
+                        eprintln!("I4x4 mode blk {}: prev_flag={}, predicted={}, final_mode={}",
+                                  blk, prev_flag, predicted, pred_modes[blk]);
                     }
                     i4x4_modes[mb_idx * 16 + blk] = pred_modes[blk];
                 }
@@ -182,7 +189,7 @@ impl Decoder {
                             eprintln!("Block 0 CAVLC scan order: {:?}", block_coeffs);
                         }
 
-                        // Unzigzag
+                        // Unzigzag: convert from zigzag scan order to raster order
                         let mut raster = [0i32; 16];
                         for i in 0..16 {
                             let (r, c) = ZIGZAG_4X4[i];

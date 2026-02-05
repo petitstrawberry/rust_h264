@@ -59,11 +59,15 @@ pub fn parse_slice_header<'a>(
     let mut r = BitstreamReader::new(rbsp);
 
     let first_mb_in_slice = r.read_ue()?;
-    let slice_type = SliceType::from_raw(r.read_ue()?)?;
+    let slice_type_raw = r.read_ue()?;
+    let slice_type = SliceType::from_raw(slice_type_raw)?;
     let pic_parameter_set_id = r.read_ue()?;
 
     let frame_num_bits = sps.log2_max_frame_num_minus4 + 4;
     let frame_num = r.read_bits(frame_num_bits as u8)?;
+
+    eprintln!("Slice header: first_mb={}, slice_type_raw={}, pps_id={}, frame_num_bits={}, frame_num={}",
+              first_mb_in_slice, slice_type_raw, pic_parameter_set_id, frame_num_bits, frame_num);
 
     // field_pic_flag / bottom_field_flag only if !frame_mbs_only — skip for now
     // (our test file has frame_mbs_only_flag = true)
@@ -76,9 +80,11 @@ pub fn parse_slice_header<'a>(
     // pic_order_cnt_type == 0: read pic_order_cnt_lsb
     // pic_order_cnt_type == 1: read delta_pic_order_cnt
     // pic_order_cnt_type == 2: nothing
+    eprintln!("Slice header: pic_order_cnt_type={}", sps.pic_order_cnt_type);
     if sps.pic_order_cnt_type == 0 {
-        let _pic_order_cnt_lsb =
-            r.read_bits((sps.log2_max_pic_order_cnt_lsb_minus4 + 4) as u8)?;
+        let poc_lsb_bits = sps.log2_max_pic_order_cnt_lsb_minus4 + 4;
+        let _pic_order_cnt_lsb = r.read_bits(poc_lsb_bits as u8)?;
+        eprintln!("Slice header: poc_lsb_bits={}, poc_lsb={}", poc_lsb_bits, _pic_order_cnt_lsb);
         if pps.bottom_field_pic_order_in_frame_present_flag {
             let _delta_pic_order_cnt_bottom = r.read_se()?;
         }
@@ -89,6 +95,8 @@ pub fn parse_slice_header<'a>(
         }
     }
 
+    eprintln!("Slice header after POC: reader pos={:?}", r.position());
+
     // ref_pic_list_modification — not present for I slices
     // (slice_type != I and slice_type != SI would need this)
 
@@ -98,10 +106,13 @@ pub fn parse_slice_header<'a>(
     if nal_unit_type == NalUnitType::SliceIdr {
         no_output_of_prior_pics_flag = r.read_bit()? != 0;
         long_term_reference_flag = r.read_bit()? != 0;
+        eprintln!("Slice header: IDR marking: no_output={}, long_term={}",
+                  no_output_of_prior_pics_flag, long_term_reference_flag);
     }
     // For non-IDR reference pictures, adaptive_ref_pic_marking would go here
 
     let slice_qp_delta = r.read_se()?;
+    eprintln!("Slice header: slice_qp_delta={}, reader pos={:?}", slice_qp_delta, r.position());
 
     let mut disable_deblocking_filter_idc = 0;
     let mut slice_alpha_c0_offset_div2 = 0;

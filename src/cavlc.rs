@@ -23,13 +23,22 @@ pub fn parse_residual_block_cavlc(
 
     let tc = total_coeff as usize;
 
-    // Trailing ones signs (highest freq first)
+    // Per H.264 spec 9.2.2:
+    // - level[0] = first level parsed (highest frequency non-trailing)
+    // - level[tc-1] = last level parsed (either DC or last trailing one)
+    // Trailing ones are at indices [tc - trailing_ones .. tc)
+    // Remaining levels are at indices [0 .. tc - trailing_ones)
+
     let mut levels = vec![0i32; tc];
+
+    // Trailing ones signs (highest freq first, stored at end of array)
+    // level[TotalCoeff - 1 - i] = 1 - 2 * trailing_ones_sign_flag[i]
     for i in 0..trailing_ones as usize {
-        levels[tc - 1 - i] = if reader.read_bit()? != 0 { -1 } else { 1 };
+        let sign_flag = reader.read_bit()?;
+        levels[tc - 1 - i] = if sign_flag != 0 { -1 } else { 1 };
     }
 
-    // Remaining levels
+    // Remaining levels (parsed from high freq to DC, stored at indices 0..remaining_count)
     let mut suffix_length: u32 = if total_coeff > 10 && trailing_ones < 3 {
         1
     } else {
@@ -37,10 +46,18 @@ pub fn parse_residual_block_cavlc(
     };
 
     let remaining_count = tc - trailing_ones as usize;
-    for i in (0..remaining_count).rev() {
-        let first_nontrailing = i == remaining_count - 1 && trailing_ones < 3;
+
+    static DEBUG_LEVEL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let debug_level = DEBUG_LEVEL.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+
+    for i in 0..remaining_count {
+        let first_nontrailing = i == 0 && trailing_ones < 3;
         let level = parse_level(reader, suffix_length, first_nontrailing)?;
         levels[i] = level;
+
+        if debug_level {
+            eprintln!("  level[{}] = {} (suffix_length={})", i, level, suffix_length);
+        }
 
         if suffix_length == 0 {
             suffix_length = 1;
@@ -48,6 +65,9 @@ pub fn parse_residual_block_cavlc(
         if levels[i].unsigned_abs() > (3 << (suffix_length - 1)) {
             suffix_length += 1;
         }
+    }
+    if debug_level {
+        eprintln!("  Parsed levels: {:?}", &levels[..]);
     }
 
     // Total zeros
@@ -77,13 +97,19 @@ pub fn parse_residual_block_cavlc(
 
 
 
-    // Place coefficients per spec 9.2.3:
-    // Iterate from lowest-freq (levels[tc-1]) to highest-freq (levels[0]),
-    // building coeffIdx upward from -1.
+    // Place coefficients per H.264 spec 9.2.3.
+    // The spec iterates from i=tc-1 to 0, placing level[i] at increasing coeffIdx.
+    // This produces coeffLevel where coeffLevel[low] = highest freq, coeffLevel[high] = DC.
+
+    // Place coefficients per H.264 spec 9.2.3:
+    // The spec iterates i from tc-1 to 0, placing level[i] at coeffLevel[coeffNum].
+    // This naturally produces coeffLevel where:
+    //   coeffLevel[0] = level[tc-1] (lowest freq, near DC)
+    //   coeffLevel[high] = level[0] (highest freq)
+    // The inverse zigzag scan then maps coeffLevel[i] to position ZIGZAG[i].
     let mut coeff_idx: i32 = -1;
     for i in (0..tc).rev() {
         coeff_idx += run[i] as i32 + 1;
-
         coeffs[coeff_idx as usize] = levels[i];
     }
 
@@ -94,7 +120,8 @@ fn parse_coeff_token(
     reader: &mut BitstreamReader,
     nc: i32,
 ) -> Result<(u8, u8), &'static str> {
-    if nc < 0 {
+    let pos = reader.position();
+    let result = if nc < 0 {
         match_vlc(reader, &COEFF_TOKEN_CHROMA_DC)
     } else if nc < 2 {
         match_vlc(reader, &COEFF_TOKEN_NC0)
@@ -111,7 +138,9 @@ fn parse_coeff_token(
             return Err("invalid coeff_token nC>=8");
         }
         Ok((total_coeff, trailing_ones.min(3)))
-    }
+    };
+
+    result
 }
 
 /// Parse level value per H.264 9.2.2.
@@ -120,6 +149,7 @@ fn parse_level(
     suffix_length: u32,
     first_after_trailing: bool,
 ) -> Result<i32, &'static str> {
+    let start_pos = reader.position();
     let mut level_prefix: u32 = 0;
     while reader.read_bit()? == 0 {
         level_prefix += 1;
@@ -148,20 +178,17 @@ fn parse_level(
         level_code = (level_prefix << suffix_length) | level_suffix;
     } else {
         // level_prefix >= 15: levelSuffixSize = level_prefix - 3
-        let suffix_bits = if level_prefix >= 15 {
-            (level_prefix - 3).max(suffix_length) as u8
-        } else {
-            suffix_length as u8
-        };
+        let suffix_bits = (level_prefix - 3) as u8;
         let level_suffix = if suffix_bits > 0 {
             reader.read_bits(suffix_bits)?
         } else {
             0
         };
+        // H.264 spec 9.2.2.1: levelCode = (level_prefix - 3) << suffixLength + level_suffix [+ 15 if suffixLength == 0]
         level_code = if suffix_length == 0 {
-            (15 << suffix_length) + level_suffix + 15
+            ((level_prefix - 3) << suffix_length) + level_suffix + 15
         } else {
-            (15 << suffix_length) + level_suffix
+            ((level_prefix - 3) << suffix_length) + level_suffix
         };
     }
 
@@ -171,11 +198,26 @@ fn parse_level(
         level_code += 2;
     }
 
-    // Convert: even level_code -> positive, odd -> negative
-    let level = if level_code % 2 == 0 {
-        (level_code + 2) / 2
+    // Convert levelCode to levelVal per H.264 spec 9.2.2.1
+    let level = if level_code == 0 || level_code == 1 {
+        // Special case: levelVal = 1 - 2 * (levelCode & 1)
+        1 - 2 * (level_code & 1)
+    } else if suffix_length == 0 {
+        // levelVal = levelCode >> 1; if even: levelVal = -levelVal - 1
+        let level_val = level_code >> 1;
+        if level_code & 1 == 0 {
+            -level_val - 1
+        } else {
+            level_val
+        }
     } else {
-        (-level_code - 1) / 2
+        // levelVal = (levelCode + 2) >> 1; if odd: levelVal = -levelVal
+        let level_val = (level_code + 2) >> 1;
+        if level_code & 1 != 0 {
+            -level_val
+        } else {
+            level_val
+        }
     };
 
     Ok(level)
