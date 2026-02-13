@@ -47,17 +47,12 @@ pub fn parse_residual_block_cavlc(
 
     let remaining_count = tc - trailing_ones as usize;
 
-    static DEBUG_LEVEL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let debug_level = DEBUG_LEVEL.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
-
+    // Parse remaining levels from high frequency to DC
+    // Per H.264 spec 9.2.2: level[0] = first parsed (highest freq), level[remaining-1] = DC
     for i in 0..remaining_count {
         let first_nontrailing = i == 0 && trailing_ones < 3;
         let level = parse_level(reader, suffix_length, first_nontrailing)?;
         levels[i] = level;
-
-        if debug_level {
-            eprintln!("  level[{}] = {} (suffix_length={})", i, level, suffix_length);
-        }
 
         if suffix_length == 0 {
             suffix_length = 1;
@@ -65,9 +60,6 @@ pub fn parse_residual_block_cavlc(
         if levels[i].unsigned_abs() > (3 << (suffix_length - 1)) {
             suffix_length += 1;
         }
-    }
-    if debug_level {
-        eprintln!("  Parsed levels: {:?}", &levels[..]);
     }
 
     // Total zeros
@@ -94,19 +86,10 @@ pub fn parse_residual_block_cavlc(
         run[0] = zeros_left;
     }
 
-
-
-
-    // Place coefficients per H.264 spec 9.2.3.
-    // The spec iterates from i=tc-1 to 0, placing level[i] at increasing coeffIdx.
-    // This produces coeffLevel where coeffLevel[low] = highest freq, coeffLevel[high] = DC.
-
     // Place coefficients per H.264 spec 9.2.3:
-    // The spec iterates i from tc-1 to 0, placing level[i] at coeffLevel[coeffNum].
-    // This naturally produces coeffLevel where:
-    //   coeffLevel[0] = level[tc-1] (lowest freq, near DC)
-    //   coeffLevel[high] = level[0] (highest freq)
-    // The inverse zigzag scan then maps coeffLevel[i] to position ZIGZAG[i].
+    // coeffNum = -1
+    // For i = TotalCoeff – 1..0: coeffLevel[coeffNum += run[i] + 1] = level[i]
+    // With level[TotalCoeff-1] = DC, this places DC at coeffLevel[low] (scan position 0)
     let mut coeff_idx: i32 = -1;
     for i in (0..tc).rev() {
         coeff_idx += run[i] as i32 + 1;
@@ -149,7 +132,6 @@ fn parse_level(
     suffix_length: u32,
     first_after_trailing: bool,
 ) -> Result<i32, &'static str> {
-    let start_pos = reader.position();
     let mut level_prefix: u32 = 0;
     while reader.read_bit()? == 0 {
         level_prefix += 1;
@@ -159,6 +141,7 @@ fn parse_level(
     }
 
     let level_code;
+    let level_suffix;
 
     if level_prefix < 14 {
         let suffix_len = if suffix_length == 0 && level_prefix == 0 {
@@ -166,7 +149,7 @@ fn parse_level(
         } else {
             suffix_length
         };
-        let level_suffix = if suffix_len > 0 {
+        level_suffix = if suffix_len > 0 {
             reader.read_bits(suffix_len as u8)?
         } else {
             0
@@ -174,22 +157,29 @@ fn parse_level(
         level_code = (level_prefix << suffix_length) | level_suffix;
     } else if level_prefix == 14 {
         let suffix_len = if suffix_length == 0 { 4 } else { suffix_length };
-        let level_suffix = reader.read_bits(suffix_len as u8)?;
+        level_suffix = reader.read_bits(suffix_len as u8)?;
         level_code = (level_prefix << suffix_length) | level_suffix;
     } else {
         // level_prefix >= 15: levelSuffixSize = level_prefix - 3
+        // H.264 spec 9.2.2.1:
+        // levelCode = min(15, level_prefix) << suffixLength + levelSuffix
+        // If level_prefix >= 15 and suffixLength == 0: levelCode += 15
+        // If level_prefix > 15: levelCode += (1 << (level_prefix - 3)) - 4096
         let suffix_bits = (level_prefix - 3) as u8;
-        let level_suffix = if suffix_bits > 0 {
+        level_suffix = if suffix_bits > 0 {
             reader.read_bits(suffix_bits)?
         } else {
             0
         };
-        // H.264 spec 9.2.2.1: levelCode = (level_prefix - 3) << suffixLength + level_suffix [+ 15 if suffixLength == 0]
-        level_code = if suffix_length == 0 {
-            ((level_prefix - 3) << suffix_length) + level_suffix + 15
-        } else {
-            ((level_prefix - 3) << suffix_length) + level_suffix
-        };
+        let mut lc = (15.min(level_prefix) << suffix_length) + level_suffix;
+        if suffix_length == 0 {
+            // Only add 15 when prefix >= 15 AND suffix_length == 0
+            lc += 15;
+        }
+        if level_prefix > 15 {
+            lc += (1 << (level_prefix - 3)) - 4096;
+        }
+        level_code = lc;
     }
 
     let mut level_code = level_code as i32;
@@ -198,26 +188,13 @@ fn parse_level(
         level_code += 2;
     }
 
-    // Convert levelCode to levelVal per H.264 spec 9.2.2.1
-    let level = if level_code == 0 || level_code == 1 {
-        // Special case: levelVal = 1 - 2 * (levelCode & 1)
-        1 - 2 * (level_code & 1)
-    } else if suffix_length == 0 {
-        // levelVal = levelCode >> 1; if even: levelVal = -levelVal - 1
-        let level_val = level_code >> 1;
-        if level_code & 1 == 0 {
-            -level_val - 1
-        } else {
-            level_val
-        }
+    // Convert levelCode to levelVal per H.264 spec 9.2.2.1 and Table 9-6
+    // Even levelCode -> positive level, Odd levelCode -> negative level
+    let level_val = (level_code + 2) >> 1;
+    let level = if level_code & 1 != 0 {
+        -level_val
     } else {
-        // levelVal = (levelCode + 2) >> 1; if odd: levelVal = -levelVal
-        let level_val = (level_code + 2) >> 1;
-        if level_code & 1 != 0 {
-            -level_val
-        } else {
-            level_val
-        }
+        level_val
     };
 
     Ok(level)
