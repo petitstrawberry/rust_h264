@@ -15,6 +15,7 @@ pub fn parse_residual_block_cavlc(
     }
 
     let (total_coeff, trailing_ones) = parse_coeff_token(reader, nc)?;
+    eprintln!("parse_residual_block: total_coeff={}, trailing_ones={}", total_coeff, trailing_ones);
 
     if total_coeff == 0 {
         return Ok(0);
@@ -51,8 +52,12 @@ pub fn parse_residual_block_cavlc(
     // Per H.264 spec 9.2.2: level[0] = first parsed (highest freq), level[remaining-1] = DC
     for i in 0..remaining_count {
         let first_nontrailing = i == 0 && trailing_ones < 3;
+        let pos_before = reader.position();
         let level = parse_level(reader, suffix_length, first_nontrailing)?;
         levels[i] = level;
+        let pos_after = reader.position();
+        eprintln!("  level[{}]: suffix_len={}, first_nt={}, level={}, pos: ({},{}) -> ({},{})",
+                  i, suffix_length, first_nontrailing, level, pos_before.0, pos_before.1, pos_after.0, pos_after.1);
 
         if suffix_length == 0 {
             suffix_length = 1;
@@ -63,6 +68,7 @@ pub fn parse_residual_block_cavlc(
     }
 
     // Total zeros
+    let pos_tz = reader.position();
     let total_zeros = if total_coeff < max_num_coeff as u8 {
         if max_num_coeff > 4 {
             parse_total_zeros(reader, total_coeff)?
@@ -72,6 +78,7 @@ pub fn parse_residual_block_cavlc(
     } else {
         0
     };
+    eprintln!("  total_zeros={} (parsed from pos ({},{}))", total_zeros, pos_tz.0, pos_tz.1);
 
     // Run before — parse from highest frequency (tc-1) down to 1; run[0] is inferred
     let mut zeros_left = total_zeros;
@@ -85,6 +92,8 @@ pub fn parse_residual_block_cavlc(
     if tc > 0 {
         run[0] = zeros_left;
     }
+    eprintln!("  levels: {:?}", levels);
+    eprintln!("  run: {:?}", run);
 
     // Place coefficients per H.264 spec 9.2.3:
     // coeffNum = -1
@@ -104,6 +113,7 @@ fn parse_coeff_token(
     nc: i32,
 ) -> Result<(u8, u8), &'static str> {
     let pos = reader.position();
+    eprintln!("parse_coeff_token: start pos=({}, {}), nc={}", pos.0, pos.1, nc);
     let result = if nc < 0 {
         match_vlc(reader, &COEFF_TOKEN_CHROMA_DC)
     } else if nc < 2 {

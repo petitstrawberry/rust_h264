@@ -131,13 +131,72 @@ Baseline profile only supports frame mode; our zigzag table is correct.
 - `src/decoder.rs` - I4x4 decoding path (lines 116-275)
 - `src/residual.rs` - ZIGZAG_4X4, dequant_4x4_full, inverse_dct_4x4
 
+## FFmpeg Comparison Results (Session 2)
+
+Extensive comparison with FFmpeg was performed:
+
+### Verified Components
+
+1. **Bit-level CAVLC parsing**: Verified byte-by-byte with Python script
+   - coeff_token bits: `0000000000000111` (16 bits) → (14, 0) ✓
+   - level[0] prefix: 15 (15 leading zeros)
+   - level[0] suffix: 5 (12 bits)
+   - level[0] = -19 ✓
+
+2. **FFmpeg's level conversion formula**:
+   ```c
+   mask = -(level_code & 1);
+   level_code = (((2 + level_code) >> 1) ^ mask) - mask;
+   ```
+   This is equivalent to our formula ✓
+
+3. **FFmpeg's zigzag_scan table**: `{0,1,4,8,5,2,3,6,9,12,13,10,7,11,14,15}`
+   Our ZIGZAG_4X4 produces identical mappings ✓
+
+4. **FFmpeg decodes correctly**:
+   - `ffmpeg -i i4x4_frame.h264 -f rawvideo /tmp/out.yuv`
+   - Output matches expected: MD5 `aa22fa64b0c0031fa7493d339ce282ca`
+
+### The Fundamental Mystery
+
+Every individual component has been verified mathematically correct:
+- Bit positions: Correct
+- coeff_token: (14, 0) ✓
+- Level parsing: All 14 levels match manual bit tracing ✓
+- Zigzag: Matches FFmpeg's table ✓
+- Dequant: `-140 * 11 << 1 = -3080` ✓
+- IDCT: Manual calculation matches output ✓
+- Prediction: DC mode = 128 ✓
+
+Yet FFmpeg produces completely different output (expected) from the same bitstream.
+
+### Raw Data Comparison
+
+**Our parsed coefficients (scan order)**:
+```
+[-140, -51, 16, 51, 16, 30, -10, -10, -6, -16, -6, 20, 20, -19, 0, 0]
+```
+
+**Our IDCT output (row 0)**:
+```
+[-33, -47, -33, 4]
+```
+
+**Expected residuals (row 0)**:
+```
+[-112, -112, -47, -48]
+```
+
+The parsed coefficients produce IDCT output that is fundamentally different from what FFmpeg produces. The DC coefficient alone (-140) would produce IDCT output of -48 for a DC-only block, but expected requires ~-112.
+
 ## Suggested Next Steps
 
-1. **Compare with FFmpeg source**: Trace FFmpeg's h264_cavlc.c to see exact coefficient values
+1. **Build FFmpeg with debug symbols**: Add printf in FFmpeg's h264_cavlc.c to print parsed coefficients
 2. **Binary search**: Create test files with varying coefficient counts to find threshold
 3. **Check for transform bypass**: Some modes skip IDCT (unlikely for baseline)
 4. **Verify intra prediction derivation**: Double-check neighbor mode prediction algorithm
 5. **Test with other encoders**: Try encoding with different H.264 encoders
+6. **Check for hidden state**: Maybe FFmpeg maintains some decoding state we're missing
 
 ## Test Files Created During Debug
 

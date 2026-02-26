@@ -126,6 +126,7 @@ impl Decoder {
 
                 // Parse 16 I4x4 prediction modes
                 let mut pred_modes = [2u8; 16];
+                let mut mode_bits_consumed = 0u32;
                 for blk in 0..16 {
                     let prev_flag = reader.read_bit()?;
                     let predicted = predict_i4x4_mode(
@@ -133,17 +134,27 @@ impl Decoder {
                     );
                     if prev_flag != 0 {
                         pred_modes[blk] = predicted;
+                        mode_bits_consumed += 1;
                     } else {
                         let rem = reader.read_bits(3)? as u8;
                         pred_modes[blk] = if rem < predicted { rem } else { rem + 1 };
+                        mode_bits_consumed += 4;
                     }
-                    if mb_idx == 0 && blk < 4 {
+                    if mb_idx == 0 {
                         eprintln!("I4x4 mode blk {}: prev_flag={}, predicted={}, final_mode={}",
                                   blk, prev_flag, predicted, pred_modes[blk]);
                     }
                     i4x4_modes[mb_idx * 16 + blk] = pred_modes[blk];
                 }
+                if mb_idx == 0 {
+                    let pos = reader.position();
+                    eprintln!("After prediction modes: pos=({}, {}), total mode bits={}", pos.0, pos.1, mode_bits_consumed);
+                }
                 intra_chroma_pred_mode = reader.read_ue()? as u8;
+                if mb_idx == 0 {
+                    let pos = reader.position();
+                    eprintln!("After intra_chroma_pred_mode={}: pos=({}, {})", intra_chroma_pred_mode, pos.0, pos.1);
+                }
 
                 let cbp_code = reader.read_ue()? as usize;
                 if cbp_code >= 48 {
@@ -154,8 +165,9 @@ impl Decoder {
                 cbp_chroma = cbp >> 4;
 
                 if mb_idx == 0 {
-                    eprintln!("MB 0: cbp_code={}, cbp={}, cbp_luma={}, cbp_chroma={}",
-                              cbp_code, cbp, cbp_luma, cbp_chroma);
+                    let pos = reader.position();
+                    eprintln!("MB 0: cbp_code={}, cbp={}, cbp_luma={}, cbp_chroma={}, pos=({}, {})",
+                              cbp_code, cbp, cbp_luma, cbp_chroma, pos.0, pos.1);
                 }
 
                 if cbp_luma != 0 || cbp_chroma != 0 {
@@ -180,12 +192,20 @@ impl Decoder {
                     let mut block_coeffs = [0i32; 16];
                     if cbp_luma & (1 << (blk / 4)) != 0 {
                         let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16);
+
+                        if mb_idx == 0 && blk == 0 {
+                            let pos = reader.position();
+                            eprintln!("Block 0 CAVLC start: pos=({}, {}), nc={}", pos.0, pos.1, nc);
+                        }
+
                         let tc = parse_residual_block_cavlc(
                             &mut reader, &mut block_coeffs, 16, nc,
                         )?;
                         nc_luma[mb_idx * 16 + blk] = tc;
 
                         if blk == 0 {
+                            let pos = reader.position();
+                            eprintln!("Block 0 CAVLC end: pos=({}, {}), total_coeff={}", pos.0, pos.1, tc);
                             eprintln!("Block 0 CAVLC scan order: {:?}", block_coeffs);
                         }
 
@@ -276,6 +296,11 @@ impl Decoder {
                 cbp_chroma = ((mt / 4) % 3) as u8;
                 let cbp_luma = if mt >= 12 { 15u8 } else { 0u8 };
 
+                if mb_idx == 0 {
+                    eprintln!("I16x16: mb_type={}, mt={}, pred_mode={}, cbp_chroma={}, cbp_luma={}",
+                              mb_type, mt, intra16x16_pred_mode, cbp_chroma, cbp_luma);
+                }
+
                 intra_chroma_pred_mode = reader.read_ue()? as u8;
 
                 let mb_qp_delta = reader.read_se()?;
@@ -286,6 +311,9 @@ impl Decoder {
                 // Parse luma DC
                 let mut luma_dc = [0i32; 16];
                 let nc_dc = compute_nc(&nc_luma, mb_idx, mb_width as usize, 0, 16);
+                if mb_idx == 0 {
+                    eprintln!("I16x16 DC CAVLC: nc={}, reader pos={:?}", nc_dc, reader.position());
+                }
                 parse_residual_block_cavlc(&mut reader, &mut luma_dc, 16, nc_dc)?;
 
                 // Parse luma AC
@@ -310,8 +338,18 @@ impl Decoder {
                     let (r, c) = ZIGZAG_4X4[i];
                     luma_dc_raster[r * 4 + c] = luma_dc[i];
                 }
+                if mb_idx == 0 {
+                    eprintln!("I16x16 DC scan order: {:?}", luma_dc);
+                    eprintln!("I16x16 DC after unzigzag: {:?}", luma_dc_raster);
+                }
                 inverse_hadamard_4x4(&mut luma_dc_raster);
+                if mb_idx == 0 {
+                    eprintln!("I16x16 DC after Hadamard: {:?}", luma_dc_raster);
+                }
                 dequant_luma_dc_i16x16(&mut luma_dc_raster, qp_y);
+                if mb_idx == 0 {
+                    eprintln!("I16x16 DC after dequant (qp={}): {:?}", qp_y, luma_dc_raster);
+                }
 
                 const DC_RASTER_TO_BLOCK: [usize; 16] = [
                     0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15,
@@ -376,6 +414,11 @@ impl Decoder {
                     above_left,
                     &mut luma_pred,
                 );
+
+                if mb_idx == 0 {
+                    eprintln!("I16x16 prediction first row: {:?}", &luma_pred[..16]);
+                    eprintln!("I16x16 residual first row: {:?}", &luma_residual[..16]);
+                }
 
                 for y in 0..16 {
                     for x in 0..16 {
