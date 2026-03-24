@@ -1,25 +1,40 @@
 /// Bitstream reader for parsing H.264 NAL unit RBSP data.
-/// Reads bits left-to-right (MSB first) from a byte slice.
-pub struct BitstreamReader<'a> {
-    data: &'a [u8],
+/// Reads bits left-to-right (MSB first).
+///
+/// The internal buffer is padded with zero bytes so that `read_bit` can skip
+/// per-bit bounds checks in the hot path. Only `bits_remaining` and
+/// `more_rbsp_data` use the true data length.
+pub struct BitstreamReader {
+    data: Vec<u8>,
+    data_len: usize, // actual RBSP length (excluding padding)
     byte_offset: usize,
     bit_offset: u8, // 0-7, bits already consumed in current byte
 }
 
-impl<'a> BitstreamReader<'a> {
-    pub fn new(data: &'a [u8]) -> Self {
+/// Number of zero bytes appended after RBSP data.
+const PADDING: usize = 8;
+
+impl BitstreamReader {
+    pub fn new(rbsp: &[u8]) -> Self {
+        let data_len = rbsp.len();
+        let mut data = Vec::with_capacity(data_len + PADDING);
+        data.extend_from_slice(rbsp);
+        data.resize(data_len + PADDING, 0);
         Self {
             data,
+            data_len,
             byte_offset: 0,
             bit_offset: 0,
         }
     }
 
     /// Read a single bit, returning 0 or 1.
+    /// Does not bounds-check on every call; relies on padding to avoid
+    /// out-of-bounds reads. Call `bits_remaining` to check before bulk reads.
+    #[inline(always)]
     pub fn read_bit(&mut self) -> Result<u8, &'static str> {
-        if self.byte_offset >= self.data.len() {
-            return Err("end of bitstream");
-        }
+        // Safety: padding guarantees data[byte_offset] is in bounds as long as
+        // we haven't read more than data_len + PADDING bytes.
         let bit = (self.data[self.byte_offset] >> (7 - self.bit_offset)) & 1;
         self.bit_offset += 1;
         if self.bit_offset == 8 {
@@ -44,6 +59,7 @@ impl<'a> BitstreamReader<'a> {
         let mut byte_offset = self.byte_offset;
         let mut bit_offset = self.bit_offset;
         for _ in 0..n {
+            // Padding guarantees in-bounds for reasonable peek sizes
             if byte_offset < self.data.len() {
                 val = (val << 1) | ((self.data[byte_offset] >> (7 - bit_offset)) & 1) as u32;
             } else {
@@ -95,12 +111,12 @@ impl<'a> BitstreamReader<'a> {
     /// Returns true if there is more RBSP data before the trailing bits.
     /// The RBSP trailing bits are: a stop bit (1) followed by zero bits to byte-align.
     pub fn more_rbsp_data(&self) -> bool {
-        if self.byte_offset >= self.data.len() {
+        if self.byte_offset >= self.data_len {
             return false;
         }
 
-        // Find the position of the last non-zero byte
-        let mut last_nz = self.data.len();
+        // Find the position of the last non-zero byte in the actual data
+        let mut last_nz = self.data_len;
         while last_nz > self.byte_offset && self.data[last_nz - 1] == 0 {
             last_nz -= 1;
         }
@@ -117,13 +133,8 @@ impl<'a> BitstreamReader<'a> {
         // Everything above it (towards MSB) is data. Check if there are unconsumed
         // data bits above the stop bit.
         let byte = self.data[self.byte_offset];
-        // Trailing bits pattern: the stop bit is the least significant '1' bit,
-        // with all bits below it being zero (byte alignment).
-        // e.g., 0b1000_0000 is just a stop bit, 0b1010_0000 has 1 data bit + stop + 5 zeros.
-        let stop_bit = byte.trailing_zeros(); // number of trailing zero bits
-        // Bits in this byte that are data (not trailing): 8 - stop_bit - 1 (the stop bit itself)
+        let stop_bit = byte.trailing_zeros();
         let data_bits_in_byte = 7 - stop_bit as u8;
-        // There's more data if we haven't consumed all data bits yet
         self.bit_offset < data_bits_in_byte
     }
 
@@ -141,11 +152,7 @@ impl<'a> BitstreamReader<'a> {
 
     /// Peek at the byte at the current byte_offset (for debugging).
     pub fn peek_byte(&self) -> u8 {
-        if self.byte_offset < self.data.len() {
-            self.data[self.byte_offset]
-        } else {
-            0
-        }
+        self.data[self.byte_offset]
     }
 
     /// Peek at a slice of bytes starting at byte_offset (for debugging).
@@ -155,10 +162,10 @@ impl<'a> BitstreamReader<'a> {
     }
 
     pub fn bits_remaining(&self) -> usize {
-        if self.byte_offset >= self.data.len() {
+        if self.byte_offset >= self.data_len {
             return 0;
         }
-        (self.data.len() - self.byte_offset) * 8 - self.bit_offset as usize
+        (self.data_len - self.byte_offset) * 8 - self.bit_offset as usize
     }
 }
 
@@ -203,5 +210,17 @@ mod tests {
         assert_eq!(r.read_se().unwrap(), -1);
         assert_eq!(r.read_se().unwrap(), 2);
         assert_eq!(r.read_se().unwrap(), -2);
+    }
+
+    #[test]
+    fn test_padding_allows_overread() {
+        // After reading all real data, reads return 0 (from padding) rather than panicking
+        let data = [0xFF];
+        let mut r = BitstreamReader::new(&data);
+        assert_eq!(r.bits_remaining(), 8);
+        assert_eq!(r.read_bits(8).unwrap(), 0xFF);
+        assert_eq!(r.bits_remaining(), 0);
+        // Reading into padding returns 0 bits without panic
+        assert_eq!(r.read_bits(8).unwrap(), 0);
     }
 }

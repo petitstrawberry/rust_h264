@@ -50,12 +50,12 @@ impl SliceHeader {
 
 /// Parse a slice header from RBSP data. Returns the header and a reader
 /// positioned at the start of slice data (macroblock layer).
-pub fn parse_slice_header<'a>(
-    rbsp: &'a [u8],
+pub fn parse_slice_header(
+    rbsp: &[u8],
     sps: &Sps,
     pps: &Pps,
     nal_unit_type: NalUnitType,
-) -> Result<(SliceHeader, BitstreamReader<'a>), &'static str> {
+) -> Result<(SliceHeader, BitstreamReader), &'static str> {
     let mut r = BitstreamReader::new(rbsp);
 
     let first_mb_in_slice = r.read_ue()?;
