@@ -26,37 +26,35 @@ pub fn parse_residual_block_cavlc(
 
     let tc = total_coeff as usize;
 
-    // Per H.264 spec 9.2.2:
-    // - level[0] = first level parsed (highest frequency non-trailing)
-    // - level[tc-1] = last level parsed (either DC or last trailing one)
-    // Trailing ones are at indices [tc - trailing_ones .. tc)
-    // Remaining levels are at indices [0 .. tc - trailing_ones)
+    // Levels are stored in decode order, highest frequency first:
+    // - level[0..T1) = trailing ones (highest freq, decoded first)
+    // - level[T1..tc) = remaining levels (next highest freq toward DC)
+    // This ordering lets the placement loop walk from the highest scan
+    // position down to DC without reordering.
 
     let mut levels = vec![0i32; tc];
+    let t1 = trailing_ones as usize;
 
-    // Trailing ones signs (highest freq first, stored at end of array)
-    // level[TotalCoeff - 1 - i] = 1 - 2 * trailing_ones_sign_flag[i]
-    for i in 0..trailing_ones as usize {
+    // Trailing ones signs (highest freq first, stored at beginning)
+    for i in 0..t1 {
         let sign_flag = reader.read_bit()?;
-        levels[tc - 1 - i] = if sign_flag != 0 { -1 } else { 1 };
+        levels[i] = if sign_flag != 0 { -1 } else { 1 };
     }
 
-    // Remaining levels (parsed from high freq to DC, stored at indices 0..remaining_count)
+    // Remaining levels (parsed from high freq to DC)
     let mut suffix_length: u32 = if total_coeff > 10 && trailing_ones < 3 {
         1
     } else {
         0
     };
 
-    let remaining_count = tc - trailing_ones as usize;
+    let remaining_count = tc - t1;
 
-    // Parse remaining levels from high frequency to DC
-    // Per H.264 spec 9.2.2: level[0] = first parsed (highest freq), level[remaining-1] = DC
     for i in 0..remaining_count {
         let first_nontrailing = i == 0 && trailing_ones < 3;
         let pos_before = reader.position();
         let level = parse_level(reader, suffix_length, first_nontrailing)?;
-        levels[i] = level;
+        levels[t1 + i] = level;
         let pos_after = reader.position();
         eprintln!("  level[{}]: suffix_len={}, first_nt={}, level={}, pos: ({},{}) -> ({},{})",
                   i, suffix_length, first_nontrailing, level, pos_before.0, pos_before.1, pos_after.0, pos_after.1);
@@ -64,7 +62,7 @@ pub fn parse_residual_block_cavlc(
         if suffix_length == 0 {
             suffix_length = 1;
         }
-        if levels[i].unsigned_abs() > (3 << (suffix_length - 1)) && suffix_length < 6 {
+        if levels[t1 + i].unsigned_abs() > (3 << (suffix_length - 1)) && suffix_length < 6 {
             suffix_length += 1;
         }
     }
@@ -82,32 +80,27 @@ pub fn parse_residual_block_cavlc(
     };
     eprintln!("  total_zeros={} (parsed from pos ({},{}))", total_zeros, pos_tz.0, pos_tz.1);
 
-    // Run before — parse from highest frequency (tc-1) down to 1; run[0] is inferred.
-    // Use i32 so that run[0] can be negative when an encoder emits run_before > zeros_left
-    // (technically a spec violation, but x264 can produce it; the placement formula still
-    // yields valid scan positions because run[0]+run[1]+…+run[tc-1] == total_zeros).
-    let mut zeros_left: i32 = total_zeros as i32;
-    let mut run = vec![0i32; tc];
-    for i in (1..tc).rev() {
-        if zeros_left > 0 {
-            run[i] = parse_run_before(reader, zeros_left as u8)? as i32;
-            zeros_left -= run[i];
-        }
-    }
-    if tc > 0 {
-        run[0] = zeros_left;
-    }
+    // Place coefficients from highest frequency toward DC, parsing run_before inline.
+    // This matches FFmpeg's STORE_BLOCK approach: level[0] (highest freq) goes at the
+    // highest scan position, then each subsequent level gets a run_before parsed to
+    // determine how many zero positions to skip toward DC.
+    let mut zeros_left = total_zeros as i32;
+    let mut pos = (total_zeros as usize) + tc - 1;
     eprintln!("  levels: {:?}", levels);
-    eprintln!("  run: {:?}", run);
 
-    // Place coefficients per H.264 spec 9.2.3:
-    // coeffNum = -1
-    // For i = TotalCoeff – 1..0: coeffLevel[coeffNum += run[i] + 1] = level[i]
-    // With level[TotalCoeff-1] = DC, this places DC at coeffLevel[low] (scan position 0)
-    let mut coeff_idx: i32 = -1;
-    for i in (0..tc).rev() {
-        coeff_idx += run[i] + 1;
-        coeffs[coeff_idx as usize] = levels[i];
+    // Place highest-frequency coefficient at the highest scan position
+    coeffs[pos] = levels[0];
+
+    // Place remaining coefficients toward DC, parsing run_before for each
+    for i in 1..tc {
+        if zeros_left > 0 {
+            let rb = parse_run_before(reader, zeros_left as u8)? as i32;
+            zeros_left -= rb;
+            pos -= 1 + rb as usize;
+        } else {
+            pos -= 1;
+        }
+        coeffs[pos] = levels[i];
     }
 
     Ok(total_coeff)
@@ -132,13 +125,26 @@ fn parse_coeff_token(
         let lut = LUT_COEFF_NC4.get_or_init(|| build_coeff_lut(&COEFF_TOKEN_NC4, 10));
         coeff_lut_lookup(reader, lut, 10)
     } else {
-        // nC >= 8: fixed 6-bit code per H.264 Table 9-5(f)
-        // Encoding: code = TotalCoeff * 4 + TrailingOnes (4 bits TC, 2 bits TO)
-        let code = reader.read_bits(6)?;
-        eprintln!("  NC>=8 6-bit code={} (0b{:06b}), TC={}, TO_raw={}", code, code, code>>2, code&3);
-        let total_coeff = (code >> 2) as u8;
-        // Clamp trailing_ones to total_coeff: some encoders emit TO > TC for TC=0 blocks.
-        let trailing_ones = ((code & 3) as u8).min(total_coeff);
+        // nC >= 8: fixed 6-bit code per H.264 Table 9-5(e)
+        // For code >= 8: TC = code/4 + 1, TO = code & 3
+        // For code < 8: special mapping for TC 0-2
+        let code = reader.read_bits(6)? as u8;
+        let (total_coeff, trailing_ones) = if code >= 8 {
+            let tc = (code >> 2) + 1;
+            let to = code & 3;
+            (tc, to)
+        } else {
+            match code {
+                3 => (0, 0),
+                0 => (1, 0),
+                1 => (1, 1),
+                4 => (2, 0),
+                5 => (2, 1),
+                6 => (2, 2),
+                _ => return Err("invalid coeff_token nC>=8"),
+            }
+        };
+        eprintln!("  NC>=8 6-bit code={} (0b{:06b}), TC={}, TO={}", code, code, total_coeff, trailing_ones);
         if total_coeff > 16 {
             return Err("invalid coeff_token nC>=8");
         }
@@ -634,6 +640,9 @@ fn parse_run_before(r: &mut BitstreamReader, zeros_left: u8) -> Result<u8, &'sta
     }
     let idx = (zeros_left.min(7) - 1) as usize;
     let bits = RUN_BEFORE_BITS[idx];
+    let pos_before = r.position();
+    let peek = r.peek_bits(bits);
+    eprintln!("  parse_run_before: zeros_left={}, pos={:?}, bits={}, peek=0b{:011b}", zeros_left, pos_before, bits, peek);
     let lut = LUT_RUN_BEFORE[idx].get_or_init(|| {
         let src: &[(u32, u8, u8)] = match zeros_left.min(7) {
             1 => &RUN_BEFORE_1, 2 => &RUN_BEFORE_2, 3 => &RUN_BEFORE_3,
@@ -642,7 +651,11 @@ fn parse_run_before(r: &mut BitstreamReader, zeros_left: u8) -> Result<u8, &'sta
         };
         build_u8_lut(src, bits)
     });
-    u8_lut_lookup(r, lut, bits)
+    let result = u8_lut_lookup(r, lut, bits);
+    if let Ok(v) = result {
+        eprintln!("  parse_run_before: result={}, pos after={:?}", v, r.position());
+    }
+    result
 }
 
 // ============================================================

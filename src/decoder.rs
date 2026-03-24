@@ -471,6 +471,8 @@ impl Decoder {
             if cbp_chroma >= 1 {
                 parse_residual_block_cavlc(&mut reader, &mut chroma_dc_cb, 4, -1)?;
                 parse_residual_block_cavlc(&mut reader, &mut chroma_dc_cr, 4, -1)?;
+                eprintln!("Chroma DC Cb after CAVLC: {:?}", chroma_dc_cb);
+                eprintln!("Chroma DC Cr after CAVLC: {:?}", chroma_dc_cr);
             }
 
             let mut chroma_ac_scan_cb = [[0i32; 15]; 4];
@@ -507,8 +509,11 @@ impl Decoder {
                 (&mut chroma_dc_cr, &chroma_ac_scan_cr, &mut frame.v),
             ] {
                 if cbp_chroma >= 1 {
+                    eprintln!("Chroma DC before Hadamard: {:?}", plane_dc);
                     inverse_hadamard_2x2(plane_dc);
+                    eprintln!("Chroma DC after Hadamard: {:?}", plane_dc);
                     dequant_chroma_dc(plane_dc, qp_c);
+                    eprintln!("Chroma DC after dequant (qp_c={}): {:?}", qp_c, plane_dc);
                 }
 
                 let mut chroma_residual = [0i32; 64];

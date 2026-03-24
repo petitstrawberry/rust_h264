@@ -124,6 +124,9 @@ pub fn parse_slice_header<'a>(
             slice_beta_offset_div2 = r.read_se()?;
         }
     }
+    eprintln!("Slice header done: disable_deblocking_idc={}, alpha={}, beta={}, reader pos={:?}",
+              disable_deblocking_filter_idc, slice_alpha_c0_offset_div2, slice_beta_offset_div2,
+              r.position());
 
     let header = SliceHeader {
         first_mb_in_slice,
