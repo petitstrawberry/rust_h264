@@ -52,6 +52,16 @@ Intra-only I-frame decoding is functional. P/B slice decoding not yet implemente
 - Trailing ones and level parsing with suffix length adaptation
 - Total zeros and run-before VLC tables
 - Zigzag scan order handling
+- O(1) VLC decode via flat peek-indexed lookup tables (built once via `OnceLock`)
+
+**NAL Unit Parsing** (`src/nal.rs`)
+- Annex B start code detection (3-byte and 4-byte)
+- Emulation prevention byte removal (`00 00 03` → `00 00`)
+- forbidden_zero_bit validation — invalid NAL units silently skipped
+
+**Bitstream Reader** (`src/bitstream.rs`)
+- MSB-first bit reading with `read_bit`, `read_bits`, `read_ue`, `read_se`
+- Non-consuming `peek_bits(n)` and position-advancing `skip_bits(n)`
 
 **Intra Prediction** (`src/intra_pred.rs`)
 - I16x16: vertical, horizontal, DC, plane (4 modes)
