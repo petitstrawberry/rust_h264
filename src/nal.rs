@@ -77,14 +77,17 @@ pub fn parse_annex_b(data: &[u8]) -> Vec<NalUnit> {
         let nal_data = &data[i..nal_end.0];
         if !nal_data.is_empty() {
             let header = nal_data[0];
-            let nal_ref_idc = (header >> 5) & 0x03;
-            let nal_unit_type = NalUnitType::from(header & 0x1F);
-            let rbsp = remove_emulation_prevention(&nal_data[1..]);
-            nals.push(NalUnit {
-                nal_ref_idc,
-                nal_unit_type,
-                rbsp,
-            });
+            // forbidden_zero_bit (MSB) must be 0; skip invalid NAL units
+            if header & 0x80 == 0 {
+                let nal_ref_idc = (header >> 5) & 0x03;
+                let nal_unit_type = NalUnitType::from(header & 0x1F);
+                let rbsp = remove_emulation_prevention(&nal_data[1..]);
+                nals.push(NalUnit {
+                    nal_ref_idc,
+                    nal_unit_type,
+                    rbsp,
+                });
+            }
         }
 
         match nal_end.1 {

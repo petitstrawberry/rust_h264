@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use crate::bitstream::BitstreamReader;
 
 /// Parse a CAVLC residual block.
@@ -62,7 +64,7 @@ pub fn parse_residual_block_cavlc(
         if suffix_length == 0 {
             suffix_length = 1;
         }
-        if levels[i].unsigned_abs() > (3 << (suffix_length - 1)) {
+        if levels[i].unsigned_abs() > (3 << (suffix_length - 1)) && suffix_length < 6 {
             suffix_length += 1;
         }
     }
@@ -80,12 +82,15 @@ pub fn parse_residual_block_cavlc(
     };
     eprintln!("  total_zeros={} (parsed from pos ({},{}))", total_zeros, pos_tz.0, pos_tz.1);
 
-    // Run before — parse from highest frequency (tc-1) down to 1; run[0] is inferred
-    let mut zeros_left = total_zeros;
-    let mut run = vec![0u8; tc];
+    // Run before — parse from highest frequency (tc-1) down to 1; run[0] is inferred.
+    // Use i32 so that run[0] can be negative when an encoder emits run_before > zeros_left
+    // (technically a spec violation, but x264 can produce it; the placement formula still
+    // yields valid scan positions because run[0]+run[1]+…+run[tc-1] == total_zeros).
+    let mut zeros_left: i32 = total_zeros as i32;
+    let mut run = vec![0i32; tc];
     for i in (1..tc).rev() {
         if zeros_left > 0 {
-            run[i] = parse_run_before(reader, zeros_left)?;
+            run[i] = parse_run_before(reader, zeros_left as u8)? as i32;
             zeros_left -= run[i];
         }
     }
@@ -101,7 +106,7 @@ pub fn parse_residual_block_cavlc(
     // With level[TotalCoeff-1] = DC, this places DC at coeffLevel[low] (scan position 0)
     let mut coeff_idx: i32 = -1;
     for i in (0..tc).rev() {
-        coeff_idx += run[i] as i32 + 1;
+        coeff_idx += run[i] + 1;
         coeffs[coeff_idx as usize] = levels[i];
     }
 
@@ -115,22 +120,29 @@ fn parse_coeff_token(
     let pos = reader.position();
     eprintln!("parse_coeff_token: start pos=({}, {}), nc={}", pos.0, pos.1, nc);
     let result = if nc < 0 {
-        match_vlc(reader, &COEFF_TOKEN_CHROMA_DC)
+        let lut = LUT_COEFF_CHROMA_DC.get_or_init(|| build_coeff_lut(&COEFF_TOKEN_CHROMA_DC, 8));
+        coeff_lut_lookup(reader, lut, 8)
     } else if nc < 2 {
-        match_vlc(reader, &COEFF_TOKEN_NC0)
+        let lut = LUT_COEFF_NC0.get_or_init(|| build_coeff_lut(&COEFF_TOKEN_NC0, 16));
+        coeff_lut_lookup(reader, lut, 16)
     } else if nc < 4 {
-        match_vlc(reader, &COEFF_TOKEN_NC2)
+        let lut = LUT_COEFF_NC2.get_or_init(|| build_coeff_lut(&COEFF_TOKEN_NC2, 14));
+        coeff_lut_lookup(reader, lut, 14)
     } else if nc < 8 {
-        match_vlc(reader, &COEFF_TOKEN_NC4)
+        let lut = LUT_COEFF_NC4.get_or_init(|| build_coeff_lut(&COEFF_TOKEN_NC4, 10));
+        coeff_lut_lookup(reader, lut, 10)
     } else {
-        // nC >= 8: fixed 6-bit code
+        // nC >= 8: fixed 6-bit code per H.264 Table 9-5(f)
+        // Encoding: code = TotalCoeff * 4 + TrailingOnes (4 bits TC, 2 bits TO)
         let code = reader.read_bits(6)?;
-        let trailing_ones = (code & 3) as u8;
-        let total_coeff = ((code >> 2) + 1) as u8;
-        if trailing_ones > total_coeff || total_coeff > 16 {
+        eprintln!("  NC>=8 6-bit code={} (0b{:06b}), TC={}, TO_raw={}", code, code, code>>2, code&3);
+        let total_coeff = (code >> 2) as u8;
+        // Clamp trailing_ones to total_coeff: some encoders emit TO > TC for TC=0 blocks.
+        let trailing_ones = ((code & 3) as u8).min(total_coeff);
+        if total_coeff > 16 {
             return Err("invalid coeff_token nC>=8");
         }
-        Ok((total_coeff, trailing_ones.min(3)))
+        Ok((total_coeff, trailing_ones))
     };
 
     result
@@ -145,7 +157,7 @@ fn parse_level(
     let mut level_prefix: u32 = 0;
     while reader.read_bit()? == 0 {
         level_prefix += 1;
-        if level_prefix > 20 {
+        if level_prefix > 28 {
             return Err("level_prefix too large");
         }
     }
@@ -164,11 +176,11 @@ fn parse_level(
         } else {
             0
         };
-        level_code = (level_prefix << suffix_length) | level_suffix;
+        level_code = (level_prefix << suffix_length) + level_suffix;
     } else if level_prefix == 14 {
         let suffix_len = if suffix_length == 0 { 4 } else { suffix_length };
         level_suffix = reader.read_bits(suffix_len as u8)?;
-        level_code = (level_prefix << suffix_length) | level_suffix;
+        level_code = (level_prefix << suffix_length) + level_suffix;
     } else {
         // level_prefix >= 15: levelSuffixSize = level_prefix - 3
         // H.264 spec 9.2.2.1:
@@ -210,30 +222,88 @@ fn parse_level(
     Ok(level)
 }
 
-/// Generic VLC table matcher. Table entries: (codeword, bit_length, total_coeff, trailing_ones).
-fn match_vlc(
-    r: &mut BitstreamReader,
-    table: &[(u32, u8, u8, u8)],
-) -> Result<(u8, u8), &'static str> {
-    let mut code: u32 = 0;
-    let mut bits_read: u8 = 0;
+// ============================================================
+// O(1) VLC lookup table infrastructure
+// ============================================================
 
-    loop {
-        code = (code << 1) | r.read_bit()? as u32;
-        bits_read += 1;
+/// Coeff-token VLC entry. len == 0 means the slot is invalid (no codeword maps here).
+#[derive(Clone, Copy, Default)]
+struct CoeffEntry {
+    len: u8,
+    tc: u8,
+    to: u8,
+}
 
-        for &(codeword, len, tc, to) in table {
-            if len == bits_read && codeword == code {
-                return Ok((tc, to));
-            }
-        }
+/// Single-value VLC entry. len == 0 means invalid.
+#[derive(Clone, Copy, Default)]
+struct U8Entry {
+    len: u8,
+    val: u8,
+}
 
-        if bits_read >= 16 {
-            break;
+/// Build a flat peek-indexed LUT from a (codeword, len, tc, to) source table.
+/// `bits` must be >= the maximum code length in `src`.
+fn build_coeff_lut(src: &[(u32, u8, u8, u8)], bits: u8) -> Vec<CoeffEntry> {
+    let mut table = vec![CoeffEntry::default(); 1usize << bits];
+    for &(code, len, tc, to) in src {
+        let fill = 1usize << (bits - len);
+        let base = (code as usize) << (bits - len);
+        for e in table[base..base + fill].iter_mut() {
+            *e = CoeffEntry { len, tc, to };
         }
     }
-    Err("invalid VLC code")
+    table
 }
+
+/// Build a flat peek-indexed LUT from a (codeword, len, value) source table.
+fn build_u8_lut(src: &[(u32, u8, u8)], bits: u8) -> Vec<U8Entry> {
+    let mut table = vec![U8Entry::default(); 1usize << bits];
+    for &(code, len, val) in src {
+        let fill = 1usize << (bits - len);
+        let base = (code as usize) << (bits - len);
+        for e in table[base..base + fill].iter_mut() {
+            *e = U8Entry { len, val };
+        }
+    }
+    table
+}
+
+fn coeff_lut_lookup(
+    r: &mut BitstreamReader,
+    lut: &[CoeffEntry],
+    bits: u8,
+) -> Result<(u8, u8), &'static str> {
+    let e = lut[r.peek_bits(bits) as usize];
+    if e.len == 0 {
+        return Err("invalid VLC code");
+    }
+    r.skip_bits(e.len);
+    Ok((e.tc, e.to))
+}
+
+fn u8_lut_lookup(
+    r: &mut BitstreamReader,
+    lut: &[U8Entry],
+    bits: u8,
+) -> Result<u8, &'static str> {
+    let e = lut[r.peek_bits(bits) as usize];
+    if e.len == 0 {
+        return Err("invalid VLC code");
+    }
+    r.skip_bits(e.len);
+    Ok(e.val)
+}
+
+// Lazily-initialized lookup tables for each VLC table variant.
+static LUT_COEFF_NC0: OnceLock<Vec<CoeffEntry>> = OnceLock::new();       // 16 bits → 64 KiB
+static LUT_COEFF_NC2: OnceLock<Vec<CoeffEntry>> = OnceLock::new();       // 14 bits → 16 KiB
+static LUT_COEFF_NC4: OnceLock<Vec<CoeffEntry>> = OnceLock::new();       // 10 bits →  1 KiB
+static LUT_COEFF_CHROMA_DC: OnceLock<Vec<CoeffEntry>> = OnceLock::new(); //  8 bits → 256 B
+
+const INIT_U8_LOCK: OnceLock<Vec<U8Entry>> = OnceLock::new();
+static LUT_TOTAL_ZEROS: [OnceLock<Vec<U8Entry>>; 15] = [INIT_U8_LOCK; 15];
+static LUT_TOTAL_ZEROS_CHROMA: [OnceLock<Vec<U8Entry>>; 3] = [INIT_U8_LOCK; 3];
+static LUT_RUN_BEFORE: [OnceLock<Vec<U8Entry>>; 7] = [INIT_U8_LOCK; 7];
 
 // ============================================================
 // coeff_token VLC tables from H.264 Table 9-5
@@ -243,300 +313,336 @@ fn match_vlc(
 /// Table 9-5(a): 0 <= nC < 2
 #[rustfmt::skip]
 static COEFF_TOKEN_NC0: [(u32, u8, u8, u8); 62] = [
+    // TC=0
     (0b1, 1, 0, 0),
+    // TC=1
     (0b000101, 6, 1, 0),
     (0b01, 2, 1, 1),
+    // TC=2
     (0b00000111, 8, 2, 0),
     (0b000100, 6, 2, 1),
     (0b001, 3, 2, 2),
+    // TC=3
     (0b000000111, 9, 3, 0),
     (0b00000110, 8, 3, 1),
     (0b0000101, 7, 3, 2),
     (0b00011, 5, 3, 3),
+    // TC=4
     (0b0000000111, 10, 4, 0),
     (0b000000110, 9, 4, 1),
     (0b00000101, 8, 4, 2),
     (0b000011, 6, 4, 3),
+    // TC=5
     (0b00000000111, 11, 5, 0),
     (0b0000000110, 10, 5, 1),
     (0b000000101, 9, 5, 2),
     (0b0000100, 7, 5, 3),
+    // TC=6
     (0b0000000001111, 13, 6, 0),
     (0b00000000110, 11, 6, 1),
     (0b0000000101, 10, 6, 2),
-    (0b00001000, 8, 6, 3),
+    (0b00000100, 8, 6, 3),
+    // TC=7
     (0b0000000001011, 13, 7, 0),
     (0b0000000001110, 13, 7, 1),
     (0b00000000101, 11, 7, 2),
-    (0b00001001, 8, 7, 3),
+    (0b000000100, 9, 7, 3),
+    // TC=8
     (0b0000000001000, 13, 8, 0),
-    (0b0000000001101, 13, 8, 1),
-    (0b0000000001010, 13, 8, 2),
-    (0b000000000100, 12, 8, 3),
+    (0b0000000001010, 13, 8, 1),
+    (0b0000000001101, 13, 8, 2),
+    (0b0000000100, 10, 8, 3),
+    // TC=9
     (0b00000000001111, 14, 9, 0),
     (0b00000000001110, 14, 9, 1),
     (0b0000000001001, 13, 9, 2),
-    (0b000000000101, 12, 9, 3),
-    (0b000000000001111, 15, 10, 0),
-    (0b000000000001110, 15, 10, 1),
+    (0b00000000100, 11, 9, 3),
+    // TC=10
+    (0b00000000001011, 14, 10, 0),
+    (0b00000000001010, 14, 10, 1),
     (0b00000000001101, 14, 10, 2),
-    (0b000000000110, 12, 10, 3),
-    (0b0000000000001111, 16, 11, 0),
-    (0b000000000001011, 15, 11, 1),
-    (0b00000000001100, 14, 11, 2),
-    (0b000000000111, 12, 11, 3),
-    (0b0000000000001011, 16, 12, 0),
-    (0b0000000000001000, 16, 12, 1),
-    (0b000000000001010, 15, 12, 2),
-    (0b00000000001011, 14, 12, 3),
-    (0b0000000000001001, 16, 13, 0),
-    (0b0000000000001110, 16, 13, 1),
-    (0b000000000001101, 15, 13, 2),
-    (0b00000000001010, 14, 13, 3),
-    (0b0000000000000111, 16, 14, 0),
-    (0b0000000000001010, 16, 14, 1),
-    (0b000000000001100, 15, 14, 2),
-    (0b00000000001001, 14, 14, 3),
-    (0b0000000000000100, 16, 15, 0),
-    (0b0000000000000110, 16, 15, 1),
-    (0b0000000000001101, 16, 15, 2),
-    (0b00000000001000, 14, 15, 3),
-    (0b0000000000000101, 16, 16, 0),
-    (0b0000000000000001, 16, 16, 1),
-    (0b0000000000000010, 16, 16, 2),
-    (0b0000000000001100, 16, 16, 3),
+    (0b0000000001100, 13, 10, 3),
+    // TC=11
+    (0b000000000001111, 15, 11, 0),
+    (0b000000000001110, 15, 11, 1),
+    (0b00000000001001, 14, 11, 2),
+    (0b00000000001100, 14, 11, 3),
+    // TC=12
+    (0b000000000001011, 15, 12, 0),
+    (0b000000000001010, 15, 12, 1),
+    (0b000000000001101, 15, 12, 2),
+    (0b00000000001000, 14, 12, 3),
+    // TC=13
+    (0b0000000000001111, 16, 13, 0),
+    (0b000000000000001, 15, 13, 1),
+    (0b000000000001001, 15, 13, 2),
+    (0b000000000001100, 15, 13, 3),
+    // TC=14
+    (0b0000000000001011, 16, 14, 0),
+    (0b0000000000001110, 16, 14, 1),
+    (0b0000000000001101, 16, 14, 2),
+    (0b000000000001000, 15, 14, 3),
+    // TC=15
+    (0b0000000000000111, 16, 15, 0),
+    (0b0000000000001010, 16, 15, 1),
+    (0b0000000000001001, 16, 15, 2),
+    (0b0000000000001100, 16, 15, 3),
+    // TC=16
+    (0b0000000000000100, 16, 16, 0),
+    (0b0000000000000110, 16, 16, 1),
+    (0b0000000000000101, 16, 16, 2),
+    (0b0000000000001000, 16, 16, 3),
 ];
 
 /// Table 9-5(b): 2 <= nC < 4
 #[rustfmt::skip]
 static COEFF_TOKEN_NC2: [(u32, u8, u8, u8); 62] = [
+    // TC=0
     (0b11, 2, 0, 0),
+    // TC=1
     (0b001011, 6, 1, 0),
     (0b10, 2, 1, 1),
+    // TC=2
     (0b000111, 6, 2, 0),
     (0b00111, 5, 2, 1),
     (0b011, 3, 2, 2),
+    // TC=3
     (0b0000111, 7, 3, 0),
     (0b001010, 6, 3, 1),
     (0b001001, 6, 3, 2),
-    (0b00101, 5, 3, 3),
+    (0b0101, 4, 3, 3),
+    // TC=4
     (0b00000111, 8, 4, 0),
     (0b000110, 6, 4, 1),
     (0b000101, 6, 4, 2),
-    (0b00100, 5, 4, 3),
-    (0b000000111, 9, 5, 0),
+    (0b0100, 4, 4, 3),
+    // TC=5
+    (0b00000100, 8, 5, 0),
     (0b0000110, 7, 5, 1),
     (0b0000101, 7, 5, 2),
-    (0b001000, 6, 5, 3),
-    (0b00000001111, 11, 6, 0),
+    (0b00110, 5, 5, 3),
+    // TC=6
+    (0b000000111, 9, 6, 0),
     (0b00000110, 8, 6, 1),
     (0b00000101, 8, 6, 2),
-    (0b0000100, 7, 6, 3),
-    (0b00000001011, 11, 7, 0),
-    (0b00000001110, 11, 7, 1),
-    (0b000000110, 9, 7, 2),
-    (0b00000100, 8, 7, 3),
-    (0b000000001111, 12, 8, 0),
-    (0b00000001101, 11, 8, 1),
-    (0b00000001010, 11, 8, 2),
-    (0b000000101, 9, 8, 3),
-    (0b000000001011, 12, 9, 0),
-    (0b000000001110, 12, 9, 1),
+    (0b001000, 6, 6, 3),
+    // TC=7
+    (0b00000001111, 11, 7, 0),
+    (0b000000110, 9, 7, 1),
+    (0b000000101, 9, 7, 2),
+    (0b000100, 6, 7, 3),
+    // TC=8
+    (0b00000001011, 11, 8, 0),
+    (0b00000001110, 11, 8, 1),
+    (0b00000001101, 11, 8, 2),
+    (0b0000100, 7, 8, 3),
+    // TC=9
+    (0b000000001111, 12, 9, 0),
+    (0b00000001010, 11, 9, 1),
     (0b00000001001, 11, 9, 2),
     (0b000000100, 9, 9, 3),
-    (0b0000000001111, 13, 10, 0),
-    (0b000000001101, 12, 10, 1),
-    (0b000000001010, 12, 10, 2),
-    (0b00000001000, 11, 10, 3),
-    (0b0000000001011, 13, 11, 0),
-    (0b0000000001110, 13, 11, 1),
+    // TC=10
+    (0b000000001011, 12, 10, 0),
+    (0b000000001110, 12, 10, 1),
+    (0b000000001101, 12, 10, 2),
+    (0b00000001100, 11, 10, 3),
+    // TC=11
+    (0b000000001000, 12, 11, 0),
+    (0b000000001010, 12, 11, 1),
     (0b000000001001, 12, 11, 2),
-    (0b000000001100, 12, 11, 3),
-    (0b0000000001000, 13, 12, 0),
-    (0b0000000001010, 13, 12, 1),
-    (0b000000001000, 12, 12, 2),
-    (0b0000000001101, 13, 12, 3),
-    (0b00000000001111, 14, 13, 0),
-    (0b0000000000001, 13, 13, 1),
+    (0b00000001000, 11, 11, 3),
+    // TC=12
+    (0b0000000001111, 13, 12, 0),
+    (0b0000000001110, 13, 12, 1),
+    (0b0000000001101, 13, 12, 2),
+    (0b000000001100, 12, 12, 3),
+    // TC=13
+    (0b0000000001011, 13, 13, 0),
+    (0b0000000001010, 13, 13, 1),
     (0b0000000001001, 13, 13, 2),
     (0b0000000001100, 13, 13, 3),
-    (0b00000000001011, 14, 14, 0),
-    (0b00000000001110, 14, 14, 1),
-    (0b00000000001101, 14, 14, 2),
-    (0b0000000000100, 13, 14, 3),
-    (0b00000000001000, 14, 15, 0),
-    (0b00000000001010, 14, 15, 1),
-    (0b00000000001001, 14, 15, 2),
-    (0b0000000000110, 13, 15, 3),
+    // TC=14
+    (0b0000000000111, 13, 14, 0),
+    (0b00000000001011, 14, 14, 1),
+    (0b0000000000110, 13, 14, 2),
+    (0b0000000001000, 13, 14, 3),
+    // TC=15
+    (0b00000000001001, 14, 15, 0),
+    (0b00000000001000, 14, 15, 1),
+    (0b00000000001010, 14, 15, 2),
+    (0b0000000000001, 13, 15, 3),
+    // TC=16
     (0b00000000000111, 14, 16, 0),
-    (0b00000000000101, 14, 16, 1),
-    (0b00000000000100, 14, 16, 2),
-    (0b0000000000111, 13, 16, 3),
+    (0b00000000000110, 14, 16, 1),
+    (0b00000000000101, 14, 16, 2),
+    (0b00000000000100, 14, 16, 3),
 ];
 
 /// Table 9-5(c): 4 <= nC < 8
 #[rustfmt::skip]
 static COEFF_TOKEN_NC4: [(u32, u8, u8, u8); 62] = [
+    // TC=0
     (0b1111, 4, 0, 0),
+    // TC=1
     (0b001111, 6, 1, 0),
     (0b1110, 4, 1, 1),
+    // TC=2
     (0b001011, 6, 2, 0),
     (0b01111, 5, 2, 1),
     (0b1101, 4, 2, 2),
+    // TC=3
     (0b001000, 6, 3, 0),
     (0b01100, 5, 3, 1),
     (0b01110, 5, 3, 2),
     (0b1100, 4, 3, 3),
-    (0b0000111, 7, 4, 0),
+    // TC=4
+    (0b0001111, 7, 4, 0),
     (0b01010, 5, 4, 1),
-    (0b01101, 5, 4, 2),
+    (0b01011, 5, 4, 2),
     (0b1011, 4, 4, 3),
-    (0b0000100, 7, 5, 0),
+    // TC=5
+    (0b0001011, 7, 5, 0),
     (0b01000, 5, 5, 1),
-    (0b01011, 5, 5, 2),
+    (0b01001, 5, 5, 2),
     (0b1010, 4, 5, 3),
-    (0b00000111, 8, 6, 0),
-    (0b000110, 6, 6, 1),
-    (0b01001, 5, 6, 2),
+    // TC=6
+    (0b0001001, 7, 6, 0),
+    (0b001110, 6, 6, 1),
+    (0b001101, 6, 6, 2),
     (0b1001, 4, 6, 3),
-    (0b000001011, 9, 7, 0),
-    (0b00000110, 8, 7, 1),
-    (0b000101, 6, 7, 2),
+    // TC=7
+    (0b0001000, 7, 7, 0),
+    (0b001010, 6, 7, 1),
+    (0b001001, 6, 7, 2),
     (0b1000, 4, 7, 3),
-    (0b000001000, 9, 8, 0),
-    (0b000001010, 9, 8, 1),
-    (0b00000101, 8, 8, 2),
-    (0b000100, 6, 8, 3),
-    (0b0000001101, 10, 9, 0),
-    (0b000000111, 9, 9, 1),
-    (0b000001001, 9, 9, 2),
-    (0b00000100, 8, 9, 3),
-    (0b0000001001, 10, 10, 0),
-    (0b0000001100, 10, 10, 1),
-    (0b000000110, 9, 10, 2),
-    (0b000001110, 9, 10, 3),
-    (0b00000001111, 11, 11, 0),
-    (0b0000001010, 10, 11, 1),
-    (0b0000001000, 10, 11, 2),
-    (0b000000101, 9, 11, 3),
-    (0b00000001011, 11, 12, 0),
-    (0b00000001110, 11, 12, 1),
-    (0b0000001011, 10, 12, 2),
-    (0b000001111, 9, 12, 3),
-    (0b000000001111, 12, 13, 0),
-    (0b00000001010, 11, 13, 1),
-    (0b00000001101, 11, 13, 2),
-    (0b000001101, 9, 13, 3),
-    (0b000000001011, 12, 14, 0),
-    (0b000000001110, 12, 14, 1),
-    (0b00000001001, 11, 14, 2),
-    (0b000001100, 9, 14, 3),
-    (0b000000001000, 12, 15, 0),
-    (0b000000001010, 12, 15, 1),
-    (0b00000001000, 11, 15, 2),
-    (0b000000001101, 12, 15, 3),
-    (0b000000000111, 12, 16, 0),
-    (0b000000000100, 12, 16, 1),
-    (0b000000001001, 12, 16, 2),
-    (0b000000001100, 12, 16, 3),
+    // TC=8
+    (0b00001111, 8, 8, 0),
+    (0b0001110, 7, 8, 1),
+    (0b0001101, 7, 8, 2),
+    (0b01101, 5, 8, 3),
+    // TC=9
+    (0b00001011, 8, 9, 0),
+    (0b00001110, 8, 9, 1),
+    (0b0001010, 7, 9, 2),
+    (0b001100, 6, 9, 3),
+    // TC=10
+    (0b000001111, 9, 10, 0),
+    (0b00001010, 8, 10, 1),
+    (0b00001101, 8, 10, 2),
+    (0b0001100, 7, 10, 3),
+    // TC=11
+    (0b000001011, 9, 11, 0),
+    (0b000001110, 9, 11, 1),
+    (0b00001001, 8, 11, 2),
+    (0b00001100, 8, 11, 3),
+    // TC=12
+    (0b000001000, 9, 12, 0),
+    (0b000001010, 9, 12, 1),
+    (0b000001101, 9, 12, 2),
+    (0b00001000, 8, 12, 3),
+    // TC=13
+    (0b0000001101, 10, 13, 0),
+    (0b000000111, 9, 13, 1),
+    (0b000001001, 9, 13, 2),
+    (0b000001100, 9, 13, 3),
+    // TC=14
+    (0b0000001001, 10, 14, 0),
+    (0b0000001100, 10, 14, 1),
+    (0b0000001011, 10, 14, 2),
+    (0b0000001010, 10, 14, 3),
+    // TC=15
+    (0b0000000101, 10, 15, 0),
+    (0b0000001000, 10, 15, 1),
+    (0b0000000111, 10, 15, 2),
+    (0b0000000110, 10, 15, 3),
+    // TC=16
+    (0b0000000001, 10, 16, 0),
+    (0b0000000100, 10, 16, 1),
+    (0b0000000011, 10, 16, 2),
+    (0b0000000010, 10, 16, 3),
 ];
 
 /// Table 9-5(d): chroma DC (nC == -1)
 #[rustfmt::skip]
 static COEFF_TOKEN_CHROMA_DC: [(u32, u8, u8, u8); 14] = [
-    (0b01, 2, 0, 0),
-    (0b000111, 6, 1, 0),
-    (0b1, 1, 1, 1),
-    (0b000100, 6, 2, 0),
-    (0b00110, 5, 2, 1),
-    (0b001, 3, 2, 2),
-    (0b000011, 6, 3, 0),
-    (0b000101, 6, 3, 1),
-    (0b00101, 5, 3, 2),
-    (0b00100, 5, 3, 3),
-    (0b000010, 6, 4, 0),
-    (0b000001, 6, 4, 1),
-    (0b000000, 6, 4, 2),
-    (0b00010, 5, 4, 3),
+    (0b01,       2, 0, 0),
+    (0b000111,   6, 1, 0),
+    (0b1,        1, 1, 1),
+    (0b000100,   6, 2, 0),
+    (0b000110,   6, 2, 1),
+    (0b001,      3, 2, 2),
+    (0b000011,   6, 3, 0),
+    (0b0000011,  7, 3, 1),
+    (0b0000010,  7, 3, 2),
+    (0b000101,   6, 3, 3),
+    (0b000010,   6, 4, 0),
+    (0b00000011, 8, 4, 1),
+    (0b00000010, 8, 4, 2),
+    (0b0000000,  7, 4, 3),
 ];
 
 // ============================================================
 // total_zeros VLC tables (H.264 Tables 9-7, 9-8)
 // ============================================================
 
+// Max peek-bits per total_coeff value (1-indexed, so [0] = tc=1).
+const TOTAL_ZEROS_BITS: [u8; 15] = [9, 6, 6, 5, 5, 6, 6, 6, 6, 5, 4, 4, 3, 2, 1];
+
 fn parse_total_zeros(r: &mut BitstreamReader, total_coeff: u8) -> Result<u8, &'static str> {
-    match total_coeff {
-        1 => match_vlc_u8(r, &TOTAL_ZEROS_1),
-        2 => match_vlc_u8(r, &TOTAL_ZEROS_2),
-        3 => match_vlc_u8(r, &TOTAL_ZEROS_3),
-        4 => match_vlc_u8(r, &TOTAL_ZEROS_4),
-        5 => match_vlc_u8(r, &TOTAL_ZEROS_5),
-        6 => match_vlc_u8(r, &TOTAL_ZEROS_6),
-        7 => match_vlc_u8(r, &TOTAL_ZEROS_7),
-        8 => match_vlc_u8(r, &TOTAL_ZEROS_8),
-        9 => match_vlc_u8(r, &TOTAL_ZEROS_9),
-        10 => match_vlc_u8(r, &TOTAL_ZEROS_10),
-        11 => match_vlc_u8(r, &TOTAL_ZEROS_11),
-        12 => match_vlc_u8(r, &TOTAL_ZEROS_12),
-        13 => match_vlc_u8(r, &TOTAL_ZEROS_13),
-        14 => match_vlc_u8(r, &TOTAL_ZEROS_14),
-        15 => match_vlc_u8(r, &TOTAL_ZEROS_15),
-        _ => Err("invalid total_coeff for total_zeros"),
-    }
+    let idx = (total_coeff - 1) as usize;
+    let bits = TOTAL_ZEROS_BITS[idx];
+    let lut = LUT_TOTAL_ZEROS[idx].get_or_init(|| {
+        let src: &[(u32, u8, u8)] = match total_coeff {
+            1 => &TOTAL_ZEROS_1, 2 => &TOTAL_ZEROS_2, 3 => &TOTAL_ZEROS_3,
+            4 => &TOTAL_ZEROS_4, 5 => &TOTAL_ZEROS_5, 6 => &TOTAL_ZEROS_6,
+            7 => &TOTAL_ZEROS_7, 8 => &TOTAL_ZEROS_8, 9 => &TOTAL_ZEROS_9,
+            10 => &TOTAL_ZEROS_10, 11 => &TOTAL_ZEROS_11, 12 => &TOTAL_ZEROS_12,
+            13 => &TOTAL_ZEROS_13, 14 => &TOTAL_ZEROS_14, 15 => &TOTAL_ZEROS_15,
+            _ => unreachable!(),
+        };
+        build_u8_lut(src, bits)
+    });
+    u8_lut_lookup(r, lut, bits)
 }
 
 fn parse_total_zeros_chroma_dc(r: &mut BitstreamReader, total_coeff: u8) -> Result<u8, &'static str> {
-    match total_coeff {
-        1 => match_vlc_u8(r, &TOTAL_ZEROS_CHROMA_DC_1),
-        2 => match_vlc_u8(r, &TOTAL_ZEROS_CHROMA_DC_2),
-        3 => match_vlc_u8(r, &TOTAL_ZEROS_CHROMA_DC_3),
-        _ => Err("invalid total_coeff for chroma DC total_zeros"),
-    }
+    const CHROMA_BITS: [u8; 3] = [3, 2, 1];
+    let idx = (total_coeff - 1) as usize;
+    let bits = CHROMA_BITS[idx];
+    let lut = LUT_TOTAL_ZEROS_CHROMA[idx].get_or_init(|| {
+        let src: &[(u32, u8, u8)] = match total_coeff {
+            1 => &TOTAL_ZEROS_CHROMA_DC_1,
+            2 => &TOTAL_ZEROS_CHROMA_DC_2,
+            3 => &TOTAL_ZEROS_CHROMA_DC_3,
+            _ => unreachable!(),
+        };
+        build_u8_lut(src, bits)
+    });
+    u8_lut_lookup(r, lut, bits)
 }
 
 // ============================================================
 // run_before VLC table (H.264 Table 9-10)
 // ============================================================
 
+// Max peek-bits per zeros_left value (1-indexed; index 6 covers zeros_left >= 7).
+const RUN_BEFORE_BITS: [u8; 7] = [1, 2, 2, 3, 3, 3, 11];
+
 fn parse_run_before(r: &mut BitstreamReader, zeros_left: u8) -> Result<u8, &'static str> {
     if zeros_left == 0 {
         return Ok(0);
     }
-    match zeros_left {
-        1 => match_vlc_u8(r, &RUN_BEFORE_1),
-        2 => match_vlc_u8(r, &RUN_BEFORE_2),
-        3 => match_vlc_u8(r, &RUN_BEFORE_3),
-        4 => match_vlc_u8(r, &RUN_BEFORE_4),
-        5 => match_vlc_u8(r, &RUN_BEFORE_5),
-        6 => match_vlc_u8(r, &RUN_BEFORE_6),
-        _ => match_vlc_u8(r, &RUN_BEFORE_7PLUS),
-    }
-}
-
-/// Generic VLC matcher returning a single u8 value.
-/// Table entries: (codeword, bit_length, value)
-fn match_vlc_u8(
-    r: &mut BitstreamReader,
-    table: &[(u32, u8, u8)],
-) -> Result<u8, &'static str> {
-    let mut code: u32 = 0;
-    let mut bits_read: u8 = 0;
-
-    loop {
-        code = (code << 1) | r.read_bit()? as u32;
-        bits_read += 1;
-
-        for &(codeword, len, val) in table {
-            if len == bits_read && codeword == code {
-                return Ok(val);
-            }
-        }
-
-        if bits_read >= 16 {
-            break;
-        }
-    }
-    Err("invalid VLC code")
+    let idx = (zeros_left.min(7) - 1) as usize;
+    let bits = RUN_BEFORE_BITS[idx];
+    let lut = LUT_RUN_BEFORE[idx].get_or_init(|| {
+        let src: &[(u32, u8, u8)] = match zeros_left.min(7) {
+            1 => &RUN_BEFORE_1, 2 => &RUN_BEFORE_2, 3 => &RUN_BEFORE_3,
+            4 => &RUN_BEFORE_4, 5 => &RUN_BEFORE_5, 6 => &RUN_BEFORE_6,
+            _ => &RUN_BEFORE_7PLUS,
+        };
+        build_u8_lut(src, bits)
+    });
+    u8_lut_lookup(r, lut, bits)
 }
 
 // ============================================================
@@ -565,52 +671,49 @@ static TOTAL_ZEROS_3: [(u32, u8, u8); 14] = [
     (0b0101, 4, 0), (0b111, 3, 1), (0b110, 3, 2), (0b101, 3, 3),
     (0b0100, 4, 4), (0b0011, 4, 5), (0b100, 3, 6), (0b011, 3, 7),
     (0b0010, 4, 8), (0b00011, 5, 9), (0b00010, 5, 10), (0b000001, 6, 11),
-    (0b000000, 6, 12), (0b000010, 6, 13),
-    // Note: total_zeros can go from 0..13 for total_coeff=3
+    (0b00001, 5, 12), (0b000000, 6, 13),
 ];
 
 #[rustfmt::skip]
 static TOTAL_ZEROS_4: [(u32, u8, u8); 13] = [
     (0b00011, 5, 0), (0b111, 3, 1), (0b0101, 4, 2), (0b0100, 4, 3),
     (0b110, 3, 4), (0b101, 3, 5), (0b100, 3, 6), (0b0011, 4, 7),
-    (0b011, 3, 8), (0b00010, 5, 9), (0b00001, 5, 10), (0b00000, 5, 11),
-    (0b0010, 4, 12),
+    (0b011, 3, 8), (0b0010, 4, 9), (0b00010, 5, 10), (0b00001, 5, 11),
+    (0b00000, 5, 12),
 ];
 
 #[rustfmt::skip]
 static TOTAL_ZEROS_5: [(u32, u8, u8); 12] = [
     (0b0101, 4, 0), (0b0100, 4, 1), (0b0011, 4, 2), (0b111, 3, 3),
-    (0b110, 3, 4), (0b101, 3, 5), (0b100, 3, 6), (0b0010, 4, 7),
-    (0b011, 3, 8), (0b00001, 5, 9), (0b00000, 5, 10), (0b0001, 4, 11),
-    // Note: some entries may need correction — only 11 possible values
+    (0b110, 3, 4), (0b101, 3, 5), (0b100, 3, 6), (0b011, 3, 7),
+    (0b0010, 4, 8), (0b00001, 5, 9), (0b0001, 4, 10), (0b00000, 5, 11),
 ];
 
 #[rustfmt::skip]
 static TOTAL_ZEROS_6: [(u32, u8, u8); 11] = [
-    (0b000001, 6, 0), (0b000000, 6, 1), (0b0011, 4, 2), (0b111, 3, 3),
-    (0b110, 3, 4), (0b101, 3, 5), (0b100, 3, 6), (0b011, 3, 7),
-    (0b0010, 4, 8), (0b0001, 4, 9), (0b0000, 4, 10),
-    // Note: some entries may need correction
+    (0b000001, 6, 0), (0b00001, 5, 1), (0b111, 3, 2), (0b110, 3, 3),
+    (0b101, 3, 4), (0b100, 3, 5), (0b011, 3, 6), (0b010, 3, 7),
+    (0b0001, 4, 8), (0b001, 3, 9), (0b000000, 6, 10),
 ];
 
 #[rustfmt::skip]
 static TOTAL_ZEROS_7: [(u32, u8, u8); 10] = [
-    (0b000001, 6, 0), (0b000000, 6, 1), (0b0010, 4, 2), (0b111, 3, 3),
-    (0b110, 3, 4), (0b101, 3, 5), (0b100, 3, 6), (0b011, 3, 7),
-    (0b0011, 4, 8), (0b01, 2, 9), // Note: some entries may differ
+    (0b000001, 6, 0), (0b00001, 5, 1), (0b101, 3, 2), (0b100, 3, 3),
+    (0b011, 3, 4), (0b11, 2, 5), (0b010, 3, 6), (0b0001, 4, 7),
+    (0b001, 3, 8), (0b000000, 6, 9),
 ];
 
 #[rustfmt::skip]
 static TOTAL_ZEROS_8: [(u32, u8, u8); 9] = [
-    (0b000001, 6, 0), (0b00001, 5, 1), (0b0001, 4, 2), (0b011, 3, 3),
-    (0b11, 2, 4), (0b10, 2, 5), (0b010, 3, 6), (0b0000, 4, 7),
+    (0b000001, 6, 0), (0b0001, 4, 1), (0b00001, 5, 2), (0b011, 3, 3),
+    (0b11, 2, 4), (0b10, 2, 5), (0b010, 3, 6), (0b001, 3, 7),
     (0b000000, 6, 8),
 ];
 
 #[rustfmt::skip]
 static TOTAL_ZEROS_9: [(u32, u8, u8); 8] = [
     (0b000001, 6, 0), (0b000000, 6, 1), (0b0001, 4, 2), (0b11, 2, 3),
-    (0b10, 2, 4), (0b001, 3, 5), (0b01, 2, 6), (0b0000, 4, 7),
+    (0b10, 2, 4), (0b001, 3, 5), (0b01, 2, 6), (0b00001, 5, 7),
 ];
 
 #[rustfmt::skip]
@@ -694,7 +797,7 @@ static RUN_BEFORE_5: [(u32, u8, u8); 6] = [
 
 #[rustfmt::skip]
 static RUN_BEFORE_6: [(u32, u8, u8); 7] = [
-    (0b11, 2, 0), (0b000, 3, 1), (0b001, 3, 2), (0b011, 3, 3), (0b010, 3, 4), (0b0001, 4, 5), (0b0000, 4, 6),
+    (0b11, 2, 0), (0b000, 3, 1), (0b001, 3, 2), (0b011, 3, 3), (0b010, 3, 4), (0b101, 3, 5), (0b100, 3, 6),
 ];
 
 // zeros_left >= 7: run_before is 0..zeros_left, coded as:

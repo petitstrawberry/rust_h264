@@ -38,6 +38,33 @@ impl<'a> BitstreamReader<'a> {
         Ok(val)
     }
 
+    /// Peek at the next `n` bits without consuming them. Zero-pads if fewer bits remain.
+    pub fn peek_bits(&self, n: u8) -> u32 {
+        let mut val: u32 = 0;
+        let mut byte_offset = self.byte_offset;
+        let mut bit_offset = self.bit_offset;
+        for _ in 0..n {
+            if byte_offset < self.data.len() {
+                val = (val << 1) | ((self.data[byte_offset] >> (7 - bit_offset)) & 1) as u32;
+            } else {
+                val <<= 1;
+            }
+            bit_offset += 1;
+            if bit_offset == 8 {
+                bit_offset = 0;
+                byte_offset += 1;
+            }
+        }
+        val
+    }
+
+    /// Advance position by `n` bits without reading them.
+    pub fn skip_bits(&mut self, n: u8) {
+        let total = self.bit_offset as usize + n as usize;
+        self.byte_offset += total / 8;
+        self.bit_offset = (total % 8) as u8;
+    }
+
     /// Read an unsigned Exp-Golomb coded value (ue(v)).
     pub fn read_ue(&mut self) -> Result<u32, &'static str> {
         let mut leading_zeros: u32 = 0;
@@ -110,6 +137,21 @@ impl<'a> BitstreamReader<'a> {
 
     pub fn position(&self) -> (usize, u8) {
         (self.byte_offset, self.bit_offset)
+    }
+
+    /// Peek at the byte at the current byte_offset (for debugging).
+    pub fn peek_byte(&self) -> u8 {
+        if self.byte_offset < self.data.len() {
+            self.data[self.byte_offset]
+        } else {
+            0
+        }
+    }
+
+    /// Peek at a slice of bytes starting at byte_offset (for debugging).
+    pub fn peek_bytes(&self, n: usize) -> &[u8] {
+        let end = (self.byte_offset + n).min(self.data.len());
+        &self.data[self.byte_offset..end]
     }
 
     pub fn bits_remaining(&self) -> usize {

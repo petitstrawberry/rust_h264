@@ -196,6 +196,8 @@ impl Decoder {
                         if mb_idx == 0 && blk == 0 {
                             let pos = reader.position();
                             eprintln!("Block 0 CAVLC start: pos=({}, {}), nc={}", pos.0, pos.1, nc);
+                            let bytes = reader.peek_bytes(8);
+                            eprintln!("Block 0 RBSP bytes at pos {}: {:02x?}", pos.0, bytes);
                         }
 
                         let tc = parse_residual_block_cavlc(
@@ -677,9 +679,9 @@ fn compute_nc(
     let (left_blk, left_in_mb) = if blks_per_mb == 16 {
         match blk_idx {
             0 => (5usize, false),
-            2 => (3, false),
+            2 => (7, false),
             8 => (13, false),
-            10 => (11, false),
+            10 => (15, false),
             4 => (1, true),
             6 => (3, true),
             12 => (9, true),
