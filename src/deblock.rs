@@ -325,8 +325,7 @@ fn clip(v: i32) -> i32 {
     v.clamp(0, 255)
 }
 
-/// Normal filter for bS=1..3.
-/// Matches FFmpeg's h264_loop_filter_luma (h264dsp_template.c).
+/// Normal filter for bS=1..3 (H.264 spec 8.7.2.3).
 /// Returns (p0', p1', q0', q1').
 #[allow(clippy::too_many_arguments)]
 fn normal_filter(

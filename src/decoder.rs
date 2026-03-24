@@ -97,8 +97,10 @@ impl Decoder {
         let mut nc_cb = vec![0u8; total_mbs * 4];
         let mut nc_cr = vec![0u8; total_mbs * 4];
 
-        // I4x4 prediction mode storage (for neighbor prediction mode derivation)
-        let mut i4x4_modes = vec![0u8; total_mbs * 16];
+        // I4x4 prediction mode storage (for neighbor prediction mode derivation).
+        // Default to DC (2): per H.264 spec 8.3.1.1, non-I4x4 neighbors (I16x16, I_PCM)
+        // use inferred mode DC for prediction mode derivation.
+        let mut i4x4_modes = vec![2u8; total_mbs * 16];
 
         // Per-MB metadata for the deblocking filter
         let mut mb_info = vec![
@@ -189,9 +191,37 @@ impl Decoder {
                     // Gather neighbor samples for I4x4 prediction
                     let above_buf: Option<[u8; 8]> = if py > 0 {
                         let mut buf = [0u8; 8];
-                        for (i, b) in buf.iter_mut().enumerate() {
-                            let col = (px + i).min(stride - 1);
-                            *b = frame.y[(py - 1) * stride + col];
+                        // Read 4 above pixels
+                        for i in 0..4 {
+                            buf[i] = frame.y[(py - 1) * stride + px + i];
+                        }
+                        // Above-right pixels (4 more): available only if the 4x4 block
+                        // containing those pixels has already been decoded.
+                        // Per H.264 spec 6.4.12, blocks 3,7,11,13,15 within the MB
+                        // have above-right unavailable (the source block is decoded later).
+                        // Also unavailable if at the right edge of the picture, or at the
+                        // right edge of the MB when above is within the current MB.
+                        let local_row = py - mb_y;
+                        let topright_avail = if local_row == 0 {
+                            // Above row is in the MB above (fully decoded).
+                            // Above-right is available unless beyond picture width.
+                            px + 4 < stride
+                        } else {
+                            // Above row is within current MB; above-right block may
+                            // not be decoded yet.
+                            !matches!(blk, 3 | 7 | 11 | 13 | 15)
+                        };
+                        if topright_avail {
+                            for i in 4..8 {
+                                let col = (px + i).min(stride - 1);
+                                buf[i] = frame.y[(py - 1) * stride + col];
+                            }
+                        } else {
+                            // Replicate the last above pixel (spec 8.3.1.2.1)
+                            let last = buf[3];
+                            for i in 4..8 {
+                                buf[i] = last;
+                            }
                         }
                         Some(buf)
                     } else {
@@ -865,6 +895,39 @@ mod tests {
             "/testdata/deblock_frame.yuv"
         ))
         .unwrap();
+        assert_eq!(output, expected_yuv);
+    }
+
+    #[test]
+    fn test_decode_mixed_i4x4_i16x16_frame() {
+        let h264_data = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/mixed_i4x4_frame.h264"
+        ))
+        .unwrap();
+        let expected_yuv = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/mixed_i4x4_frame.yuv"
+        ))
+        .unwrap();
+
+        let nals = parse_annex_b(&h264_data);
+        let mut decoder = Decoder::new();
+        let mut frame = None;
+        for nal in &nals {
+            if let Some(f) = decoder.decode_nal(nal).unwrap() {
+                frame = Some(f);
+            }
+        }
+        let frame = frame.expect("should have decoded a frame");
+
+        assert_eq!(frame.width, 64);
+        assert_eq!(frame.height, 64);
+
+        let mut output = Vec::new();
+        output.extend_from_slice(&frame.y);
+        output.extend_from_slice(&frame.u);
+        output.extend_from_slice(&frame.v);
         assert_eq!(output, expected_yuv);
     }
 }

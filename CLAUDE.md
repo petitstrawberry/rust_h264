@@ -75,16 +75,25 @@ Intra-only I-frame decoding is functional. P/B slice decoding not yet implemente
 - 2x2 inverse Hadamard (chroma DC)
 - Dequantization with H.264 LevelScale tables
 
+**Deblocking Filter** (`src/deblock.rs`)
+- H.264 spec section 8.7 loop filter
+- Strong filter (bS=4) for MB boundary edges and normal filter (bS=3) for internal edges
+- Luma and chroma filtering with per-edge QP-based threshold computation
+- Alpha, beta, tc0 lookup tables from H.264 Tables 8-16a/b/c
+- Applied automatically after slice decode; respects `disable_deblocking_filter_idc`
+
 **Test Coverage**
 - `testdata/single_frame.h264` - 16x16 I16x16 frame
-- `testdata/multi_mb_frame.h264` - 64x64 multi-macroblock frame
-- `testdata/i4x4_frame.h264` - 16x16 I4x4 frame
+- `testdata/multi_mb_frame.h264` - 64x64 multi-macroblock I16x16 frame
+- `testdata/i4x4_frame.h264` - 16x16 I4x4 frame (deblocking disabled in stream)
+- `testdata/deblock_frame.h264` - 64x64 I16x16 checkerboard pattern with deblocking enabled
+- `testdata/mixed_i4x4_frame.h264` - 64x64 mixed I4x4/I16x16 checkerboard with deblocking
+- All test outputs validated byte-for-byte against FFmpeg's decoder
 
 ### Not Yet Implemented
 
 - P and B slice macroblock types (inter prediction)
 - Motion compensation
-- Deblocking filter (parameters parsed but filtering not applied)
 - Reference picture buffer management
 - MBAFF/interlaced mode
 - Scaling lists
