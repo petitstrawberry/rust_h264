@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 /// NAL unit types relevant to SPS/PPS parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NalUnitType {
@@ -37,16 +39,17 @@ impl From<u8> for NalUnitType {
 }
 
 #[derive(Debug)]
-pub struct NalUnit {
+pub struct NalUnit<'a> {
     pub nal_ref_idc: u8,
     pub nal_unit_type: NalUnitType,
-    /// RBSP data (emulation prevention bytes removed).
-    pub rbsp: Vec<u8>,
+    /// RBSP data (emulation prevention bytes removed, or borrowed directly
+    /// from the input when no emulation prevention bytes are present).
+    pub rbsp: Cow<'a, [u8]>,
 }
 
 /// Split an Annex B bytestream into NAL units.
 /// Handles both 3-byte (00 00 01) and 4-byte (00 00 00 01) start codes.
-pub fn parse_annex_b(data: &[u8]) -> Vec<NalUnit> {
+pub fn parse_annex_b(data: &[u8]) -> Vec<NalUnit<'_>> {
     let mut nals = Vec::new();
     // Find first start code
     let mut i = match find_start_code(data, 0) {
@@ -118,7 +121,16 @@ fn find_start_code(data: &[u8], offset: usize) -> Option<(usize, usize)> {
 }
 
 /// Remove emulation prevention bytes (0x03 in 00 00 03 sequences).
-fn remove_emulation_prevention(data: &[u8]) -> Vec<u8> {
+/// Returns a borrowed slice when no emulation prevention bytes are found
+/// (the common case), avoiding allocation entirely.
+fn remove_emulation_prevention(data: &[u8]) -> Cow<'_, [u8]> {
+    // Fast path: scan for 00 00 03. If none found, return borrowed slice.
+    let has_epb = data.windows(3).any(|w| w[0] == 0 && w[1] == 0 && w[2] == 3);
+    if !has_epb {
+        return Cow::Borrowed(data);
+    }
+
+    // Slow path: copy with emulation prevention removal.
     let mut rbsp = Vec::with_capacity(data.len());
     let mut i = 0;
     while i < data.len() {
@@ -131,7 +143,7 @@ fn remove_emulation_prevention(data: &[u8]) -> Vec<u8> {
             i += 1;
         }
     }
-    rbsp
+    Cow::Owned(rbsp)
 }
 
 #[cfg(test)]
@@ -157,6 +169,16 @@ mod tests {
     fn test_emulation_prevention_removal() {
         let input = [0x00, 0x00, 0x03, 0x01, 0xAB];
         let rbsp = remove_emulation_prevention(&input);
-        assert_eq!(rbsp, vec![0x00, 0x00, 0x01, 0xAB]);
+        assert_eq!(&*rbsp, &[0x00, 0x00, 0x01, 0xAB]);
+        assert!(matches!(rbsp, Cow::Owned(_)), "should allocate when EPB present");
+    }
+
+    #[test]
+    fn test_emulation_prevention_zero_copy() {
+        // No emulation prevention bytes → should return borrowed slice (no allocation)
+        let input = [0x01, 0x02, 0x03, 0x04];
+        let rbsp = remove_emulation_prevention(&input);
+        assert_eq!(&*rbsp, &input);
+        assert!(matches!(rbsp, Cow::Borrowed(_)), "should borrow when no EPB");
     }
 }
