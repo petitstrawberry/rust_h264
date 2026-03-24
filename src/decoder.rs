@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::cavlc::parse_residual_block_cavlc;
+use crate::deblock::{self, MbInfo, MbType};
 use crate::intra_pred::{predict_chroma_8x8, predict_intra_16x16, predict_intra_4x4};
 use crate::nal::{NalUnit, NalUnitType};
 use crate::pps::{parse_pps, Pps};
@@ -90,7 +91,6 @@ impl Decoder {
 
         let slice_qp = header.qp_y(pps);
         let mut prev_mb_qp = slice_qp;
-        eprintln!("Slice: slice_qp_y={}, pps.pic_init_qp={}", slice_qp, pps.pic_init_qp_minus26);
 
         // nC tracking arrays: total_coeff for each 4x4 block
         let mut nc_luma = vec![0u8; total_mbs * 16];
@@ -99,6 +99,15 @@ impl Decoder {
 
         // I4x4 prediction mode storage (for neighbor prediction mode derivation)
         let mut i4x4_modes = vec![0u8; total_mbs * 16];
+
+        // Per-MB metadata for the deblocking filter
+        let mut mb_info = vec![
+            MbInfo {
+                mb_type: MbType::Intra,
+                qp_y: slice_qp,
+            };
+            total_mbs
+        ];
 
         for mb_idx in header.first_mb_in_slice as usize..total_mbs {
             let mb_x = (mb_idx % mb_width as usize) * 16;
@@ -116,17 +125,8 @@ impl Decoder {
             if mb_type == 0 {
                 // === I_NxN (I4x4) macroblock ===
 
-                if mb_idx == 0 {
-                    let pos = reader.position();
-                    eprintln!("MB 0: mb_type={}, reader pos=({}, {})",
-                              mb_type, pos.0, pos.1);
-                    // Debug: print next few bytes of bitstream
-                    eprintln!("MB 0: Next bytes at pos: looking for debug...");
-                }
-
                 // Parse 16 I4x4 prediction modes
                 let mut pred_modes = [2u8; 16];
-                let mut mode_bits_consumed = 0u32;
                 for blk in 0..16 {
                     let prev_flag = reader.read_bit()?;
                     let predicted = predict_i4x4_mode(
@@ -134,27 +134,13 @@ impl Decoder {
                     );
                     if prev_flag != 0 {
                         pred_modes[blk] = predicted;
-                        mode_bits_consumed += 1;
                     } else {
                         let rem = reader.read_bits(3)? as u8;
                         pred_modes[blk] = if rem < predicted { rem } else { rem + 1 };
-                        mode_bits_consumed += 4;
-                    }
-                    if mb_idx == 0 {
-                        eprintln!("I4x4 mode blk {}: prev_flag={}, predicted={}, final_mode={}",
-                                  blk, prev_flag, predicted, pred_modes[blk]);
                     }
                     i4x4_modes[mb_idx * 16 + blk] = pred_modes[blk];
                 }
-                if mb_idx == 0 {
-                    let pos = reader.position();
-                    eprintln!("After prediction modes: pos=({}, {}), total mode bits={}", pos.0, pos.1, mode_bits_consumed);
-                }
                 intra_chroma_pred_mode = reader.read_ue()? as u8;
-                if mb_idx == 0 {
-                    let pos = reader.position();
-                    eprintln!("After intra_chroma_pred_mode={}: pos=({}, {})", intra_chroma_pred_mode, pos.0, pos.1);
-                }
 
                 let cbp_code = reader.read_ue()? as usize;
                 if cbp_code >= 48 {
@@ -164,18 +150,9 @@ impl Decoder {
                 let cbp_luma = cbp & 0x0F;
                 cbp_chroma = cbp >> 4;
 
-                if mb_idx == 0 {
-                    let pos = reader.position();
-                    eprintln!("MB 0: cbp_code={}, cbp={}, cbp_luma={}, cbp_chroma={}, pos=({}, {})",
-                              cbp_code, cbp, cbp_luma, cbp_chroma, pos.0, pos.1);
-                }
-
                 if cbp_luma != 0 || cbp_chroma != 0 {
                     let mb_qp_delta = reader.read_se()?;
                     qp_y = ((prev_mb_qp + mb_qp_delta + 52) % 52 + 52) % 52;
-                    if mb_idx == 0 {
-                        eprintln!("MB 0: mb_qp_delta={}, prev_qp={}, qp_y={}", mb_qp_delta, prev_mb_qp, qp_y);
-                    }
                 } else {
                     qp_y = prev_mb_qp;
                 }
@@ -192,24 +169,10 @@ impl Decoder {
                     let mut block_coeffs = [0i32; 16];
                     if cbp_luma & (1 << (blk / 4)) != 0 {
                         let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16);
-
-                        if mb_idx == 0 && blk == 0 {
-                            let pos = reader.position();
-                            eprintln!("Block 0 CAVLC start: pos=({}, {}), nc={}", pos.0, pos.1, nc);
-                            let bytes = reader.peek_bytes(8);
-                            eprintln!("Block 0 RBSP bytes at pos {}: {:02x?}", pos.0, bytes);
-                        }
-
                         let tc = parse_residual_block_cavlc(
                             &mut reader, &mut block_coeffs, 16, nc,
                         )?;
                         nc_luma[mb_idx * 16 + blk] = tc;
-
-                        if blk == 0 {
-                            let pos = reader.position();
-                            eprintln!("Block 0 CAVLC end: pos=({}, {}), total_coeff={}", pos.0, pos.1, tc);
-                            eprintln!("Block 0 CAVLC scan order: {:?}", block_coeffs);
-                        }
 
                         // Unzigzag: convert from zigzag scan order to raster order
                         let mut raster = [0i32; 16];
@@ -219,21 +182,9 @@ impl Decoder {
                         }
                         block_coeffs = raster;
 
-                        if blk == 0 {
-                            eprintln!("Block 0 after unzigzag (raster): {:?}", block_coeffs);
-                        }
-
                         dequant_4x4_full(&mut block_coeffs, qp_y);
-
-                        if blk == 0 {
-                            eprintln!("Block 0 after dequant (qp={}): {:?}", qp_y, block_coeffs);
-                        }
                     }
                     inverse_dct_4x4(&mut block_coeffs);
-
-                    if blk == 0 {
-                        eprintln!("Block 0 after IDCT: {:?}", block_coeffs);
-                    }
 
                     // Gather neighbor samples for I4x4 prediction
                     let above_buf: Option<[u8; 8]> = if py > 0 {
@@ -270,24 +221,12 @@ impl Decoder {
                         &mut pred,
                     );
 
-                    if blk == 0 {
-                        eprintln!("Block 0 pred mode {}: {:?}", pred_modes[blk], pred);
-                    }
-
                     // Add residual and write to frame
                     for r in 0..4 {
                         for c in 0..4 {
                             let val = (pred[r * 4 + c] as i32 + block_coeffs[r * 4 + c])
                                 .clamp(0, 255) as u8;
                             frame.y[(py + r) * stride + px + c] = val;
-                        }
-                    }
-
-                    if blk == 0 {
-                        eprintln!("Block 0 final pixels:");
-                        for r in 0..4 {
-                            let row: Vec<u8> = (0..4).map(|c| frame.y[(py + r) * stride + px + c]).collect();
-                            eprintln!("  row {}: {:?}", r, row);
                         }
                     }
                 }
@@ -297,11 +236,6 @@ impl Decoder {
                 let intra16x16_pred_mode = (mt % 4) as u8;
                 cbp_chroma = ((mt / 4) % 3) as u8;
                 let cbp_luma = if mt >= 12 { 15u8 } else { 0u8 };
-
-                if mb_idx == 0 {
-                    eprintln!("I16x16: mb_type={}, mt={}, pred_mode={}, cbp_chroma={}, cbp_luma={}",
-                              mb_type, mt, intra16x16_pred_mode, cbp_chroma, cbp_luma);
-                }
 
                 intra_chroma_pred_mode = reader.read_ue()? as u8;
 
@@ -313,9 +247,6 @@ impl Decoder {
                 // Parse luma DC
                 let mut luma_dc = [0i32; 16];
                 let nc_dc = compute_nc(&nc_luma, mb_idx, mb_width as usize, 0, 16);
-                if mb_idx == 0 {
-                    eprintln!("I16x16 DC CAVLC: nc={}, reader pos={:?}", nc_dc, reader.position());
-                }
                 parse_residual_block_cavlc(&mut reader, &mut luma_dc, 16, nc_dc)?;
 
                 // Parse luma AC
@@ -340,18 +271,8 @@ impl Decoder {
                     let (r, c) = ZIGZAG_4X4[i];
                     luma_dc_raster[r * 4 + c] = luma_dc[i];
                 }
-                if mb_idx == 0 {
-                    eprintln!("I16x16 DC scan order: {:?}", luma_dc);
-                    eprintln!("I16x16 DC after unzigzag: {:?}", luma_dc_raster);
-                }
                 inverse_hadamard_4x4(&mut luma_dc_raster);
-                if mb_idx == 0 {
-                    eprintln!("I16x16 DC after Hadamard: {:?}", luma_dc_raster);
-                }
                 dequant_luma_dc_i16x16(&mut luma_dc_raster, qp_y);
-                if mb_idx == 0 {
-                    eprintln!("I16x16 DC after dequant (qp={}): {:?}", qp_y, luma_dc_raster);
-                }
 
                 const DC_RASTER_TO_BLOCK: [usize; 16] = [
                     0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15,
@@ -417,11 +338,6 @@ impl Decoder {
                     &mut luma_pred,
                 );
 
-                if mb_idx == 0 {
-                    eprintln!("I16x16 prediction first row: {:?}", &luma_pred[..16]);
-                    eprintln!("I16x16 residual first row: {:?}", &luma_residual[..16]);
-                }
-
                 for y in 0..16 {
                     for x in 0..16 {
                         let val = (luma_pred[y * 16 + x] as i32
@@ -459,11 +375,20 @@ impl Decoder {
                     nc_cb[mb_idx * 4 + blk] = 16;
                     nc_cr[mb_idx * 4 + blk] = 16;
                 }
+                mb_info[mb_idx] = MbInfo {
+                    mb_type: MbType::Ipcm,
+                    qp_y: 0,
+                };
                 prev_mb_qp = 0;
                 continue;
             } else {
                 return Err("unsupported mb_type for I slice");
             }
+
+            mb_info[mb_idx] = MbInfo {
+                mb_type: MbType::Intra,
+                qp_y,
+            };
 
             // === Reconstruct chroma (shared by I4x4 and I16x16) ===
             let mut chroma_dc_cb = [0i32; 4];
@@ -471,8 +396,6 @@ impl Decoder {
             if cbp_chroma >= 1 {
                 parse_residual_block_cavlc(&mut reader, &mut chroma_dc_cb, 4, -1)?;
                 parse_residual_block_cavlc(&mut reader, &mut chroma_dc_cr, 4, -1)?;
-                eprintln!("Chroma DC Cb after CAVLC: {:?}", chroma_dc_cb);
-                eprintln!("Chroma DC Cr after CAVLC: {:?}", chroma_dc_cr);
             }
 
             let mut chroma_ac_scan_cb = [[0i32; 15]; 4];
@@ -509,11 +432,8 @@ impl Decoder {
                 (&mut chroma_dc_cr, &chroma_ac_scan_cr, &mut frame.v),
             ] {
                 if cbp_chroma >= 1 {
-                    eprintln!("Chroma DC before Hadamard: {:?}", plane_dc);
                     inverse_hadamard_2x2(plane_dc);
-                    eprintln!("Chroma DC after Hadamard: {:?}", plane_dc);
                     dequant_chroma_dc(plane_dc, qp_c);
-                    eprintln!("Chroma DC after dequant (qp_c={}): {:?}", qp_c, plane_dc);
                 }
 
                 let mut chroma_residual = [0i32; 64];
@@ -593,6 +513,16 @@ impl Decoder {
                 }
             }
         }
+
+        // Apply deblocking filter after all MBs are decoded
+        deblock::filter_frame(
+            &mut frame,
+            &mb_info,
+            mb_width as usize,
+            mb_height as usize,
+            &header,
+            pps.chroma_qp_index_offset,
+        );
 
         Ok(Some(frame))
     }
@@ -899,6 +829,42 @@ mod tests {
         output.extend_from_slice(&frame.y);
         output.extend_from_slice(&frame.u);
         output.extend_from_slice(&frame.v);
+        assert_eq!(output, expected_yuv);
+    }
+
+    #[test]
+    fn test_decode_deblock_frame() {
+        let h264_data = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/deblock_frame.h264"
+        ))
+        .unwrap();
+
+        let nals = parse_annex_b(&h264_data);
+        let mut decoder = Decoder::new();
+        let mut frame = None;
+        for nal in &nals {
+            if let Some(f) = decoder.decode_nal(nal).unwrap() {
+                frame = Some(f);
+            }
+        }
+        let frame = frame.expect("should have decoded a frame");
+
+        assert_eq!(frame.width, 64);
+        assert_eq!(frame.height, 64);
+
+        // Write decoded output for reference generation
+        let mut output = Vec::new();
+        output.extend_from_slice(&frame.y);
+        output.extend_from_slice(&frame.u);
+        output.extend_from_slice(&frame.v);
+        assert_eq!(output.len(), 6144);
+
+        let expected_yuv = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/deblock_frame.yuv"
+        ))
+        .unwrap();
         assert_eq!(output, expected_yuv);
     }
 }

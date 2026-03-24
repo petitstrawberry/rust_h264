@@ -17,7 +17,6 @@ pub fn parse_residual_block_cavlc(
     }
 
     let (total_coeff, trailing_ones) = parse_coeff_token(reader, nc)?;
-    eprintln!("parse_residual_block: total_coeff={}, trailing_ones={}", total_coeff, trailing_ones);
 
     if total_coeff == 0 {
         return Ok(0);
@@ -52,12 +51,8 @@ pub fn parse_residual_block_cavlc(
 
     for i in 0..remaining_count {
         let first_nontrailing = i == 0 && trailing_ones < 3;
-        let pos_before = reader.position();
         let level = parse_level(reader, suffix_length, first_nontrailing)?;
         levels[t1 + i] = level;
-        let pos_after = reader.position();
-        eprintln!("  level[{}]: suffix_len={}, first_nt={}, level={}, pos: ({},{}) -> ({},{})",
-                  i, suffix_length, first_nontrailing, level, pos_before.0, pos_before.1, pos_after.0, pos_after.1);
 
         if suffix_length == 0 {
             suffix_length = 1;
@@ -68,7 +63,6 @@ pub fn parse_residual_block_cavlc(
     }
 
     // Total zeros
-    let pos_tz = reader.position();
     let total_zeros = if total_coeff < max_num_coeff as u8 {
         if max_num_coeff > 4 {
             parse_total_zeros(reader, total_coeff)?
@@ -78,15 +72,13 @@ pub fn parse_residual_block_cavlc(
     } else {
         0
     };
-    eprintln!("  total_zeros={} (parsed from pos ({},{}))", total_zeros, pos_tz.0, pos_tz.1);
 
     // Place coefficients from highest frequency toward DC, parsing run_before inline.
-    // This matches FFmpeg's STORE_BLOCK approach: level[0] (highest freq) goes at the
-    // highest scan position, then each subsequent level gets a run_before parsed to
-    // determine how many zero positions to skip toward DC.
+    // level[0] (highest freq) is placed at scan position (total_zeros + tc - 1).
+    // Each subsequent level is placed one position lower, minus any additional
+    // run_before zeros parsed from the bitstream (H.264 spec 9.2.3).
     let mut zeros_left = total_zeros as i32;
     let mut pos = (total_zeros as usize) + tc - 1;
-    eprintln!("  levels: {:?}", levels);
 
     // Place highest-frequency coefficient at the highest scan position
     coeffs[pos] = levels[0];
@@ -110,8 +102,6 @@ fn parse_coeff_token(
     reader: &mut BitstreamReader,
     nc: i32,
 ) -> Result<(u8, u8), &'static str> {
-    let pos = reader.position();
-    eprintln!("parse_coeff_token: start pos=({}, {}), nc={}", pos.0, pos.1, nc);
     let result = if nc < 0 {
         let lut = LUT_COEFF_CHROMA_DC.get_or_init(|| build_coeff_lut(&COEFF_TOKEN_CHROMA_DC, 8));
         coeff_lut_lookup(reader, lut, 8)
@@ -144,7 +134,6 @@ fn parse_coeff_token(
                 _ => return Err("invalid coeff_token nC>=8"),
             }
         };
-        eprintln!("  NC>=8 6-bit code={} (0b{:06b}), TC={}, TO={}", code, code, total_coeff, trailing_ones);
         if total_coeff > 16 {
             return Err("invalid coeff_token nC>=8");
         }
@@ -640,9 +629,6 @@ fn parse_run_before(r: &mut BitstreamReader, zeros_left: u8) -> Result<u8, &'sta
     }
     let idx = (zeros_left.min(7) - 1) as usize;
     let bits = RUN_BEFORE_BITS[idx];
-    let pos_before = r.position();
-    let peek = r.peek_bits(bits);
-    eprintln!("  parse_run_before: zeros_left={}, pos={:?}, bits={}, peek=0b{:011b}", zeros_left, pos_before, bits, peek);
     let lut = LUT_RUN_BEFORE[idx].get_or_init(|| {
         let src: &[(u32, u8, u8)] = match zeros_left.min(7) {
             1 => &RUN_BEFORE_1, 2 => &RUN_BEFORE_2, 3 => &RUN_BEFORE_3,
@@ -651,11 +637,7 @@ fn parse_run_before(r: &mut BitstreamReader, zeros_left: u8) -> Result<u8, &'sta
         };
         build_u8_lut(src, bits)
     });
-    let result = u8_lut_lookup(r, lut, bits);
-    if let Ok(v) = result {
-        eprintln!("  parse_run_before: result={}, pos after={:?}", v, r.position());
-    }
-    result
+    u8_lut_lookup(r, lut, bits)
 }
 
 // ============================================================
