@@ -930,4 +930,71 @@ mod tests {
         output.extend_from_slice(&frame.v);
         assert_eq!(output, expected_yuv);
     }
+
+    /// Helper to decode a test file and compare against reference YUV.
+    fn decode_and_compare(h264_name: &str, expected_width: u32, expected_height: u32) {
+        let h264_path = format!(
+            "{}/testdata/{}.h264",
+            env!("CARGO_MANIFEST_DIR"),
+            h264_name
+        );
+        let yuv_path = format!(
+            "{}/testdata/{}.yuv",
+            env!("CARGO_MANIFEST_DIR"),
+            h264_name
+        );
+        let h264_data = std::fs::read(&h264_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", h264_path, e));
+        let expected_yuv = std::fs::read(&yuv_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", yuv_path, e));
+
+        let nals = parse_annex_b(&h264_data);
+        let mut decoder = Decoder::new();
+        let mut frame = None;
+        for nal in &nals {
+            if let Some(f) = decoder.decode_nal(nal).unwrap() {
+                frame = Some(f);
+            }
+        }
+        let frame = frame.expect("should have decoded a frame");
+
+        assert_eq!(frame.width, expected_width);
+        assert_eq!(frame.height, expected_height);
+
+        let mut output = Vec::new();
+        output.extend_from_slice(&frame.y);
+        output.extend_from_slice(&frame.u);
+        output.extend_from_slice(&frame.v);
+        assert_eq!(output, expected_yuv);
+    }
+
+    #[test]
+    fn test_gradient_48x32() {
+        // 3x2 MBs, QP=24, mixed I4x4/I16x16 (66.7% I4x4), gradient luma + colored chroma
+        decode_and_compare("gradient_48x32", 48, 32);
+    }
+
+    #[test]
+    fn test_edges_32x32_qp10() {
+        // 2x2 MBs, QP=10 (high quality), high-contrast 8-pixel bar pattern
+        decode_and_compare("edges_32x32_qp10", 32, 32);
+    }
+
+    #[test]
+    fn test_edges_32x32_qp35() {
+        // 2x2 MBs, QP=35 (low quality, heavy quantization)
+        decode_and_compare("edges_32x32_qp35", 32, 32);
+    }
+
+    #[test]
+    fn test_smooth_80x48() {
+        // 5x3 MBs, QP=22, gentle luma gradient with non-trivial chroma
+        decode_and_compare("smooth_80x48", 80, 48);
+    }
+
+    #[test]
+    fn test_noise_16x16_qp12() {
+        // Single MB, QP=12, pseudo-random content stressing CAVLC with many non-zero coefficients
+        decode_and_compare("noise_16x16_qp12", 16, 16);
+    }
 }

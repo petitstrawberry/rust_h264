@@ -55,8 +55,11 @@ pub fn predict_intra_16x16(
             let mut h: i32 = 0;
             let mut v: i32 = 0;
             for i in 0..8 {
-                h += (i as i32 + 1) * (above[8 + i] as i32 - above[6 - i] as i32);
-                v += (i as i32 + 1) * (left[8 + i] as i32 - left[6 - i] as i32);
+                // p[6-i, -1] and p[-1, 6-i]: when i==7, index -1 = above_left pixel
+                let above_neg = if i < 7 { above[6 - i] as i32 } else { _p as i32 };
+                let left_neg = if i < 7 { left[6 - i] as i32 } else { _p as i32 };
+                h += (i as i32 + 1) * (above[8 + i] as i32 - above_neg);
+                v += (i as i32 + 1) * (left[8 + i] as i32 - left_neg);
             }
             let a_val = 16 * (above[15] as i32 + left[15] as i32);
             let b_val = (5 * h + 32) >> 6;
@@ -361,8 +364,11 @@ pub fn predict_chroma_8x8(
             let mut h: i32 = 0;
             let mut v: i32 = 0;
             for i in 0..4 {
-                h += (i as i32 + 1) * (above[4 + i] as i32 - above[2 - i] as i32);
-                v += (i as i32 + 1) * (left[4 + i] as i32 - left[2 - i] as i32);
+                // p[2-i, -1] and p[-1, 2-i]: when i==3, index -1 = above_left pixel
+                let above_neg = if i < 3 { above[2 - i] as i32 } else { _p as i32 };
+                let left_neg = if i < 3 { left[2 - i] as i32 } else { _p as i32 };
+                h += (i as i32 + 1) * (above[4 + i] as i32 - above_neg);
+                v += (i as i32 + 1) * (left[4 + i] as i32 - left_neg);
             }
             let a_val = 16 * (above[7] as i32 + left[7] as i32);
             let b_val = (17 * h + 16) >> 5;

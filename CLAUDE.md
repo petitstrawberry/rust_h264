@@ -88,6 +88,11 @@ Intra-only I-frame decoding is functional. P/B slice decoding not yet implemente
 - `testdata/i4x4_frame.h264` - 16x16 I4x4 frame (deblocking disabled in stream)
 - `testdata/deblock_frame.h264` - 64x64 I16x16 checkerboard pattern with deblocking enabled
 - `testdata/mixed_i4x4_frame.h264` - 64x64 mixed I4x4/I16x16 checkerboard with deblocking
+- `testdata/gradient_48x32.h264` - 48x32 (3x2 MBs) vertical gradient, QP=40
+- `testdata/edges_32x32_qp10.h264` - 32x32 high-contrast bar pattern, QP=10
+- `testdata/edges_32x32_qp35.h264` - 32x32 high-contrast bar pattern, QP=35
+- `testdata/smooth_80x48.h264` - 80x48 (5x3 MBs) smooth gradient with colored chroma
+- `testdata/noise_16x16_qp12.h264` - 16x16 single-MB pseudo-random content, QP=12
 - All test outputs validated byte-for-byte against FFmpeg's decoder
 
 ### Not Yet Implemented
