@@ -234,6 +234,9 @@ impl Decoder {
                 }
 
                 // Parse MVD and compute final MV for each partition
+                // Parse MVD and compute final MV for each partition.
+                // Store each partition's MV immediately so the next partition's
+                // predictor can read it (partition 1's above neighbor is partition 0).
                 let mut part_mv = [[0i16; 2]; 2];
                 for p in 0..num_parts {
                     let mvd_x = reader.read_se()? as i16;
@@ -243,21 +246,21 @@ impl Decoder {
                         p, part_w, part_h, part_ref[p],
                     );
                     part_mv[p] = [mvp_x + mvd_x, mvp_y + mvd_y];
-                }
 
-                // Store MV and ref_idx for all 4x4 blocks in this MB
-                for p in 0..num_parts {
+                    // Store MV/ref immediately for this partition's 4x4 blocks
                     let (py_off, px_off) = match mb_type {
-                        1 => (p * 8, 0),  // 16x8: partitions stacked vertically
-                        2 => (0, p * 8),  // 8x16: partitions side by side
-                        _ => (0, 0),      // 16x16
+                        1 => (p * 8, 0),  // 16x8
+                        2 => (0, p * 8),  // 8x16
+                        _ => (0, 0),
                     };
                     for r in (0..part_h).step_by(4) {
                         for c in (0..part_w).step_by(4) {
                             let lr = (py_off + r) / 4;
                             let lc = (px_off + c) / 4;
-                            let offsets = &BLOCK_INDEX_TO_OFFSET;
-                            if let Some(blk) = offsets.iter().position(|&(br, bc)| br / 4 == lr && bc / 4 == lc) {
+                            if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                .iter()
+                                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                            {
                                 mv_store[mb_idx * 16 + blk] = part_mv[p];
                                 ref_idx_store[mb_idx * 16 + blk] = part_ref[p];
                             }
@@ -368,12 +371,11 @@ impl Decoder {
                 let chroma_mb_y = mb_y / 2;
 
                 // Chroma MC + residual for each chroma plane
-                // Use partition 0 MV for the full chroma block (simplified)
-                let chroma_mv = part_mv[0];
-                if let Some(ref_pic) = ref_pic_list.first() {
-                    for (plane_dc, plane_ac, ref_plane, frame_plane, scale_idx) in [
-                        (&mut chroma_dc_cb, &chroma_ac_scan_cb, &ref_pic.u, &mut frame.u, 4usize),
-                        (&mut chroma_dc_cr, &chroma_ac_scan_cr, &ref_pic.v, &mut frame.v, 5usize),
+                // Each partition gets its own chroma MC with its own MV
+                {
+                    for (plane_dc, plane_ac, frame_plane, scale_idx) in [
+                        (&mut chroma_dc_cb, &chroma_ac_scan_cb, &mut frame.u, 4usize),
+                        (&mut chroma_dc_cr, &chroma_ac_scan_cr, &mut frame.v, 5usize),
                     ] {
                         let chroma_scale = &pps.scaling_list_4x4[scale_idx];
                         if cbp_chroma >= 1 {
@@ -403,13 +405,34 @@ impl Decoder {
                             }
                         }
 
+                        // MC each partition's chroma region separately
                         let mut chroma_pred = [0u8; 64];
-                        inter_pred::chroma_mc(
-                            ref_plane, chroma_width, (height / 2) as usize,
-                            chroma_mb_x as i32, chroma_mb_y as i32,
-                            chroma_mv[0] as i32, chroma_mv[1] as i32,
-                            8, 8, &mut chroma_pred,
-                        );
+                        for p in 0..num_parts {
+                            let (cy_off, cx_off, cw, ch) = match mb_type {
+                                1 => (p * 4, 0, 8, 4),   // 16x8 → chroma 8x4 per partition
+                                2 => (0, p * 4, 4, 8),   // 8x16 → chroma 4x8 per partition
+                                _ => (0, 0, 8, 8),       // 16x16
+                            };
+                            let part_ref_pic = &ref_pic_list[part_ref[p] as usize];
+                            let chroma_ref = if scale_idx == 4 {
+                                &part_ref_pic.u
+                            } else {
+                                &part_ref_pic.v
+                            };
+                            let mut part_pred = vec![0u8; cw * ch];
+                            inter_pred::chroma_mc(
+                                chroma_ref, chroma_width, (height / 2) as usize,
+                                (chroma_mb_x + cx_off) as i32,
+                                (chroma_mb_y + cy_off) as i32,
+                                part_mv[p][0] as i32, part_mv[p][1] as i32,
+                                cw, ch, &mut part_pred,
+                            );
+                            for r in 0..ch {
+                                for c in 0..cw {
+                                    chroma_pred[(cy_off + r) * 8 + cx_off + c] = part_pred[r * cw + c];
+                                }
+                            }
+                        }
 
                         for y in 0..8 {
                             for x in 0..8 {
@@ -1606,5 +1629,69 @@ mod tests {
             output.extend_from_slice(&frame.v);
         }
         assert_eq!(output, expected_yuv);
+    }
+
+    /// Helper to decode a multi-frame test and compare all frames against reference.
+    fn decode_multiframe_and_compare(
+        h264_name: &str,
+        expected_frames: usize,
+        expected_width: u32,
+        expected_height: u32,
+    ) {
+        let h264_path = format!(
+            "{}/testdata/{}.h264",
+            env!("CARGO_MANIFEST_DIR"),
+            h264_name
+        );
+        let yuv_path = format!(
+            "{}/testdata/{}.yuv",
+            env!("CARGO_MANIFEST_DIR"),
+            h264_name
+        );
+        let h264_data = std::fs::read(&h264_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", h264_path, e));
+        let expected_yuv = std::fs::read(&yuv_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", yuv_path, e));
+
+        let nals = parse_annex_b(&h264_data);
+        let mut decoder = Decoder::new();
+        let mut frames = Vec::new();
+        for nal in &nals {
+            if let Some(f) = decoder.decode_nal(nal).unwrap() {
+                frames.push(f);
+            }
+        }
+        assert_eq!(
+            frames.len(),
+            expected_frames,
+            "expected {} frames",
+            expected_frames
+        );
+        for f in &frames {
+            assert_eq!(f.width, expected_width);
+            assert_eq!(f.height, expected_height);
+        }
+
+        let mut output = Vec::new();
+        for frame in &frames {
+            output.extend_from_slice(&frame.y);
+            output.extend_from_slice(&frame.u);
+            output.extend_from_slice(&frame.v);
+        }
+        assert_eq!(output, expected_yuv);
+    }
+
+    #[test]
+    fn test_p_multi_frame() {
+        // 64x64, 4 frames: IDR + 3 P-frames with P16x16 (68.8%), P16x8/8x16 (14.6%),
+        // I16x16-in-P (16.7%), moving diagonal gradient
+        decode_multiframe_and_compare("p_multi_frame", 4, 64, 64);
+    }
+
+    #[test]
+    fn test_p_skip_heavy() {
+        // 64x32, 3 frames: IDR + 2 P with 50% skip, 37.5% I4x4-in-P, 12.5% P16x8/8x16,
+        // mostly static with small moving region
+        decode_multiframe_and_compare("p_skip_heavy", 3, 64, 32);
     }
 }
