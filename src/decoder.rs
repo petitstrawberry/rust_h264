@@ -1054,6 +1054,10 @@ fn predict_mv_sub(
         }
     }
 
+    if let (None, None, Some((mv, _))) = (b, c, a) {
+        return (mv[0], mv[1]);
+    }
+
     let mv_a = a.map(|(mv, _)| mv).unwrap_or([0, 0]);
     let mv_b = b.map(|(mv, _)| mv).unwrap_or([0, 0]);
     let mv_c = c.map(|(mv, _)| mv).unwrap_or([0, 0]);
@@ -1136,6 +1140,12 @@ fn predict_mv(
         if ref_c == ref_idx {
             if let Some((mv, _)) = c { return (mv[0], mv[1]); }
         }
+    }
+
+    // Special case (match_count == 0): when B and C are unavailable but A is,
+    // use A's MV directly regardless of ref_idx (spec 8.4.1.3.1, H.264 clause).
+    if let (None, None, Some((mv, _))) = (b, c, a) {
+        return (mv[0], mv[1]);
     }
 
     // Otherwise: median predictor
@@ -1842,5 +1852,11 @@ mod tests {
         // 64x64, 3 frames: IDR + 2P with P_8x8 (2.3%), sub-8x8 (7%), P16x16 (56%),
         // P16x8/8x16 (19%), skip (16%) — exercises all P-slice partition types
         decode_multiframe_and_compare("p_8x8_test", 2, 64, 64);
+    }
+
+    #[test]
+    fn test_p_multiref() {
+        // 64x64, 5 frames: I + 4P with 3 reference frames, sinusoidal content
+        decode_multiframe_and_compare("p_multiref", 4, 32, 32);
     }
 }
