@@ -147,40 +147,22 @@ pub fn predict_intra_4x4(
             }
         }
         4 => {
-            // Diagonal Down-Right
+            // Diagonal Down-Right (spec 8.3.1.2.5)
+            // Build reference pixel array: [left[3], left[2], left[1], left[0],
+            //                               above_left, above[0..3]]
+            // pred[x,y] = (ref[3-y+x] + 2*ref[4-y+x] + ref[5-y+x] + 2) >> 2
             let a = above.expect("DDR requires above");
             let l = left.expect("DDR requires left");
             let p = above_left.expect("DDR requires above-left");
-            for y in 0..4i32 {
-                for x in 0..4i32 {
-                    output[y as usize * 4 + x as usize] = if x > y {
-                        let i = (x - y - 1) as usize;
-                        if i == 0 && y == 0 {
-                            ((p as u16 + 2 * a[0] as u16 + a[1] as u16 + 2) >> 2) as u8
-                        } else if y == 0 {
-                            ((a[i - 1] as u16 + 2 * a[i] as u16 + a[i + 1] as u16 + 2) >> 2)
-                                as u8
-                        } else {
-                            let ai = (x - y - 1) as usize;
-                            ((a[ai] as u16 + 2 * a[ai + 1] as u16 + a[ai + 2] as u16 + 2) >> 2)
-                                as u8
-                        }
-                    } else if y > x {
-                        let i = (y - x - 1) as usize;
-                        if i == 0 && x == 0 {
-                            ((p as u16 + 2 * l[0] as u16 + l[1] as u16 + 2) >> 2) as u8
-                        } else if x == 0 {
-                            ((l[i - 1] as u16 + 2 * l[i] as u16 + l[i + 1] as u16 + 2) >> 2)
-                                as u8
-                        } else {
-                            let li = (y - x - 1) as usize;
-                            ((l[li] as u16 + 2 * l[li + 1] as u16 + l[li + 2] as u16 + 2) >> 2)
-                                as u8
-                        }
-                    } else {
-                        // x == y
-                        ((a[0] as u16 + 2 * p as u16 + l[0] as u16 + 2) >> 2) as u8
-                    };
+            let r = [
+                l[3] as u16, l[2] as u16, l[1] as u16, l[0] as u16,
+                p as u16,
+                a[0] as u16, a[1] as u16, a[2] as u16, a[3] as u16,
+            ];
+            for y in 0..4usize {
+                for x in 0..4usize {
+                    let i = 3 + x - y;
+                    output[y * 4 + x] = ((r[i] + 2 * r[i + 1] + r[i + 2] + 2) >> 2) as u8;
                 }
             }
         }
@@ -384,6 +366,146 @@ pub fn predict_chroma_8x8(
         }
         _ => {
             output.fill(128);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reference implementation: compute I4x4 prediction using H.264 spec formulas
+    /// with explicit p[x,-1]/p[-1,y]/p[-1,-1] indexing.
+    fn spec_predict_4x4(
+        mode: u8,
+        above: &[u8; 8],
+        left: &[u8; 4],
+        above_left: u8,
+    ) -> [u8; 16] {
+        let pa = |x: i32| -> i32 {
+            if x == -1 { above_left as i32 } else { above[x as usize] as i32 }
+        };
+        let pl = |y: i32| -> i32 {
+            if y == -1 { above_left as i32 } else { left[y as usize] as i32 }
+        };
+
+        let mut out = [0u8; 16];
+        for y in 0..4i32 {
+            for x in 0..4i32 {
+                let v: i32 = match mode {
+                    0 => pa(x),
+                    1 => pl(y),
+                    3 => {
+                        if x == 3 && y == 3 {
+                            (pa(6) + 3 * pa(7) + 2) >> 2
+                        } else {
+                            (pa(x + y) + 2 * pa(x + y + 1) + pa(x + y + 2) + 2) >> 2
+                        }
+                    }
+                    4 => {
+                        if x > y {
+                            (pa(x - y - 2) + 2 * pa(x - y - 1) + pa(x - y) + 2) >> 2
+                        } else if x < y {
+                            (pl(y - x - 2) + 2 * pl(y - x - 1) + pl(y - x) + 2) >> 2
+                        } else {
+                            (pa(0) + 2 * pa(-1) + pl(0) + 2) >> 2
+                        }
+                    }
+                    5 => {
+                        let zvr = 2 * x - y;
+                        if zvr >= 0 && zvr % 2 == 0 {
+                            let i = x - (y >> 1);
+                            (pa(i - 1) + pa(i) + 1) >> 1
+                        } else if zvr >= 0 {
+                            let i = x - (y >> 1);
+                            (pa(i - 2) + 2 * pa(i - 1) + pa(i) + 2) >> 2
+                        } else if zvr == -1 {
+                            (pa(0) + 2 * pa(-1) + pl(0) + 2) >> 2
+                        } else {
+                            (pl(y - 2 * x - 2) + 2 * pl(y - 2 * x - 1) + pl(y - 2 * x) + 2) >> 2
+                        }
+                    }
+                    6 => {
+                        let zhd = 2 * y - x;
+                        if zhd >= 0 && zhd % 2 == 0 {
+                            let i = y - (x >> 1);
+                            (pl(i - 1) + pl(i) + 1) >> 1
+                        } else if zhd >= 0 {
+                            let i = y - (x >> 1);
+                            (pl(i - 2) + 2 * pl(i - 1) + pl(i) + 2) >> 2
+                        } else if zhd == -1 {
+                            (pl(0) + 2 * pl(-1) + pa(0) + 2) >> 2
+                        } else {
+                            (pa(x - 2 * y - 2) + 2 * pa(x - 2 * y - 1) + pa(x - 2 * y) + 2) >> 2
+                        }
+                    }
+                    7 => {
+                        let i = x + (y >> 1);
+                        if y % 2 == 0 {
+                            (pa(i) + pa(i + 1) + 1) >> 1
+                        } else {
+                            (pa(i) + 2 * pa(i + 1) + pa(i + 2) + 2) >> 2
+                        }
+                    }
+                    8 => {
+                        let zhu = x + 2 * y;
+                        if zhu < 5 {
+                            let i = y + (x >> 1);
+                            if zhu % 2 == 0 {
+                                (pl(i) + pl(i + 1) + 1) >> 1
+                            } else {
+                                (pl(i) + 2 * pl(i + 1) + pl(i + 2) + 2) >> 2
+                            }
+                        } else if zhu == 5 {
+                            (pl(2) + 3 * pl(3) + 2) >> 2
+                        } else {
+                            pl(3)
+                        }
+                    }
+                    _ => 128,
+                };
+                out[(y * 4 + x) as usize] = v.clamp(0, 255) as u8;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn test_all_directional_modes_against_spec() {
+        let above: [u8; 8] = [10, 30, 50, 70, 90, 110, 130, 150];
+        let left: [u8; 4] = [20, 60, 100, 140];
+        let above_left: u8 = 40;
+
+        for mode in [3u8, 4, 5, 6, 7, 8] {
+            let expected = spec_predict_4x4(mode, &above, &left, above_left);
+            let mut actual = [0u8; 16];
+            predict_intra_4x4(
+                mode,
+                Some(&above[..]),
+                Some(&left[..]),
+                Some(above_left),
+                &mut actual,
+            );
+            assert_eq!(
+                actual, expected,
+                "Mode {} mismatch.\n  actual:   {:?}\n  expected: {:?}",
+                mode, actual, expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_directional_modes_uniform_input() {
+        let above = [128u8; 8];
+        let left = [128u8; 4];
+        for mode in 0..9u8 {
+            let mut output = [0u8; 16];
+            predict_intra_4x4(mode, Some(&above[..]), Some(&left[..]), Some(128), &mut output);
+            assert!(
+                output.iter().all(|&v| v == 128),
+                "Mode {} should give all 128 for uniform input, got {:?}",
+                mode, output
+            );
         }
     }
 }

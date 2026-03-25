@@ -50,6 +50,7 @@ pub fn inverse_hadamard_2x2(dc: &mut [i32; 4]) {
 
 /// Inverse 4x4 integer DCT transform (H.264 spec 8.5.12).
 /// Operates in-place on 16 coefficients in raster order.
+/// Horizontal pass (rows) first, then vertical pass (columns), per spec 8.5.12.1.
 pub fn inverse_dct_4x4(block: &mut [i32; 16]) {
     let mut tmp = [0i32; 16];
 
@@ -71,7 +72,7 @@ pub fn inverse_dct_4x4(block: &mut [i32; 16]) {
         tmp[i * 4 + 3] = e0 - e3;
     }
 
-    // Vertical pass (columns)
+    // Vertical pass (columns), with rounding: (x + 32) >> 6
     for j in 0..4 {
         let z0 = tmp[j];
         let z1 = tmp[4 + j];
@@ -83,7 +84,6 @@ pub fn inverse_dct_4x4(block: &mut [i32; 16]) {
         let e2 = (z1 >> 1) - z3;
         let e3 = z1 + (z3 >> 1);
 
-        // Output with rounding: (x + 32) >> 6
         block[j] = (e0 + e3 + 32) >> 6;
         block[4 + j] = (e1 + e2 + 32) >> 6;
         block[8 + j] = (e1 - e2 + 32) >> 6;

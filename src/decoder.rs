@@ -187,7 +187,6 @@ impl Decoder {
                         dequant_4x4_full(&mut block_coeffs, qp_y);
                     }
                     inverse_dct_4x4(&mut block_coeffs);
-
                     // Gather neighbor samples for I4x4 prediction
                     let above_buf: Option<[u8; 8]> = if py > 0 {
                         let mut buf = [0u8; 8];
@@ -559,18 +558,22 @@ impl Decoder {
 }
 
 /// Predict I4x4 mode from left (A) and above (B) neighbor block modes.
-/// H.264 spec 8.3.1.1: predicted mode = min(modeA, modeB), default DC (2) if unavailable.
+/// H.264 spec 8.3.1.1: predicted mode = min(modeA, modeB).
+/// If either neighbor is unavailable, predicted mode is DC (2).
 fn predict_i4x4_mode(
     modes: &[u8],
     mb_idx: usize,
     mb_width: usize,
     blk_idx: usize,
 ) -> u8 {
-    // Get left neighbor's mode
+    // None = neighbor unavailable (picture boundary or non-I4x4 neighbor MB that
+    // doesn't exist). When either is None, predicted mode defaults to DC (2).
     let mode_a = get_neighbor_i4x4_mode(modes, mb_idx, mb_width, blk_idx, true);
-    // Get above neighbor's mode
     let mode_b = get_neighbor_i4x4_mode(modes, mb_idx, mb_width, blk_idx, false);
-    mode_a.min(mode_b)
+    match (mode_a, mode_b) {
+        (Some(a), Some(b)) => a.min(b),
+        _ => 2, // DC when either neighbor is unavailable
+    }
 }
 
 fn get_neighbor_i4x4_mode(
@@ -579,7 +582,7 @@ fn get_neighbor_i4x4_mode(
     mb_width: usize,
     blk_idx: usize,
     is_left: bool,
-) -> u8 {
+) -> Option<u8> {
     // Block layout:  0  1 | 4  5
     //                2  3 | 6  7
     //               ------+------
@@ -587,34 +590,34 @@ fn get_neighbor_i4x4_mode(
     //               10 11 |14 15
     if is_left {
         match blk_idx {
-            1 | 5 | 9 | 13 => modes[mb_idx * 16 + blk_idx - 1],
-            3 | 7 | 11 | 15 => modes[mb_idx * 16 + blk_idx - 1],
-            4 => modes[mb_idx * 16 + 1],
-            6 => modes[mb_idx * 16 + 3],
-            12 => modes[mb_idx * 16 + 9],
-            14 => modes[mb_idx * 16 + 11],
+            1 | 5 | 9 | 13 => Some(modes[mb_idx * 16 + blk_idx - 1]),
+            3 | 7 | 11 | 15 => Some(modes[mb_idx * 16 + blk_idx - 1]),
+            4 => Some(modes[mb_idx * 16 + 1]),
+            6 => Some(modes[mb_idx * 16 + 3]),
+            12 => Some(modes[mb_idx * 16 + 9]),
+            14 => Some(modes[mb_idx * 16 + 11]),
             0 | 2 | 8 | 10 => {
                 // Left edge of MB
-                if !mb_idx.is_multiple_of(mb_width) {
+                if mb_idx % mb_width != 0 {
                     let left_mb = mb_idx - 1;
                     let left_blk = match blk_idx {
                         0 => 5, 2 => 7, 8 => 13, 10 => 15, _ => unreachable!(),
                     };
-                    modes[left_mb * 16 + left_blk]
+                    Some(modes[left_mb * 16 + left_blk])
                 } else {
-                    2 // DC default
+                    None // picture left boundary
                 }
             }
-            _ => 2,
+            _ => None,
         }
     } else {
         match blk_idx {
-            2 | 6 | 10 | 14 => modes[mb_idx * 16 + blk_idx - 2],
-            3 | 7 | 11 | 15 => modes[mb_idx * 16 + blk_idx - 2],
-            8 => modes[mb_idx * 16 + 2],
-            9 => modes[mb_idx * 16 + 3],
-            12 => modes[mb_idx * 16 + 6],
-            13 => modes[mb_idx * 16 + 7],
+            2 | 6 | 10 | 14 => Some(modes[mb_idx * 16 + blk_idx - 2]),
+            3 | 7 | 11 | 15 => Some(modes[mb_idx * 16 + blk_idx - 2]),
+            8 => Some(modes[mb_idx * 16 + 2]),
+            9 => Some(modes[mb_idx * 16 + 3]),
+            12 => Some(modes[mb_idx * 16 + 6]),
+            13 => Some(modes[mb_idx * 16 + 7]),
             0 | 1 | 4 | 5 => {
                 // Top edge of MB
                 if mb_idx >= mb_width {
@@ -622,12 +625,12 @@ fn get_neighbor_i4x4_mode(
                     let above_blk = match blk_idx {
                         0 => 10, 1 => 11, 4 => 14, 5 => 15, _ => unreachable!(),
                     };
-                    modes[above_mb * 16 + above_blk]
+                    Some(modes[above_mb * 16 + above_blk])
                 } else {
-                    2 // DC default
+                    None // picture top boundary
                 }
             }
-            _ => 2,
+            _ => None,
         }
     }
 }
@@ -997,4 +1000,5 @@ mod tests {
         // Single MB, QP=12, pseudo-random content stressing CAVLC with many non-zero coefficients
         decode_and_compare("noise_16x16_qp12", 16, 16);
     }
+
 }
