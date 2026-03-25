@@ -168,85 +168,61 @@ pub fn predict_intra_4x4(
         }
         5 => {
             // Vertical-Right (spec 8.3.1.2.6)
+            // Use FFmpeg's direct assignment approach for correctness
             let a = above.unwrap_or(&[128; 8]);
             let l = left.unwrap_or(&[128; 4]);
             let p = above_left.unwrap_or(128);
-            for y in 0..4 {
-                for x in 0..4 {
-                    let zv = 2 * x as i32 - y as i32;
-                    output[y * 4 + x] = if zv >= 0 {
-                        let i = x as i32 - (y >> 1) as i32;
-                        if zv % 2 == 0 {
-                            if i == 0 {
-                                ((p as u16 + a[0] as u16 + 1) >> 1) as u8
-                            } else {
-                                ((a[(i - 1) as usize] as u16 + a[i as usize] as u16 + 1) >> 1)
-                                    as u8
-                            }
-                        } else if i <= 0 {
-                            ((l[0] as u16 + 2 * p as u16 + a[0] as u16 + 2) >> 2) as u8
-                        } else if i == 1 {
-                            ((p as u16 + 2 * a[0] as u16 + a[1] as u16 + 2) >> 2) as u8
-                        } else {
-                            ((a[(i - 2) as usize] as u16 + 2 * a[(i - 1) as usize] as u16
-                                + a[i as usize] as u16
-                                + 2)
-                                >> 2) as u8
-                        }
-                    } else if zv == -1 {
-                        ((a[0] as u16 + 2 * p as u16 + l[0] as u16 + 2) >> 2) as u8
-                    } else {
-                        let i = y - 2 * x - 1;
-                        let i2 = if i + 1 < 4 { l[i + 1] } else { l[3] };
-                        if i == 0 {
-                            ((p as u16 + 2 * l[0] as u16 + i2 as u16 + 2) >> 2) as u8
-                        } else {
-                            ((l[i - 1] as u16 + 2 * l[i] as u16 + i2 as u16 + 2) >> 2) as u8
-                        }
-                    };
-                }
-            }
+            let (lt, t0, t1, t2, t3) = (p as u16, a[0] as u16, a[1] as u16, a[2] as u16, a[3] as u16);
+            let (l0, l1, l2) = (l[0] as u16, l[1] as u16, l[2] as u16);
+            // Row 0: avg of above pairs
+            output[0] = ((lt + t0 + 1) >> 1) as u8;
+            output[1] = ((t0 + t1 + 1) >> 1) as u8;
+            output[2] = ((t1 + t2 + 1) >> 1) as u8;
+            output[3] = ((t2 + t3 + 1) >> 1) as u8;
+            // Row 1: filtered above
+            output[4] = ((l0 + 2 * lt + t0 + 2) >> 2) as u8;
+            output[5] = ((lt + 2 * t0 + t1 + 2) >> 2) as u8;
+            output[6] = ((t0 + 2 * t1 + t2 + 2) >> 2) as u8;
+            output[7] = ((t1 + 2 * t2 + t3 + 2) >> 2) as u8;
+            // Row 2: shifted from row 0
+            output[8] = ((lt + 2 * l0 + l1 + 2) >> 2) as u8;
+            output[9] = output[0]; // same as (lt + t0 + 1) >> 1
+            output[10] = output[1];
+            output[11] = output[2];
+            // Row 3: shifted from row 1
+            output[12] = ((l0 + 2 * l1 + l2 + 2) >> 2) as u8;
+            output[13] = output[4]; // same as (l0 + 2*lt + t0 + 2) >> 2
+            output[14] = output[5];
+            output[15] = output[6];
         }
         6 => {
             // Horizontal-Down (spec 8.3.1.2.7)
+            // Use FFmpeg's direct assignment approach for correctness
             let a = above.unwrap_or(&[128; 8]);
             let l = left.unwrap_or(&[128; 4]);
             let p = above_left.unwrap_or(128);
-            for y in 0..4 {
-                for x in 0..4 {
-                    let zh = 2 * y as i32 - x as i32;
-                    output[y * 4 + x] = if zh >= 0 {
-                        let i = y as i32 - (x >> 1) as i32;
-                        if zh % 2 == 0 {
-                            if i == 0 {
-                                ((p as u16 + l[0] as u16 + 1) >> 1) as u8
-                            } else {
-                                ((l[(i - 1) as usize] as u16 + l[i as usize] as u16 + 1) >> 1)
-                                    as u8
-                            }
-                        } else if i <= 0 {
-                            ((a[0] as u16 + 2 * p as u16 + l[0] as u16 + 2) >> 2) as u8
-                        } else if i == 1 {
-                            ((p as u16 + 2 * l[0] as u16 + l[1] as u16 + 2) >> 2) as u8
-                        } else {
-                            ((l[(i - 2) as usize] as u16 + 2 * l[(i - 1) as usize] as u16
-                                + l[i as usize] as u16
-                                + 2)
-                                >> 2) as u8
-                        }
-                    } else if zh == -1 {
-                        ((l[0] as u16 + 2 * p as u16 + a[0] as u16 + 2) >> 2) as u8
-                    } else {
-                        let i = x - 2 * y - 1;
-                        let i2 = if i + 1 < 4 { a[i + 1] } else { a[3] };
-                        if i == 0 {
-                            ((p as u16 + 2 * a[0] as u16 + i2 as u16 + 2) >> 2) as u8
-                        } else {
-                            ((a[i - 1] as u16 + 2 * a[i] as u16 + i2 as u16 + 2) >> 2) as u8
-                        }
-                    };
-                }
-            }
+            let (lt, t0, t1, t2) = (p as u16, a[0] as u16, a[1] as u16, a[2] as u16);
+            let (l0, l1, l2, l3) = (l[0] as u16, l[1] as u16, l[2] as u16, l[3] as u16);
+            // Row 0
+            output[0] = ((lt + l0 + 1) >> 1) as u8;
+            output[1] = ((l0 + 2 * lt + t0 + 2) >> 2) as u8;
+            output[2] = ((lt + 2 * t0 + t1 + 2) >> 2) as u8;
+            output[3] = ((t0 + 2 * t1 + t2 + 2) >> 2) as u8;
+            // Row 1
+            output[4] = ((l0 + l1 + 1) >> 1) as u8;
+            output[5] = ((lt + 2 * l0 + l1 + 2) >> 2) as u8;
+            output[6] = output[0]; // same as (lt + l0 + 1) >> 1
+            output[7] = output[1]; // same as (l0 + 2*lt + t0 + 2) >> 2
+            // Row 2
+            output[8] = ((l1 + l2 + 1) >> 1) as u8;
+            output[9] = ((l0 + 2 * l1 + l2 + 2) >> 2) as u8;
+            output[10] = output[4]; // same as (l0 + l1 + 1) >> 1
+            output[11] = output[5]; // same as (lt + 2*l0 + l1 + 2) >> 2
+            // Row 3
+            output[12] = ((l2 + l3 + 1) >> 1) as u8;
+            output[13] = ((l1 + 2 * l2 + l3 + 2) >> 2) as u8;
+            output[14] = output[8]; // same as (l1 + l2 + 1) >> 1
+            output[15] = output[9]; // same as (l0 + 2*l1 + l2 + 2) >> 2
         }
         7 => {
             // Vertical-Left (spec 8.3.1.2.8)
@@ -301,25 +277,46 @@ pub fn predict_chroma_8x8(
 ) {
     match mode {
         0 => {
-            // DC: for 8x8 chroma, prediction is done per 4x4 sub-block
-            // with available neighbors
-            let dc = match (above, left) {
+            // DC: per-4x4-sub-block DC prediction (spec 8.3.4.1)
+            // 4 quadrants: TL(rows 0-3, cols 0-3), TR(rows 0-3, cols 4-7),
+            //              BL(rows 4-7, cols 0-3), BR(rows 4-7, cols 4-7)
+            let (dc_tl, dc_tr, dc_bl, dc_br) = match (above, left) {
                 (Some(a), Some(l)) => {
-                    let sum: u32 = a[..8].iter().map(|&x| x as u32).sum::<u32>()
-                        + l[..8].iter().map(|&x| x as u32).sum::<u32>();
-                    ((sum + 8) >> 4) as u8
+                    let sum_a_l: u32 = a[..4].iter().map(|&x| x as u32).sum::<u32>()
+                        + l[..4].iter().map(|&x| x as u32).sum::<u32>();
+                    let sum_a_r: u32 = a[4..8].iter().map(|&x| x as u32).sum();
+                    let sum_l_b: u32 = l[4..8].iter().map(|&x| x as u32).sum();
+                    (
+                        ((sum_a_l + 4) >> 3) as u8,
+                        ((sum_a_r + 2) >> 2) as u8,
+                        ((sum_l_b + 2) >> 2) as u8,
+                        ((sum_a_r + sum_l_b + 4) >> 3) as u8,
+                    )
                 }
                 (Some(a), None) => {
-                    let sum: u32 = a[..8].iter().map(|&x| x as u32).sum();
-                    ((sum + 4) >> 3) as u8
+                    let sum_l: u32 = a[..4].iter().map(|&x| x as u32).sum();
+                    let sum_r: u32 = a[4..8].iter().map(|&x| x as u32).sum();
+                    let dc_l = ((sum_l + 2) >> 2) as u8;
+                    let dc_r = ((sum_r + 2) >> 2) as u8;
+                    (dc_l, dc_r, dc_l, dc_r)
                 }
                 (None, Some(l)) => {
-                    let sum: u32 = l[..8].iter().map(|&x| x as u32).sum();
-                    ((sum + 4) >> 3) as u8
+                    let sum_t: u32 = l[..4].iter().map(|&x| x as u32).sum();
+                    let sum_b: u32 = l[4..8].iter().map(|&x| x as u32).sum();
+                    let dc_t = ((sum_t + 2) >> 2) as u8;
+                    let dc_b = ((sum_b + 2) >> 2) as u8;
+                    (dc_t, dc_t, dc_b, dc_b)
                 }
-                (None, None) => 128,
+                (None, None) => (128, 128, 128, 128),
             };
-            output.fill(dc);
+            for row in 0..4 {
+                for col in 0..4 { output[row * 8 + col] = dc_tl; }
+                for col in 4..8 { output[row * 8 + col] = dc_tr; }
+            }
+            for row in 4..8 {
+                for col in 0..4 { output[row * 8 + col] = dc_bl; }
+                for col in 4..8 { output[row * 8 + col] = dc_br; }
+            }
         }
         1 => {
             // Horizontal
@@ -422,7 +419,10 @@ mod tests {
                         } else if zvr == -1 {
                             (pa(0) + 2 * pa(-1) + pl(0) + 2) >> 2
                         } else {
-                            (pl(y - 2 * x - 2) + 2 * pl(y - 2 * x - 1) + pl(y - 2 * x) + 2) >> 2
+                            // zVR < -1: use left neighbors
+                            // For zVR=-3 (y=3,x=0): pl(0) + 2*pl(1) + pl(2)
+                            let iy = (-1 - zvr) >> 1;
+                            (pl(iy - 1) + 2 * pl(iy) + pl(iy + 1) + 2) >> 2
                         }
                     }
                     6 => {
@@ -436,7 +436,9 @@ mod tests {
                         } else if zhd == -1 {
                             (pl(0) + 2 * pl(-1) + pa(0) + 2) >> 2
                         } else {
-                            (pa(x - 2 * y - 2) + 2 * pa(x - 2 * y - 1) + pa(x - 2 * y) + 2) >> 2
+                            // zHD < -1: use above neighbors
+                            let ix = (-1 - zhd) >> 1;
+                            (pa(ix - 1) + 2 * pa(ix) + pa(ix + 1) + 2) >> 2
                         }
                     }
                     7 => {

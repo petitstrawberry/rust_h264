@@ -986,6 +986,7 @@ impl Decoder {
                             frame.y[(py + r) * stride + px + c] = val;
                         }
                     }
+
                 }
             } else if mb_type <= 24 {
                 // === I16x16 macroblock ===
