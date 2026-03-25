@@ -93,6 +93,7 @@ Intra-only I-frame decoding is functional. P/B slice decoding not yet implemente
 - `testdata/edges_32x32_qp35.h264` - 32x32 high-contrast bar pattern, QP=35
 - `testdata/smooth_80x48.h264` - 80x48 (5x3 MBs) smooth gradient with colored chroma
 - `testdata/noise_16x16_qp12.h264` - 16x16 single-MB pseudo-random content, QP=12
+- `testdata/scaling_test.h264` - 32x32 High profile with JVT scaling matrices
 - All test outputs validated byte-for-byte against FFmpeg's decoder
 
 ### Not Yet Implemented
@@ -101,4 +102,3 @@ Intra-only I-frame decoding is functional. P/B slice decoding not yet implemente
 - Motion compensation
 - Reference picture buffer management
 - MBAFF/interlaced mode
-- Scaling lists

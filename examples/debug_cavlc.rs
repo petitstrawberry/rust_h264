@@ -11,7 +11,7 @@ fn main() {
     let sps = nals.iter().filter(|n| n.nal_unit_type == NalUnitType::Sps)
         .map(|n| parse_sps(&n.rbsp).unwrap()).next().unwrap();
     let pps = nals.iter().filter(|n| n.nal_unit_type == NalUnitType::Pps)
-        .map(|n| parse_pps(&n.rbsp).unwrap()).next().unwrap();
+        .map(|n| parse_pps(&n.rbsp, None).unwrap()).next().unwrap();
     let idr = nals.iter().find(|n| n.nal_unit_type == NalUnitType::SliceIdr).unwrap();
     
     println!("IDR RBSP length: {}", idr.rbsp.len());

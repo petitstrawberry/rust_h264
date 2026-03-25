@@ -11,7 +11,7 @@ fn analyze_file(name: &str) {
     let sps = nals.iter().filter(|n| n.nal_unit_type == NalUnitType::Sps)
         .map(|n| parse_sps(&n.rbsp).unwrap()).next().unwrap();
     let pps = nals.iter().filter(|n| n.nal_unit_type == NalUnitType::Pps)
-        .map(|n| parse_pps(&n.rbsp).unwrap()).next().unwrap();
+        .map(|n| parse_pps(&n.rbsp, None).unwrap()).next().unwrap();
     
     println!("SPS: {}x{}, poc_type={}", sps.width(), sps.height(), sps.pic_order_cnt_type);
     println!("PPS: entropy_coding_mode={}, deblocking_filter_ctrl={}",

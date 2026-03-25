@@ -153,7 +153,7 @@ mod tests {
         let idr_nal = nals.iter().find(|n| n.nal_unit_type == NalUnitType::SliceIdr).unwrap();
 
         let sps = parse_sps(&sps_nal.rbsp).unwrap();
-        let pps = parse_pps(&pps_nal.rbsp).unwrap();
+        let pps = parse_pps(&pps_nal.rbsp, None).unwrap();
 
         let (header, _reader) =
             parse_slice_header(&idr_nal.rbsp, &sps, &pps, NalUnitType::SliceIdr).unwrap();

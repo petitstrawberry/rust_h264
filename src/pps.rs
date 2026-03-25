@@ -1,4 +1,5 @@
 use crate::bitstream::BitstreamReader;
+use crate::sps::Sps;
 
 /// Picture Parameter Set (H.264 spec section 7.3.2.2).
 #[derive(Debug)]
@@ -23,10 +24,13 @@ pub struct Pps {
     pub transform_8x8_mode_flag: bool,
     pub pic_scaling_matrix_present_flag: bool,
     pub second_chroma_qp_index_offset: i32,
+    /// Effective 4x4 scaling matrices (PPS overrides SPS if present, else SPS, else default).
+    pub scaling_list_4x4: [[u8; 16]; 6],
 }
 
 /// Parse a PPS from RBSP data (NAL header byte already stripped).
-pub fn parse_pps(rbsp: &[u8]) -> Result<Pps, &'static str> {
+/// `sps` is needed to inherit scaling lists when PPS doesn't override them.
+pub fn parse_pps(rbsp: &[u8], sps: Option<&Sps>) -> Result<Pps, &'static str> {
     let mut r = BitstreamReader::new(rbsp);
 
     let pic_parameter_set_id = r.read_ue()?;
@@ -56,12 +60,39 @@ pub fn parse_pps(rbsp: &[u8]) -> Result<Pps, &'static str> {
     let mut pic_scaling_matrix_present_flag = false;
     let mut second_chroma_qp_index_offset = chroma_qp_index_offset;
 
+    // Start with SPS scaling lists (or flat defaults)
+    let mut scaling_list_4x4 = sps
+        .map(|s| s.scaling_list_4x4)
+        .unwrap_or([crate::sps::FLAT_SCALING_4X4; 6]);
+
     if r.more_rbsp_data() {
         transform_8x8_mode_flag = r.read_bit()? != 0;
         pic_scaling_matrix_present_flag = r.read_bit()? != 0;
         if pic_scaling_matrix_present_flag {
-            // Skip scaling list parsing for now
-            return Err("PPS scaling matrix not yet supported");
+            let count = 6 + if transform_8x8_mode_flag { 2 } else { 0 };
+            for i in 0..count {
+                let present = r.read_bit()? != 0;
+                if present {
+                    if i < 6 {
+                        scaling_list_4x4[i] =
+                            crate::sps::parse_scaling_list::<16>(&mut r, 16)?;
+                    } else {
+                        let _: [u8; 64] =
+                            crate::sps::parse_scaling_list::<64>(&mut r, 64)?;
+                    }
+                } else if i < 6 {
+                    // Fallback: use SPS list, or default from Table 7-2
+                    let sps_has_list = sps.map_or(false, |s| s.seq_scaling_matrix_present_flag);
+                    if !sps_has_list {
+                        scaling_list_4x4[i] = match i {
+                            0 => crate::sps::DEFAULT_SCALING_4X4_INTRA,
+                            3 => crate::sps::DEFAULT_SCALING_4X4_INTER,
+                            _ => scaling_list_4x4[i - 1],
+                        };
+                    }
+                    // If SPS has lists, scaling_list_4x4[i] already has the SPS value
+                }
+            }
         }
         second_chroma_qp_index_offset = r.read_se()?;
     }
@@ -85,6 +116,7 @@ pub fn parse_pps(rbsp: &[u8]) -> Result<Pps, &'static str> {
         transform_8x8_mode_flag,
         pic_scaling_matrix_present_flag,
         second_chroma_qp_index_offset,
+        scaling_list_4x4,
     })
 }
 
@@ -105,7 +137,7 @@ mod tests {
             .iter()
             .find(|n| n.nal_unit_type == NalUnitType::Pps)
             .unwrap();
-        let pps = parse_pps(&pps_nal.rbsp).unwrap();
+        let pps = parse_pps(&pps_nal.rbsp, None).unwrap();
 
         assert_eq!(pps.pic_parameter_set_id, 0);
         assert_eq!(pps.seq_parameter_set_id, 0);

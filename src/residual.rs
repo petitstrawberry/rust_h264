@@ -115,57 +115,58 @@ fn position_category(row: usize, col: usize) -> usize {
 }
 
 /// Dequantize a 4x4 AC residual block in-place.
-/// `qp` is the quantization parameter (QP_Y for luma, QP_C for chroma).
-pub fn dequant_4x4(block: &mut [i32; 16], qp: i32) {
+/// `scale` is the 4x4 scaling matrix (in scan order, default all-16 for flat scaling).
+pub fn dequant_4x4(block: &mut [i32; 16], qp: i32, scale: &[u8; 16]) {
     let qp_per = qp / 6;
     let qp_rem = (qp % 6) as usize;
 
     for idx in 0..16 {
         if block[idx] != 0 {
             let (r, c) = ZIGZAG_4X4[idx];
-            let v = LEVEL_SCALE[qp_rem][position_category(r, c)];
-            if qp_per >= 0 {
-                block[idx] = (block[idx] * v) << qp_per;
+            let v = LEVEL_SCALE[qp_rem][position_category(r, c)] * scale[idx] as i32;
+            if qp_per >= 4 {
+                block[idx] = (block[idx] * v) << (qp_per - 4);
             } else {
-                block[idx] = (block[idx] * v + (1 << (-qp_per - 1))) >> -qp_per;
+                block[idx] = (block[idx] * v + (1 << (3 - qp_per))) >> (4 - qp_per);
             }
         }
     }
 }
 
 /// Dequantize I16x16 luma DC coefficients after Hadamard.
-/// Per spec 8.5.12.1, the scaling is different from AC.
-pub fn dequant_luma_dc_i16x16(dc: &mut [i32; 16], qp: i32) {
+/// Per spec 8.5.12.1, DC scaling uses scale[0] (the DC position of the scaling matrix).
+pub fn dequant_luma_dc_i16x16(dc: &mut [i32; 16], qp: i32, scale_dc: u8) {
     let qp_per = qp / 6;
     let qp_rem = (qp % 6) as usize;
-    let v = LEVEL_SCALE[qp_rem][0];
+    let v = LEVEL_SCALE[qp_rem][0] * scale_dc as i32;
 
-    if qp_per >= 2 {
+    if qp_per >= 6 {
         for d in dc.iter_mut() {
-            *d = (*d * v) << (qp_per - 2);
+            *d = (*d * v) << (qp_per - 6);
         }
     } else {
-        let round = 1 << (1 - qp_per);
+        let round = 1 << (5 - qp_per);
         for d in dc.iter_mut() {
-            *d = (*d * v + round) >> (2 - qp_per);
+            *d = (*d * v + round) >> (6 - qp_per);
         }
     }
 }
 
 /// Dequantize chroma DC coefficients after Hadamard.
-/// Per spec 8.5.12.2.
-pub fn dequant_chroma_dc(dc: &mut [i32; 4], qp: i32) {
+/// Per spec 8.5.12.2. Uses scale[0] from the chroma scaling matrix.
+pub fn dequant_chroma_dc(dc: &mut [i32; 4], qp: i32, scale_dc: u8) {
     let qp_per = qp / 6;
     let qp_rem = (qp % 6) as usize;
-    let v = LEVEL_SCALE[qp_rem][0];
+    let v = LEVEL_SCALE[qp_rem][0] * scale_dc as i32;
 
-    if qp_per >= 1 {
+    if qp_per >= 5 {
         for d in dc.iter_mut() {
-            *d = (*d * v) << (qp_per - 1);
+            *d = (*d * v) << (qp_per - 5);
         }
     } else {
+        let round = 1 << (4 - qp_per);
         for d in dc.iter_mut() {
-            *d = (*d * v) >> 1;
+            *d = (*d * v + round) >> (5 - qp_per);
         }
     }
 }
@@ -206,7 +207,8 @@ pub const CBP_INTRA_TABLE: [u8; 48] = [
 ];
 
 /// Dequantize a full 4x4 block (including DC at position [0][0]) in raster order.
-pub fn dequant_4x4_full(block: &mut [i32; 16], qp: i32) {
+/// `scale` is the scaling matrix in scan order; mapped to raster via ZIGZAG_4X4.
+pub fn dequant_4x4_full(block: &mut [i32; 16], qp: i32, scale: &[u8; 16]) {
     let qp_per = qp / 6;
     let qp_rem = (qp % 6) as usize;
 
@@ -214,13 +216,15 @@ pub fn dequant_4x4_full(block: &mut [i32; 16], qp: i32) {
         for c in 0..4 {
             let idx = r * 4 + c;
             if block[idx] != 0 {
-                let pc = match (r % 2, c % 2) {
-                    (0, 0) => 0,
-                    (1, 1) => 1,
-                    _ => 2,
-                };
-                let v = LEVEL_SCALE[qp_rem][pc];
-                block[idx] = (block[idx] * v) << qp_per;
+                let pc = position_category(r, c);
+                // Find the scan-order index for this raster position to look up the scale
+                let scan_idx = ZIGZAG_4X4.iter().position(|&(zr, zc)| zr == r && zc == c).unwrap();
+                let v = LEVEL_SCALE[qp_rem][pc] * scale[scan_idx] as i32;
+                if qp_per >= 4 {
+                    block[idx] = (block[idx] * v) << (qp_per - 4);
+                } else {
+                    block[idx] = (block[idx] * v + (1 << (3 - qp_per))) >> (4 - qp_per);
+                }
             }
         }
     }

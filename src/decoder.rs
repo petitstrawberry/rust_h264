@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::bitstream::BitstreamReader;
 use crate::cavlc::parse_residual_block_cavlc;
 use crate::deblock::{self, MbInfo, MbType};
 use crate::intra_pred::{predict_chroma_8x8, predict_intra_16x16, predict_intra_4x4};
@@ -51,7 +52,14 @@ impl Decoder {
                 Ok(None)
             }
             NalUnitType::Pps => {
-                let pps = parse_pps(&nal.rbsp)?;
+                let pps_id_sps = {
+                    // Peek at seq_parameter_set_id to find the right SPS
+                    let mut peek = BitstreamReader::new(&nal.rbsp);
+                    let _ = peek.read_ue(); // pic_parameter_set_id
+                    peek.read_ue().ok()
+                };
+                let sps_ref = pps_id_sps.and_then(|id| self.sps_table.get(&id));
+                let pps = parse_pps(&nal.rbsp, sps_ref)?;
                 self.pps_table.insert(pps.pic_parameter_set_id, pps);
                 Ok(None)
             }
@@ -184,7 +192,7 @@ impl Decoder {
                         }
                         block_coeffs = raster;
 
-                        dequant_4x4_full(&mut block_coeffs, qp_y);
+                        dequant_4x4_full(&mut block_coeffs, qp_y, &pps.scaling_list_4x4[0]);
                     }
                     inverse_dct_4x4(&mut block_coeffs);
                     // Gather neighbor samples for I4x4 prediction
@@ -301,7 +309,7 @@ impl Decoder {
                     luma_dc_raster[r * 4 + c] = luma_dc[i];
                 }
                 inverse_hadamard_4x4(&mut luma_dc_raster);
-                dequant_luma_dc_i16x16(&mut luma_dc_raster, qp_y);
+                dequant_luma_dc_i16x16(&mut luma_dc_raster, qp_y, pps.scaling_list_4x4[0][0]);
 
                 const DC_RASTER_TO_BLOCK: [usize; 16] = [
                     0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15,
@@ -320,7 +328,7 @@ impl Decoder {
                             let (r, c) = ZIGZAG_4X4[scan_idx + 1];
                             block_raster[r * 4 + c] = luma_ac_scan[blk][scan_idx];
                         }
-                        dequant_4x4_ac_raster(&mut block_raster, qp_y);
+                        dequant_4x4_ac_raster(&mut block_raster, qp_y, &pps.scaling_list_4x4[0]);
                     }
 
                     inverse_dct_4x4(&mut block_raster);
@@ -456,13 +464,15 @@ impl Decoder {
             let chroma_mb_x = mb_x / 2;
             let chroma_mb_y = mb_y / 2;
 
-            for (plane_dc, plane_ac_scan, plane_buf) in [
-                (&mut chroma_dc_cb, &chroma_ac_scan_cb, &mut frame.u),
-                (&mut chroma_dc_cr, &chroma_ac_scan_cr, &mut frame.v),
+            // Scaling list indices: 1=Intra Cb, 2=Intra Cr
+            for (plane_dc, plane_ac_scan, plane_buf, scale_idx) in [
+                (&mut chroma_dc_cb, &chroma_ac_scan_cb, &mut frame.u, 1usize),
+                (&mut chroma_dc_cr, &chroma_ac_scan_cr, &mut frame.v, 2usize),
             ] {
+                let chroma_scale = &pps.scaling_list_4x4[scale_idx];
                 if cbp_chroma >= 1 {
                     inverse_hadamard_2x2(plane_dc);
-                    dequant_chroma_dc(plane_dc, qp_c);
+                    dequant_chroma_dc(plane_dc, qp_c, chroma_scale[0]);
                 }
 
                 let mut chroma_residual = [0i32; 64];
@@ -477,7 +487,7 @@ impl Decoder {
                             let (r, c) = ZIGZAG_4X4[scan_idx + 1];
                             block_raster[r * 4 + c] = plane_ac_scan[blk][scan_idx];
                         }
-                        dequant_4x4_ac_raster(&mut block_raster, qp_c);
+                        dequant_4x4_ac_raster(&mut block_raster, qp_c, chroma_scale);
                     }
 
                     inverse_dct_4x4(&mut block_raster);
@@ -728,7 +738,9 @@ fn compute_nc(
 }
 
 /// Dequantize AC coefficients in a 4x4 block in raster order (skip DC at [0][0]).
-fn dequant_4x4_ac_raster(block: &mut [i32; 16], qp: i32) {
+fn dequant_4x4_ac_raster(block: &mut [i32; 16], qp: i32, scale: &[u8; 16]) {
+    use crate::residual::ZIGZAG_4X4;
+
     let qp_per = qp / 6;
     let qp_rem = (qp % 6) as usize;
 
@@ -744,7 +756,7 @@ fn dequant_4x4_ac_raster(block: &mut [i32; 16], qp: i32) {
     for r in 0..4 {
         for c in 0..4 {
             if r == 0 && c == 0 {
-                continue;
+                continue; // DC already handled
             }
             let idx = r * 4 + c;
             if block[idx] != 0 {
@@ -753,8 +765,13 @@ fn dequant_4x4_ac_raster(block: &mut [i32; 16], qp: i32) {
                     (1, 1) => 1,
                     _ => 2,
                 };
-                let v = LEVEL_SCALE[qp_rem][pc];
-                block[idx] = (block[idx] * v) << qp_per;
+                let scan_idx = ZIGZAG_4X4.iter().position(|&(zr, zc)| zr == r && zc == c).unwrap();
+                let v = LEVEL_SCALE[qp_rem][pc] * scale[scan_idx] as i32;
+                if qp_per >= 4 {
+                    block[idx] = (block[idx] * v) << (qp_per - 4);
+                } else {
+                    block[idx] = (block[idx] * v + (1 << (3 - qp_per))) >> (4 - qp_per);
+                }
             }
         }
     }
@@ -1001,4 +1018,9 @@ mod tests {
         decode_and_compare("noise_16x16_qp12", 16, 16);
     }
 
+
+    #[test]
+    fn test_scaling_list() {
+        decode_and_compare("scaling_test", 32, 32);
+    }
 }

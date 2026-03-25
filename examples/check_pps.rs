@@ -9,7 +9,7 @@ fn main() {
     let sps = nals.iter().filter(|n| n.nal_unit_type == NalUnitType::Sps)
         .map(|n| parse_sps(&n.rbsp).unwrap()).next().unwrap();
     let pps = nals.iter().filter(|n| n.nal_unit_type == NalUnitType::Pps)
-        .map(|n| parse_pps(&n.rbsp).unwrap()).next().unwrap();
+        .map(|n| parse_pps(&n.rbsp, None).unwrap()).next().unwrap();
     
     println!("SPS:");
     println!("  seq_parameter_set_id: {}", sps.seq_parameter_set_id);

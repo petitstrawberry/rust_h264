@@ -1,5 +1,26 @@
 use crate::bitstream::BitstreamReader;
 
+/// H.264 Table 7-2: Default 4x4 scaling list for Intra (in scan order).
+#[rustfmt::skip]
+pub const DEFAULT_SCALING_4X4_INTRA: [u8; 16] = [
+     6, 13, 13, 20,
+    20, 20, 28, 28,
+    28, 28, 32, 32,
+    32, 37, 37, 42,
+];
+
+/// H.264 Table 7-2: Default 4x4 scaling list for Inter (in scan order).
+#[rustfmt::skip]
+pub const DEFAULT_SCALING_4X4_INTER: [u8; 16] = [
+    10, 14, 14, 20,
+    20, 20, 24, 24,
+    24, 24, 27, 27,
+    27, 30, 30, 34,
+];
+
+/// Flat scaling list (no custom scaling) — all 16s.
+pub const FLAT_SCALING_4X4: [u8; 16] = [16; 16];
+
 /// Sequence Parameter Set (H.264 spec section 7.3.2.1).
 #[derive(Debug)]
 pub struct Sps {
@@ -20,6 +41,9 @@ pub struct Sps {
     pub bit_depth_chroma_minus8: u32,
     pub qpprime_y_zero_transform_bypass_flag: bool,
     pub seq_scaling_matrix_present_flag: bool,
+    /// 4x4 scaling matrices [0..5]: Intra Y, Intra Cb, Intra Cr, Inter Y, Inter Cb, Inter Cr.
+    /// Default is all 16s (flat scaling). Stored in raster scan order within each 4x4 block.
+    pub scaling_list_4x4: [[u8; 16]; 6],
 
     pub log2_max_frame_num_minus4: u32,
     pub pic_order_cnt_type: u32,
@@ -118,6 +142,8 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, &'static str> {
     let mut bit_depth_chroma_minus8 = 0;
     let mut qpprime_y_zero_transform_bypass_flag = false;
     let mut seq_scaling_matrix_present_flag = false;
+    // Default: flat scaling (all 16s) when seq_scaling_matrix_present_flag is false
+    let mut scaling_list_4x4 = [FLAT_SCALING_4X4; 6];
 
     if is_high_profile(profile_idc) {
         chroma_format_idc = r.read_ue()?;
@@ -130,11 +156,23 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, &'static str> {
         seq_scaling_matrix_present_flag = r.read_bit()? != 0;
         if seq_scaling_matrix_present_flag {
             let count = if chroma_format_idc != 3 { 8 } else { 12 };
-            for _ in 0..count {
+            for i in 0..count {
                 let present = r.read_bit()? != 0;
                 if present {
-                    let size = if count <= 6 { 16 } else { 64 };
-                    skip_scaling_list(&mut r, size)?;
+                    if i < 6 {
+                        scaling_list_4x4[i] = parse_scaling_list::<16>(&mut r, 16)?;
+                    } else {
+                        let _: [u8; 64] = parse_scaling_list::<64>(&mut r, 64)?;
+                    }
+                } else if i < 6 {
+                    // Fallback per H.264 Table 7-2:
+                    // i=0: Default_4x4_Intra, i=3: Default_4x4_Inter
+                    // i=1,2: copy from previous, i=4,5: copy from previous
+                    scaling_list_4x4[i] = match i {
+                        0 => DEFAULT_SCALING_4X4_INTRA,
+                        3 => DEFAULT_SCALING_4X4_INTER,
+                        _ => scaling_list_4x4[i - 1],
+                    };
                 }
             }
         }
@@ -206,6 +244,7 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, &'static str> {
         bit_depth_chroma_minus8,
         qpprime_y_zero_transform_bypass_flag,
         seq_scaling_matrix_present_flag,
+        scaling_list_4x4,
         log2_max_frame_num_minus4,
         pic_order_cnt_type,
         log2_max_pic_order_cnt_lsb_minus4,
@@ -230,21 +269,29 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, &'static str> {
     })
 }
 
-fn skip_scaling_list(r: &mut BitstreamReader, size: usize) -> Result<(), &'static str> {
+/// Parse a scaling list from the bitstream (H.264 spec 7.3.2.1.1).
+/// Returns a flat array of `size` scale values in scan order.
+pub fn parse_scaling_list<const N: usize>(
+    r: &mut BitstreamReader,
+    size: usize,
+) -> Result<[u8; N], &'static str> {
+    let mut scaling_list = [0u8; N];
     let mut last_scale: i32 = 8;
     let mut next_scale: i32 = 8;
-    for _ in 0..size {
+    for i in 0..size {
         if next_scale != 0 {
             let delta = r.read_se()?;
             next_scale = (last_scale + delta + 256) % 256;
         }
-        last_scale = if next_scale == 0 {
+        let val = if next_scale == 0 {
             last_scale
         } else {
             next_scale
         };
+        scaling_list[i] = val as u8;
+        last_scale = val;
     }
-    Ok(())
+    Ok(scaling_list)
 }
 
 #[cfg(test)]
