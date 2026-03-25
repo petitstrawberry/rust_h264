@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::bitstream::BitstreamReader;
 use crate::cavlc::parse_residual_block_cavlc;
+use crate::error::DecodeError;
 use crate::deblock::{self, MbInfo, MbType};
 use crate::intra_pred::{predict_chroma_8x8, predict_intra_16x16, predict_intra_4x4};
 use crate::nal::{NalUnit, NalUnitType};
@@ -44,7 +45,7 @@ impl Decoder {
     }
 
     /// Feed a NAL unit to the decoder. Returns a decoded frame if one is produced.
-    pub fn decode_nal(&mut self, nal: &NalUnit) -> Result<Option<Frame>, &'static str> {
+    pub fn decode_nal(&mut self, nal: &NalUnit) -> Result<Option<Frame>, DecodeError> {
         match nal.nal_unit_type {
             NalUnitType::Sps => {
                 let sps = parse_sps(&nal.rbsp)?;
@@ -69,18 +70,18 @@ impl Decoder {
         }
     }
 
-    fn decode_slice(&self, nal: &NalUnit) -> Result<Option<Frame>, &'static str> {
-        let pps = self.pps_table.values().next().ok_or("no PPS available")?;
+    fn decode_slice(&self, nal: &NalUnit) -> Result<Option<Frame>, DecodeError> {
+        let pps = self.pps_table.values().next().ok_or(DecodeError::InvalidSyntax("no PPS available"))?;
         let sps = self
             .sps_table
             .get(&pps.seq_parameter_set_id)
-            .ok_or("no SPS available")?;
+            .ok_or(DecodeError::InvalidSyntax("no SPS available"))?;
 
         let (header, mut reader) =
             parse_slice_header(&nal.rbsp, sps, pps, nal.nal_unit_type)?;
 
         if header.slice_type != SliceType::I {
-            return Err("only I slices supported");
+            return Err(DecodeError::from("only I slices supported"));
         }
 
         let width = sps.width();
@@ -154,7 +155,7 @@ impl Decoder {
 
                 let cbp_code = reader.read_ue()? as usize;
                 if cbp_code >= 48 {
-                    return Err("invalid coded_block_pattern");
+                    return Err(DecodeError::from("invalid coded_block_pattern"));
                 }
                 let cbp = CBP_INTRA_TABLE[cbp_code];
                 let cbp_luma = cbp & 0x0F;
@@ -419,7 +420,7 @@ impl Decoder {
                 prev_mb_qp = 0;
                 continue;
             } else {
-                return Err("unsupported mb_type for I slice");
+                return Err(DecodeError::from("unsupported mb_type for I slice"));
             }
 
             mb_info[mb_idx] = MbInfo {

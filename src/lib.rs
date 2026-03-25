@@ -1,4 +1,5 @@
 pub mod bitstream;
+pub mod error;
 pub mod cavlc;
 pub mod deblock;
 pub mod decoder;

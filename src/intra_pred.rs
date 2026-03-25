@@ -12,14 +12,14 @@ pub fn predict_intra_16x16(
     match mode {
         0 => {
             // Vertical: copy above row to all rows
-            let above = above.expect("vertical prediction requires above pixels");
+            let above = above.unwrap_or(&[128; 16]);
             for row in 0..16 {
                 output[row * 16..row * 16 + 16].copy_from_slice(&above[..16]);
             }
         }
         1 => {
             // Horizontal: copy left column to all columns
-            let left = left.expect("horizontal prediction requires left pixels");
+            let left = left.unwrap_or(&[128; 16]);
             for row in 0..16 {
                 for col in 0..16 {
                     output[row * 16 + col] = left[row];
@@ -48,9 +48,9 @@ pub fn predict_intra_16x16(
         }
         3 => {
             // Plane prediction
-            let above = above.expect("plane prediction requires above pixels");
-            let left = left.expect("plane prediction requires left pixels");
-            let _p = above_left.expect("plane prediction requires above-left pixel");
+            let above = above.unwrap_or(&[128; 16]);
+            let left = left.unwrap_or(&[128; 16]);
+            let _p = above_left.unwrap_or(128);
 
             let mut h: i32 = 0;
             let mut v: i32 = 0;
@@ -95,14 +95,14 @@ pub fn predict_intra_4x4(
     match mode {
         0 => {
             // Vertical
-            let a = above.expect("vertical requires above");
+            let a = above.unwrap_or(&[128; 8]);
             for row in 0..4 {
                 output[row * 4..row * 4 + 4].copy_from_slice(&a[..4]);
             }
         }
         1 => {
             // Horizontal
-            let l = left.expect("horizontal requires left");
+            let l = left.unwrap_or(&[128; 4]);
             for row in 0..4 {
                 for col in 0..4 {
                     output[row * 4 + col] = l[row];
@@ -131,7 +131,7 @@ pub fn predict_intra_4x4(
         }
         3 => {
             // Diagonal Down-Left
-            let a = above.expect("DDL requires above");
+            let a = above.unwrap_or(&[128; 8]);
             for y in 0..4 {
                 for x in 0..4 {
                     if x == 3 && y == 3 {
@@ -151,9 +151,9 @@ pub fn predict_intra_4x4(
             // Build reference pixel array: [left[3], left[2], left[1], left[0],
             //                               above_left, above[0..3]]
             // pred[x,y] = (ref[3-y+x] + 2*ref[4-y+x] + ref[5-y+x] + 2) >> 2
-            let a = above.expect("DDR requires above");
-            let l = left.expect("DDR requires left");
-            let p = above_left.expect("DDR requires above-left");
+            let a = above.unwrap_or(&[128; 8]);
+            let l = left.unwrap_or(&[128; 4]);
+            let p = above_left.unwrap_or(128);
             let r = [
                 l[3] as u16, l[2] as u16, l[1] as u16, l[0] as u16,
                 p as u16,
@@ -168,9 +168,9 @@ pub fn predict_intra_4x4(
         }
         5 => {
             // Vertical-Right (spec 8.3.1.2.6)
-            let a = above.expect("VR requires above");
-            let l = left.expect("VR requires left");
-            let p = above_left.expect("VR requires above-left");
+            let a = above.unwrap_or(&[128; 8]);
+            let l = left.unwrap_or(&[128; 4]);
+            let p = above_left.unwrap_or(128);
             for y in 0..4 {
                 for x in 0..4 {
                     let zv = 2 * x as i32 - y as i32;
@@ -209,9 +209,9 @@ pub fn predict_intra_4x4(
         }
         6 => {
             // Horizontal-Down (spec 8.3.1.2.7)
-            let a = above.expect("HD requires above");
-            let l = left.expect("HD requires left");
-            let p = above_left.expect("HD requires above-left");
+            let a = above.unwrap_or(&[128; 8]);
+            let l = left.unwrap_or(&[128; 4]);
+            let p = above_left.unwrap_or(128);
             for y in 0..4 {
                 for x in 0..4 {
                     let zh = 2 * y as i32 - x as i32;
@@ -250,7 +250,7 @@ pub fn predict_intra_4x4(
         }
         7 => {
             // Vertical-Left (spec 8.3.1.2.8)
-            let a = above.expect("VL requires above");
+            let a = above.unwrap_or(&[128; 8]);
             for y in 0..4 {
                 for x in 0..4 {
                     let i = x + (y >> 1);
@@ -264,7 +264,7 @@ pub fn predict_intra_4x4(
         }
         8 => {
             // Horizontal-Up (spec 8.3.1.2.9)
-            let l = left.expect("HU requires left");
+            let l = left.unwrap_or(&[128; 4]);
             for y in 0..4 {
                 for x in 0..4 {
                     let zh = x + 2 * y;
@@ -323,7 +323,7 @@ pub fn predict_chroma_8x8(
         }
         1 => {
             // Horizontal
-            let left = left.expect("horizontal prediction requires left pixels");
+            let left = left.unwrap_or(&[128; 16]);
             for row in 0..8 {
                 for col in 0..8 {
                     output[row * 8 + col] = left[row];
@@ -332,16 +332,16 @@ pub fn predict_chroma_8x8(
         }
         2 => {
             // Vertical
-            let above = above.expect("vertical prediction requires above pixels");
+            let above = above.unwrap_or(&[128; 16]);
             for row in 0..8 {
                 output[row * 8..row * 8 + 8].copy_from_slice(&above[..8]);
             }
         }
         3 => {
             // Plane
-            let above = above.expect("plane prediction requires above pixels");
-            let left = left.expect("plane prediction requires left pixels");
-            let _p = above_left.expect("plane prediction requires above-left pixel");
+            let above = above.unwrap_or(&[128; 16]);
+            let left = left.unwrap_or(&[128; 16]);
+            let _p = above_left.unwrap_or(128);
 
             let mut h: i32 = 0;
             let mut v: i32 = 0;
