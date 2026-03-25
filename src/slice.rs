@@ -40,6 +40,10 @@ pub struct SliceHeader {
     pub disable_deblocking_filter_idc: u32,
     pub slice_alpha_c0_offset_div2: i32,
     pub slice_beta_offset_div2: i32,
+    // POC fields (stored for DPB ordering)
+    pub pic_order_cnt_lsb: u32,
+    pub delta_pic_order_cnt_bottom: i32,
+    pub delta_pic_order_cnt: [i32; 2],
 }
 
 impl SliceHeader {
@@ -77,16 +81,20 @@ pub fn parse_slice_header(
     // pic_order_cnt_type == 0: read pic_order_cnt_lsb
     // pic_order_cnt_type == 1: read delta_pic_order_cnt
     // pic_order_cnt_type == 2: nothing
+    let mut pic_order_cnt_lsb = 0u32;
+    let mut delta_pic_order_cnt_bottom = 0i32;
+    let mut delta_pic_order_cnt = [0i32; 2];
+
     if sps.pic_order_cnt_type == 0 {
         let poc_lsb_bits = sps.log2_max_pic_order_cnt_lsb_minus4 + 4;
-        let _pic_order_cnt_lsb = r.read_bits(poc_lsb_bits as u8)?;
+        pic_order_cnt_lsb = r.read_bits(poc_lsb_bits as u8)?;
         if pps.bottom_field_pic_order_in_frame_present_flag {
-            let _delta_pic_order_cnt_bottom = r.read_se()?;
+            delta_pic_order_cnt_bottom = r.read_se()?;
         }
     } else if sps.pic_order_cnt_type == 1 && !sps.delta_pic_order_always_zero_flag {
-        let _delta_pic_order_cnt_0 = r.read_se()?;
+        delta_pic_order_cnt[0] = r.read_se()?;
         if pps.bottom_field_pic_order_in_frame_present_flag {
-            let _delta_pic_order_cnt_1 = r.read_se()?;
+            delta_pic_order_cnt[1] = r.read_se()?;
         }
     }
 
@@ -127,6 +135,9 @@ pub fn parse_slice_header(
         disable_deblocking_filter_idc,
         slice_alpha_c0_offset_div2,
         slice_beta_offset_div2,
+        pic_order_cnt_lsb,
+        delta_pic_order_cnt_bottom,
+        delta_pic_order_cnt,
     };
 
     Ok((header, r))

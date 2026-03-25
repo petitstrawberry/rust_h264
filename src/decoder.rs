@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
+use std::rc::Rc;
+
 use crate::bitstream::BitstreamReader;
 use crate::cavlc::parse_residual_block_cavlc;
+use crate::dpb::{DecodedPicture, Dpb, ReferenceStatus};
 use crate::error::DecodeError;
 use crate::deblock::{self, MbInfo, MbType};
 use crate::intra_pred::{predict_chroma_8x8, predict_intra_16x16, predict_intra_4x4};
@@ -28,6 +31,7 @@ pub struct Frame {
 pub struct Decoder {
     sps_table: HashMap<u32, Sps>,
     pps_table: HashMap<u32, Pps>,
+    dpb: Dpb,
 }
 
 impl Default for Decoder {
@@ -41,6 +45,7 @@ impl Decoder {
         Self {
             sps_table: HashMap::new(),
             pps_table: HashMap::new(),
+            dpb: Dpb::new(0),
         }
     }
 
@@ -49,6 +54,7 @@ impl Decoder {
         match nal.nal_unit_type {
             NalUnitType::Sps => {
                 let sps = parse_sps(&nal.rbsp)?;
+                self.dpb.set_max_ref_frames(sps.max_num_ref_frames);
                 self.sps_table.insert(sps.seq_parameter_set_id, sps);
                 Ok(None)
             }
@@ -70,7 +76,7 @@ impl Decoder {
         }
     }
 
-    fn decode_slice(&self, nal: &NalUnit) -> Result<Option<Frame>, DecodeError> {
+    fn decode_slice(&mut self, nal: &NalUnit) -> Result<Option<Frame>, DecodeError> {
         let pps = self.pps_table.values().next().ok_or(DecodeError::InvalidSyntax("no PPS available"))?;
         let sps = self
             .sps_table
@@ -561,6 +567,31 @@ impl Decoder {
             &header,
             pps.chroma_qp_index_offset,
         );
+
+        // Compute POC and insert into DPB
+        let poc = self.dpb.compute_poc(sps, &header, nal.nal_unit_type, nal.nal_ref_idc);
+
+        if nal.nal_unit_type == NalUnitType::SliceIdr {
+            self.dpb.clear();
+        }
+
+        let reference = if nal.nal_ref_idc > 0 {
+            ReferenceStatus::ShortTerm
+        } else {
+            ReferenceStatus::Unused
+        };
+
+        let pic = Rc::new(DecodedPicture {
+            y: frame.y.clone(),
+            u: frame.u.clone(),
+            v: frame.v.clone(),
+            width: frame.width,
+            height: frame.height,
+            frame_num: header.frame_num,
+            pic_order_cnt: poc,
+        });
+
+        self.dpb.insert(pic, reference);
 
         Ok(Some(frame))
     }

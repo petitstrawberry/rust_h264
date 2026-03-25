@@ -2,6 +2,7 @@ pub mod bitstream;
 pub mod error;
 pub mod cavlc;
 pub mod deblock;
+pub mod dpb;
 pub mod decoder;
 pub mod intra_pred;
 pub mod nal;
