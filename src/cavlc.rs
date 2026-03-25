@@ -35,9 +35,9 @@ pub fn parse_residual_block_cavlc(
     let t1 = trailing_ones as usize;
 
     // Trailing ones signs (highest freq first, stored at beginning)
-    for i in 0..t1 {
+    for level in levels.iter_mut().take(t1) {
         let sign_flag = reader.read_bit()?;
-        levels[i] = if sign_flag != 0 { -1 } else { 1 };
+        *level = if sign_flag != 0 { -1 } else { 1 };
     }
 
     // Remaining levels (parsed from high freq to DC)
@@ -84,6 +84,7 @@ pub fn parse_residual_block_cavlc(
     coeffs[pos] = levels[0];
 
     // Place remaining coefficients toward DC, parsing run_before for each
+    #[allow(clippy::needless_range_loop)]
     for i in 1..tc {
         if zeros_left > 0 {
             let rb = parse_run_before(reader, zeros_left as u8)? as i32;
@@ -295,9 +296,13 @@ static LUT_COEFF_NC2: OnceLock<Vec<CoeffEntry>> = OnceLock::new();       // 14 b
 static LUT_COEFF_NC4: OnceLock<Vec<CoeffEntry>> = OnceLock::new();       // 10 bits →  1 KiB
 static LUT_COEFF_CHROMA_DC: OnceLock<Vec<CoeffEntry>> = OnceLock::new(); //  8 bits → 256 B
 
+#[allow(clippy::declare_interior_mutable_const)]
 const INIT_U8_LOCK: OnceLock<Vec<U8Entry>> = OnceLock::new();
+#[allow(clippy::borrow_interior_mutable_const)]
 static LUT_TOTAL_ZEROS: [OnceLock<Vec<U8Entry>>; 15] = [INIT_U8_LOCK; 15];
+#[allow(clippy::borrow_interior_mutable_const)]
 static LUT_TOTAL_ZEROS_CHROMA: [OnceLock<Vec<U8Entry>>; 3] = [INIT_U8_LOCK; 3];
+#[allow(clippy::borrow_interior_mutable_const)]
 static LUT_RUN_BEFORE: [OnceLock<Vec<U8Entry>>; 7] = [INIT_U8_LOCK; 7];
 
 // ============================================================

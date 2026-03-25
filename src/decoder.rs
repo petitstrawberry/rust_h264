@@ -200,8 +200,8 @@ impl Decoder {
                     let above_buf: Option<[u8; 8]> = if py > 0 {
                         let mut buf = [0u8; 8];
                         // Read 4 above pixels
-                        for i in 0..4 {
-                            buf[i] = frame.y[(py - 1) * stride + px + i];
+                        for (i, b) in buf.iter_mut().enumerate().take(4) {
+                            *b = frame.y[(py - 1) * stride + px + i];
                         }
                         // Above-right pixels (4 more): available only if the 4x4 block
                         // containing those pixels has already been decoded.
@@ -220,16 +220,14 @@ impl Decoder {
                             !matches!(blk, 3 | 7 | 11 | 13 | 15)
                         };
                         if topright_avail {
-                            for i in 4..8 {
+                            for (i, b) in buf.iter_mut().enumerate().skip(4) {
                                 let col = (px + i).min(stride - 1);
-                                buf[i] = frame.y[(py - 1) * stride + col];
+                                *b = frame.y[(py - 1) * stride + col];
                             }
                         } else {
                             // Replicate the last above pixel (spec 8.3.1.2.1)
                             let last = buf[3];
-                            for i in 4..8 {
-                                buf[i] = last;
-                            }
+                            buf[4..8].fill(last);
                         }
                         Some(buf)
                     } else {
@@ -609,7 +607,7 @@ fn get_neighbor_i4x4_mode(
             14 => Some(modes[mb_idx * 16 + 11]),
             0 | 2 | 8 | 10 => {
                 // Left edge of MB
-                if mb_idx % mb_width != 0 {
+                if !mb_idx.is_multiple_of(mb_width) {
                     let left_mb = mb_idx - 1;
                     let left_blk = match blk_idx {
                         0 => 5, 2 => 7, 8 => 13, 10 => 15, _ => unreachable!(),

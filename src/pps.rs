@@ -82,7 +82,7 @@ pub fn parse_pps(rbsp: &[u8], sps: Option<&Sps>) -> Result<Pps, &'static str> {
                     }
                 } else if i < 6 {
                     // Fallback: use SPS list, or default from Table 7-2
-                    let sps_has_list = sps.map_or(false, |s| s.seq_scaling_matrix_present_flag);
+                    let sps_has_list = sps.is_some_and(|s| s.seq_scaling_matrix_present_flag);
                     if !sps_has_list {
                         scaling_list_4x4[i] = match i {
                             0 => crate::sps::DEFAULT_SCALING_4X4_INTRA,

@@ -278,7 +278,7 @@ pub fn parse_scaling_list<const N: usize>(
     let mut scaling_list = [0u8; N];
     let mut last_scale: i32 = 8;
     let mut next_scale: i32 = 8;
-    for i in 0..size {
+    for entry in scaling_list.iter_mut().take(size) {
         if next_scale != 0 {
             let delta = r.read_se()?;
             next_scale = (last_scale + delta + 256) % 256;
@@ -288,7 +288,7 @@ pub fn parse_scaling_list<const N: usize>(
         } else {
             next_scale
         };
-        scaling_list[i] = val as u8;
+        *entry = val as u8;
         last_scale = val;
     }
     Ok(scaling_list)
