@@ -104,11 +104,12 @@ I-frame and P-frame decoding functional. B-slice decoding not yet implemented.
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (50 tests, all byte-exact against FFmpeg)
+**Test Coverage** (51 tests, all byte-exact against FFmpeg)
 - Intra: single_frame, multi_mb_frame, i4x4_frame, deblock_frame, mixed_i4x4_frame,
   gradient_48x32, edges (QP=10/35), smooth_80x48, noise_16x16, scaling_test
 - Inter: p_frame_test (IDR+P), p_skip_heavy (50% skip), p_multi_frame (IDR+3P
-  with P16x16/P16x8/8x16/intra-in-P), p_8x8_test (82.8% P_8x8 + sub-8x4)
+  with P16x16/P16x8/8x16/intra-in-P), p_8x8_test (82.8% P_8x8 + sub-8x4),
+  p_multiref (IDR+3P with ref=3, multi-reference P8x16)
 
 ### Not Yet Implemented
 
