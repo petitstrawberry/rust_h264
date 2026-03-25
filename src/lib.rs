@@ -4,6 +4,7 @@ pub mod cavlc;
 pub mod deblock;
 pub mod dpb;
 pub mod decoder;
+pub mod inter_pred;
 pub mod intra_pred;
 pub mod nal;
 pub mod pps;
