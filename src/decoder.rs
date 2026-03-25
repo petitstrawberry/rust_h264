@@ -227,9 +227,9 @@ impl Decoder {
 
                 // Parse ref_idx for each partition
                 let mut part_ref = [0i8; 2];
-                for p in 0..num_parts {
+                for ref_entry in part_ref.iter_mut().take(num_parts) {
                     if header.num_ref_idx_l0_active > 1 {
-                        part_ref[p] = reader.read_te(header.num_ref_idx_l0_active - 1)? as i8;
+                        *ref_entry = reader.read_te(header.num_ref_idx_l0_active - 1)? as i8;
                     }
                 }
 
@@ -274,16 +274,14 @@ impl Decoder {
                 let cbp_luma = cbp & 0x0F;
                 let cbp_chroma = cbp >> 4;
 
-                let qp_y;
-                let qp_c;
-                if cbp_luma != 0 || cbp_chroma != 0 {
+                let qp_y = if cbp_luma != 0 || cbp_chroma != 0 {
                     let mb_qp_delta = reader.read_se()?;
-                    qp_y = ((prev_mb_qp + mb_qp_delta + 52) % 52 + 52) % 52;
+                    ((prev_mb_qp + mb_qp_delta + 52) % 52 + 52) % 52
                 } else {
-                    qp_y = prev_mb_qp;
-                }
+                    prev_mb_qp
+                };
                 prev_mb_qp = qp_y;
-                qp_c = chroma_qp(qp_y, pps.chroma_qp_index_offset);
+                let qp_c = chroma_qp(qp_y, pps.chroma_qp_index_offset);
 
                 // Decode residual for each partition
                 // Parse luma residual blocks
@@ -732,6 +730,10 @@ impl Decoder {
                 qp_y,
             };
 
+            // Intra MBs keep ref_idx=-1 (default) and mv=(0,0) (default).
+            // The -1 ref_idx ensures predict_mv's match_count logic correctly
+            // excludes intra neighbors from directional prediction.
+
             // === Reconstruct chroma (shared by I4x4 and I16x16) ===
             let mut chroma_dc_cb = [0i32; 4];
             let mut chroma_dc_cr = [0i32; 4];
@@ -898,48 +900,14 @@ impl Decoder {
     }
 }
 
-/// Motion vector prediction for P_Skip macroblocks (spec 8.4.1.1).
-/// Returns the median predictor MV. If fewer than 2 neighbors exist, returns (0, 0).
+/// Motion vector prediction for P_Skip macroblocks.
+/// Uses the standard median predictor (same as P_L0_16x16 with ref_idx=0).
 fn predict_mv_skip(
     mv_store: &[[i16; 2]],
     ref_idx_store: &[i8],
     mb_idx: usize,
     mb_width: usize,
 ) -> (i16, i16) {
-    // For P_Skip, use the same logic as P_L0_16x16 with ref_idx=0
-    // Special case: if A or B is unavailable or has ref_idx != 0, result may be (0,0)
-    let mb_col = mb_idx % mb_width;
-    let mb_row = mb_idx / mb_width;
-
-    // Left (A): block 5 of left MB (rightmost column, top row of bottom-left 8x8)
-    let a = if mb_col > 0 {
-        let left_mb = mb_idx - 1;
-        let blk = 5; // right edge of left MB
-        Some((mv_store[left_mb * 16 + blk], ref_idx_store[left_mb * 16 + blk]))
-    } else {
-        None
-    };
-
-    // Above (B): block 10 of above MB (bottom row, leftmost column)
-    let b = if mb_row > 0 {
-        let above_mb = mb_idx - mb_width;
-        let blk = 10;
-        Some((mv_store[above_mb * 16 + blk], ref_idx_store[above_mb * 16 + blk]))
-    } else {
-        None
-    };
-
-    // P_Skip special: if A doesn't exist or has ref_idx=0 and mv=(0,0), skip MV = (0,0)
-    // (and same for B). Per spec 8.4.1.1, if A or B is unavailable or is intra, MV = 0.
-    if let (Some((mv_a, ref_a)), Some((mv_b, ref_b))) = (a, b) {
-        if (ref_a == 0 && mv_a == [0, 0]) || (ref_b == 0 && mv_b == [0, 0]) {
-            return (0, 0);
-        }
-    } else {
-        return (0, 0);
-    }
-
-    // Otherwise, use median predictor
     predict_mv(mv_store, ref_idx_store, mb_idx, mb_width, 0, 16, 16, 0)
 }
 
@@ -985,25 +953,36 @@ fn predict_mv(
         } else if let Some((mv, ri)) = c { if ri == ref_idx { return (mv[0], mv[1]); } }
     }
 
-    let mut avail = Vec::new();
-    if let Some(v) = a { avail.push(v); }
-    if let Some(v) = b { avail.push(v); }
-    if let Some(v) = c { avail.push(v); }
+    // Count how many neighbors match the target ref_idx (spec 8.4.1.3.1)
+    let ref_a = a.map(|(_, r)| r).unwrap_or(-1);
+    let ref_b = b.map(|(_, r)| r).unwrap_or(-1);
+    let ref_c = c.map(|(_, r)| r).unwrap_or(-1);
+    let match_count =
+        (ref_a == ref_idx) as u8 + (ref_b == ref_idx) as u8 + (ref_c == ref_idx) as u8;
 
-    match avail.len() {
-        0 => (0, 0),
-        1 => (avail[0].0[0], avail[0].0[1]),
-        _ => {
-            // Median of x and y components independently
-            let mut xs: Vec<i16> = avail.iter().map(|(mv, _)| mv[0]).collect();
-            let mut ys: Vec<i16> = avail.iter().map(|(mv, _)| mv[1]).collect();
-            xs.sort();
-            ys.sort();
-            let mx = if xs.len() == 2 { xs[0] } else { xs[1] }; // median of 3
-            let my = if ys.len() == 2 { ys[0] } else { ys[1] };
-            (mx, my)
+    // When exactly one neighbor matches, use that neighbor's MV directly
+    if match_count == 1 {
+        if ref_a == ref_idx {
+            if let Some((mv, _)) = a { return (mv[0], mv[1]); }
+        }
+        if ref_b == ref_idx {
+            if let Some((mv, _)) = b { return (mv[0], mv[1]); }
+        }
+        if ref_c == ref_idx {
+            if let Some((mv, _)) = c { return (mv[0], mv[1]); }
         }
     }
+
+    // Otherwise: median predictor
+    let mv_a = a.map(|(mv, _)| mv).unwrap_or([0, 0]);
+    let mv_b = b.map(|(mv, _)| mv).unwrap_or([0, 0]);
+    let mv_c = c.map(|(mv, _)| mv).unwrap_or([0, 0]);
+
+    let mut xs = [mv_a[0], mv_b[0], mv_c[0]];
+    let mut ys = [mv_a[1], mv_b[1], mv_c[1]];
+    xs.sort();
+    ys.sort();
+    (xs[1], ys[1])
 }
 
 /// Get MV/ref of the left neighbor for a partition.
