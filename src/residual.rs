@@ -206,6 +206,14 @@ pub const CBP_INTRA_TABLE: [u8; 48] = [
      8, 17, 18, 20, 24,  6,  9, 22, 25, 32, 33, 34, 36, 40, 38, 41,
 ];
 
+/// coded_block_pattern mapping for Inter macroblocks (H.264 Table 9-4b).
+#[rustfmt::skip]
+pub const CBP_INTER_TABLE: [u8; 48] = [
+     0, 16,  1,  2,  4,  8, 32,  3,  5, 10, 12, 15, 47,  7, 11, 13,
+    14,  6,  9, 31, 35, 37, 42, 44, 33, 34, 36, 40, 39, 43, 45, 46,
+    17, 18, 20, 24, 19, 21, 26, 28, 23, 27, 29, 30, 22, 25, 38, 41,
+];
+
 /// Dequantize a full 4x4 block (including DC at position [0][0]) in raster order.
 /// `scale` is the scaling matrix in scan order; mapped to raster via ZIGZAG_4X4.
 pub fn dequant_4x4_full(block: &mut [i32; 16], qp: i32, scale: &[u8; 16]) {

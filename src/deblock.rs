@@ -13,6 +13,7 @@ use crate::slice::SliceHeader;
 pub enum MbType {
     Intra,
     Ipcm,
+    Inter,
 }
 
 /// Per-macroblock metadata needed by the deblocking filter.
@@ -89,7 +90,13 @@ pub fn filter_frame(
             // idc==2: don't filter across slice boundaries (for single-slice, edge 0 is
             // always within the same slice, so we still filter it)
 
-            let bs = if edge == 0 { 4 } else { 3 }; // intra: MB boundary=4, internal=3
+            let mb_type_q = mb_info[mb_idx].mb_type;
+            let mb_type_p = if edge == 0 {
+                mb_info[mb_idx - 1].mb_type
+            } else {
+                mb_type_q
+            };
+            let bs = derive_bs(mb_type_p, mb_type_q, edge == 0);
 
             // QP from each side of the edge
             let qp_q = mb_info[mb_idx].qp_y;
@@ -151,7 +158,13 @@ pub fn filter_frame(
                 continue;
             }
 
-            let bs = if edge == 0 { 4 } else { 3 };
+            let mb_type_q = mb_info[mb_idx].mb_type;
+            let mb_type_p = if edge == 0 {
+                mb_info[mb_idx - mb_width].mb_type
+            } else {
+                mb_type_q
+            };
+            let bs = derive_bs(mb_type_p, mb_type_q, edge == 0);
 
             let qp_q = mb_info[mb_idx].qp_y;
             let qp_p = if edge == 0 {
@@ -200,6 +213,22 @@ pub fn filter_frame(
                 }
             }
         }
+    }
+}
+
+/// Derive boundary strength for an edge between two MBs/blocks.
+/// Simplified version: full spec-compliant bS requires per-4x4 block MV/ref/coeff checks.
+fn derive_bs(mb_type_p: MbType, mb_type_q: MbType, is_mb_edge: bool) -> i32 {
+    if mb_type_p == MbType::Intra
+        || mb_type_p == MbType::Ipcm
+        || mb_type_q == MbType::Intra
+        || mb_type_q == MbType::Ipcm
+    {
+        if is_mb_edge { 4 } else { 3 }
+    } else {
+        // Both inter: simplified — use bS=1 for MB boundaries, 0 for internal
+        // (Full spec: check MVs, ref frames, and coded coefficients per 4x4 block)
+        if is_mb_edge { 1 } else { 0 }
     }
 }
 

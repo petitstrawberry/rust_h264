@@ -18,7 +18,7 @@ fn analyze_file(name: &str) {
              pps.entropy_coding_mode_flag, pps.deblocking_filter_control_present_flag);
     
     if let Some(idr) = nals.iter().find(|n| n.nal_unit_type == NalUnitType::SliceIdr) {
-        let (header, mut reader) = parse_slice_header(&idr.rbsp, &sps, &pps, NalUnitType::SliceIdr).unwrap();
+        let (header, mut reader) = parse_slice_header(&idr.rbsp, &sps, &pps, NalUnitType::SliceIdr, 3).unwrap();
         println!("Slice: qp_delta={}, qp_y={}", header.slice_qp_delta, header.qp_y(&pps));
         
         let mb_type = reader.read_ue().unwrap();

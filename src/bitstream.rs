@@ -97,6 +97,18 @@ impl BitstreamReader {
         Ok((1 << leading_zeros) - 1 + suffix)
     }
 
+    /// Read a truncated Exp-Golomb coded value (te(v)).
+    /// When max == 1, reads a single bit: bit=0 → value=1, bit=1 → value=0.
+    /// When max > 1, reads a standard ue(v).
+    pub fn read_te(&mut self, max: u32) -> Result<u32, &'static str> {
+        if max > 1 {
+            self.read_ue()
+        } else {
+            // Spec 9.1: value = 1 - bit
+            Ok(1 - self.read_bit()? as u32)
+        }
+    }
+
     /// Read a signed Exp-Golomb coded value (se(v)).
     pub fn read_se(&mut self) -> Result<i32, &'static str> {
         let code = self.read_ue()?;

@@ -44,6 +44,8 @@ pub struct SliceHeader {
     pub pic_order_cnt_lsb: u32,
     pub delta_pic_order_cnt_bottom: i32,
     pub delta_pic_order_cnt: [i32; 2],
+    /// Number of active L0 reference frames for P/B slices (1-based).
+    pub num_ref_idx_l0_active: u32,
 }
 
 impl SliceHeader {
@@ -59,6 +61,7 @@ pub fn parse_slice_header(
     sps: &Sps,
     pps: &Pps,
     nal_unit_type: NalUnitType,
+    nal_ref_idc: u8,
 ) -> Result<(SliceHeader, BitstreamReader), &'static str> {
     let mut r = BitstreamReader::new(rbsp);
 
@@ -98,17 +101,60 @@ pub fn parse_slice_header(
         }
     }
 
-    // ref_pic_list_modification — not present for I slices
-    // (slice_type != I and slice_type != SI would need this)
+    // num_ref_idx_active_override (for P/B slices)
+    let mut num_ref_idx_l0_active = if slice_type == SliceType::I || slice_type == SliceType::Si {
+        0
+    } else {
+        pps.num_ref_idx_l0_default_active_minus1 + 1
+    };
+    if slice_type != SliceType::I && slice_type != SliceType::Si {
+        let num_ref_idx_active_override_flag = r.read_bit()? != 0;
+        if num_ref_idx_active_override_flag {
+            num_ref_idx_l0_active = r.read_ue()? + 1;
+            if slice_type == SliceType::B {
+                let _num_ref_idx_l1_active_minus1 = r.read_ue()?;
+            }
+        }
+    }
 
-    // dec_ref_pic_marking
+    // ref_pic_list_modification (spec 7.3.3.1) — skip/consume for now
+    if slice_type != SliceType::I && slice_type != SliceType::Si {
+        let ref_pic_list_modification_flag_l0 = r.read_bit()? != 0;
+        if ref_pic_list_modification_flag_l0 {
+            loop {
+                let modification_of_pic_nums_idc = r.read_ue()?;
+                if modification_of_pic_nums_idc == 3 {
+                    break;
+                }
+                let _ = r.read_ue()?; // abs_diff_pic_num_minus1 or long_term_pic_num
+            }
+        }
+    }
+
+    // dec_ref_pic_marking (spec 7.3.3.3)
     let mut no_output_of_prior_pics_flag = false;
     let mut long_term_reference_flag = false;
     if nal_unit_type == NalUnitType::SliceIdr {
         no_output_of_prior_pics_flag = r.read_bit()? != 0;
         long_term_reference_flag = r.read_bit()? != 0;
+    } else if nal_ref_idc > 0 {
+        let adaptive_ref_pic_marking_mode_flag = r.read_bit()? != 0;
+        if adaptive_ref_pic_marking_mode_flag {
+            loop {
+                let op = r.read_ue()?;
+                if op == 0 {
+                    break;
+                }
+                match op {
+                    1 | 3 => { let _ = r.read_ue()?; }
+                    2 => { let _ = r.read_ue()?; }
+                    4 | 5 => { let _ = r.read_ue()?; }
+                    6 => { let _ = r.read_ue()?; }
+                    _ => break,
+                }
+            }
+        }
     }
-    // For non-IDR reference pictures, adaptive_ref_pic_marking would go here
 
     let slice_qp_delta = r.read_se()?;
 
@@ -138,6 +184,7 @@ pub fn parse_slice_header(
         pic_order_cnt_lsb,
         delta_pic_order_cnt_bottom,
         delta_pic_order_cnt,
+        num_ref_idx_l0_active,
     };
 
     Ok((header, r))
@@ -167,7 +214,7 @@ mod tests {
         let pps = parse_pps(&pps_nal.rbsp, None).unwrap();
 
         let (header, _reader) =
-            parse_slice_header(&idr_nal.rbsp, &sps, &pps, NalUnitType::SliceIdr).unwrap();
+            parse_slice_header(&idr_nal.rbsp, &sps, &pps, NalUnitType::SliceIdr, 3).unwrap();
 
         assert_eq!(header.first_mb_in_slice, 0);
         assert_eq!(header.slice_type, SliceType::I);

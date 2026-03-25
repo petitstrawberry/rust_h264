@@ -17,7 +17,7 @@ fn main() {
     println!("IDR RBSP length: {}", idr.rbsp.len());
     
     // Parse slice header
-    let (header, mut reader) = parse_slice_header(&idr.rbsp, &sps, &pps, NalUnitType::SliceIdr).unwrap();
+    let (header, mut reader) = parse_slice_header(&idr.rbsp, &sps, &pps, NalUnitType::SliceIdr, 3).unwrap();
     let pos = reader.position();
     println!("After slice header: pos=({}, {})", pos.0, pos.1);
     
