@@ -218,53 +218,145 @@ impl Decoder {
 
             if is_inter {
                 // === Inter (P) macroblock ===
-                let (part_w, part_h, num_parts) = match mb_type {
-                    0 => (16usize, 16usize, 1usize), // P_L0_16x16
-                    1 => (16, 8, 2),                   // P_L0_L0_16x8
-                    2 => (8, 16, 2),                   // P_L0_L0_8x16
-                    _ => return Err(DecodeError::from("unsupported P-slice mb_type (P_8x8)")),
-                };
+                let is_p8x8 = mb_type == 3 || mb_type == 4;
 
-                // Parse ref_idx for each partition
-                let mut part_ref = [0i8; 2];
-                for ref_entry in part_ref.iter_mut().take(num_parts) {
-                    if header.num_ref_idx_l0_active > 1 {
-                        *ref_entry = reader.read_te(header.num_ref_idx_l0_active - 1)? as i8;
+                // For P_8x8/P_8x8ref0: parse sub_mb_type for each 8x8 sub-MB
+                // sub_mb_type: 0=8x8, 1=8x4, 2=4x8, 3=4x4
+                let mut sub_mb_types = [0u32; 4];
+                if is_p8x8 {
+                    for smt in &mut sub_mb_types {
+                        *smt = reader.read_ue()?;
                     }
                 }
 
-                // Parse MVD and compute final MV for each partition
-                // Parse MVD and compute final MV for each partition.
-                // Store each partition's MV immediately so the next partition's
-                // predictor can read it (partition 1's above neighbor is partition 0).
-                let mut part_mv = [[0i16; 2]; 2];
-                for p in 0..num_parts {
-                    let mvd_x = reader.read_se()? as i16;
-                    let mvd_y = reader.read_se()? as i16;
-                    let (mvp_x, mvp_y) = predict_mv(
-                        &mv_store, &ref_idx_store, mb_idx, mb_width as usize,
-                        p, part_w, part_h, part_ref[p],
-                    );
-                    part_mv[p] = [mvp_x + mvd_x, mvp_y + mvd_y];
+                // Collect all sub-partition info: (x_off, y_off, width, height, ref_idx)
+                // For non-P_8x8: 1-2 partitions as before
+                // For P_8x8: up to 16 sub-partitions across 4 sub-MBs
+                struct SubPart {
+                    x: usize, y: usize, w: usize, h: usize,
+                    ref_idx: i8,
+                    mv: [i16; 2],
+                }
+                let mut sub_parts: Vec<SubPart> = Vec::new();
 
-                    // Store MV/ref immediately for this partition's 4x4 blocks
-                    let (py_off, px_off) = match mb_type {
-                        1 => (p * 8, 0),  // 16x8
-                        2 => (0, p * 8),  // 8x16
-                        _ => (0, 0),
-                    };
-                    for r in (0..part_h).step_by(4) {
-                        for c in (0..part_w).step_by(4) {
-                            let lr = (py_off + r) / 4;
-                            let lc = (px_off + c) / 4;
-                            if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                .iter()
-                                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                            {
-                                mv_store[mb_idx * 16 + blk] = part_mv[p];
-                                ref_idx_store[mb_idx * 16 + blk] = part_ref[p];
+                if is_p8x8 {
+                    // 8x8 sub-MB origins within the macroblock
+                    let sub_mb_origins = [(0, 0), (0, 8), (8, 0), (8, 8)];
+
+                    // Parse ref_idx for each 8x8 sub-MB
+                    let mut sub_ref = [0i8; 4];
+                    if mb_type == 3 {
+                        // P_8x8: parse ref_idx per sub-MB
+                        for sr in &mut sub_ref {
+                            if header.num_ref_idx_l0_active > 1 {
+                                *sr = reader.read_te(header.num_ref_idx_l0_active - 1)? as i8;
                             }
                         }
+                    }
+                    // P_8x8ref0 (mb_type=4): all ref_idx = 0 (already initialized)
+
+                    // Parse MVD for each sub-partition and store MVs
+                    for smb in 0..4 {
+                        let (sy, sx) = sub_mb_origins[smb];
+                        let ref_idx = sub_ref[smb];
+
+                        // Sub-partition layout within this 8x8
+                        let sub_parts_layout: Vec<(usize, usize, usize, usize)> =
+                            match sub_mb_types[smb] {
+                                0 => vec![(0, 0, 8, 8)],                   // 8x8
+                                1 => vec![(0, 0, 8, 4), (0, 4, 8, 4)],    // 8x4
+                                2 => vec![(0, 0, 4, 8), (4, 0, 4, 8)],    // 4x8
+                                3 => vec![
+                                    (0, 0, 4, 4), (4, 0, 4, 4),
+                                    (0, 4, 4, 4), (4, 4, 4, 4),
+                                ],                                          // 4x4
+                                _ => return Err(DecodeError::from("invalid sub_mb_type")),
+                            };
+
+                        for &(dx, dy, spw, sph) in &sub_parts_layout {
+                            let px = sx + dx;
+                            let py = sy + dy;
+                            let mvd_x = reader.read_se()? as i16;
+                            let mvd_y = reader.read_se()? as i16;
+                            let (mvp_x, mvp_y) = predict_mv_sub(
+                                &mv_store, &ref_idx_store, mb_idx,
+                                mb_width as usize, px, py, spw, sph, ref_idx,
+                            );
+                            let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
+
+                            // Store MV for all 4x4 blocks in this sub-partition
+                            for r in (0..sph).step_by(4) {
+                                for c in (0..spw).step_by(4) {
+                                    let lr = (py + r) / 4;
+                                    let lc = (px + c) / 4;
+                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                        .iter()
+                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                    {
+                                        mv_store[mb_idx * 16 + blk] = mv;
+                                        ref_idx_store[mb_idx * 16 + blk] = ref_idx;
+                                    }
+                                }
+                            }
+
+                            sub_parts.push(SubPart {
+                                x: px, y: py, w: spw, h: sph,
+                                ref_idx, mv,
+                            });
+                        }
+                    }
+                } else {
+                    // P_L0_16x16, P16x8, P8x16
+                    let (part_w, part_h, num_parts) = match mb_type {
+                        0 => (16usize, 16usize, 1usize),
+                        1 => (16, 8, 2),
+                        2 => (8, 16, 2),
+                        _ => unreachable!(),
+                    };
+
+                    let mut part_ref = [0i8; 2];
+                    for ref_entry in part_ref.iter_mut().take(num_parts) {
+                        if header.num_ref_idx_l0_active > 1 {
+                            *ref_entry =
+                                reader.read_te(header.num_ref_idx_l0_active - 1)? as i8;
+                        }
+                    }
+
+                    #[allow(clippy::needless_range_loop)]
+                    for p in 0..num_parts {
+                        let mvd_x = reader.read_se()? as i16;
+                        let mvd_y = reader.read_se()? as i16;
+                        let (mvp_x, mvp_y) = predict_mv(
+                            &mv_store, &ref_idx_store, mb_idx, mb_width as usize,
+                            p, part_w, part_h, part_ref[p],
+                        );
+                        let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
+
+                        let (py_off, px_off) = match mb_type {
+                            1 => (p * 8, 0),
+                            2 => (0, p * 8),
+                            _ => (0, 0),
+                        };
+
+                        // Store MV/ref immediately
+                        for r in (0..part_h).step_by(4) {
+                            for c in (0..part_w).step_by(4) {
+                                let lr = (py_off + r) / 4;
+                                let lc = (px_off + c) / 4;
+                                if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                    .iter()
+                                    .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                {
+                                    mv_store[mb_idx * 16 + blk] = mv;
+                                    ref_idx_store[mb_idx * 16 + blk] = part_ref[p];
+                                }
+                            }
+                        }
+
+                        sub_parts.push(SubPart {
+                            x: px_off, y: py_off, w: part_w, h: part_h,
+                            ref_idx: part_ref[p], mv,
+                        });
                     }
                 }
 
@@ -315,27 +407,22 @@ impl Decoder {
                     }
                 }
 
-                // Motion compensate and add residual for each partition
-                for p in 0..num_parts {
-                    let (py_off, px_off) = match mb_type {
-                        1 => (p * 8, 0),
-                        2 => (0, p * 8),
-                        _ => (0, 0),
-                    };
-                    let ref_pic = &ref_pic_list[part_ref[p] as usize];
-                    let mut luma_pred = vec![0u8; part_w * part_h];
+                // Motion compensate and add residual for each sub-partition
+                for sp in &sub_parts {
+                    let ref_pic = &ref_pic_list[sp.ref_idx as usize];
+                    let mut luma_pred = vec![0u8; sp.w * sp.h];
                     inter_pred::luma_mc(
                         ref_pic,
-                        (mb_x + px_off) as i32, (mb_y + py_off) as i32,
-                        part_mv[p][0] as i32, part_mv[p][1] as i32,
-                        part_w, part_h, &mut luma_pred,
+                        (mb_x + sp.x) as i32, (mb_y + sp.y) as i32,
+                        sp.mv[0] as i32, sp.mv[1] as i32,
+                        sp.w, sp.h, &mut luma_pred,
                     );
-                    for r in 0..part_h {
-                        for c in 0..part_w {
-                            let val = (luma_pred[r * part_w + c] as i32
-                                + luma_residual[(py_off + r) * 16 + px_off + c])
+                    for r in 0..sp.h {
+                        for c in 0..sp.w {
+                            let val = (luma_pred[r * sp.w + c] as i32
+                                + luma_residual[(sp.y + r) * 16 + sp.x + c])
                                 .clamp(0, 255) as u8;
-                            frame.y[(mb_y + py_off + r) * stride + mb_x + px_off + c] = val;
+                            frame.y[(mb_y + sp.y + r) * stride + mb_x + sp.x + c] = val;
                         }
                     }
                 }
@@ -405,15 +492,16 @@ impl Decoder {
                             }
                         }
 
-                        // MC each partition's chroma region separately
+                        // MC each sub-partition's chroma region
                         let mut chroma_pred = [0u8; 64];
-                        for p in 0..num_parts {
-                            let (cy_off, cx_off, cw, ch) = match mb_type {
-                                1 => (p * 4, 0, 8, 4),   // 16x8 → chroma 8x4 per partition
-                                2 => (0, p * 4, 4, 8),   // 8x16 → chroma 4x8 per partition
-                                _ => (0, 0, 8, 8),       // 16x16
-                            };
-                            let part_ref_pic = &ref_pic_list[part_ref[p] as usize];
+                        for sp in &sub_parts {
+                            // Chroma coordinates are half of luma
+                            let cx_off = sp.x / 2;
+                            let cy_off = sp.y / 2;
+                            let cw = sp.w.max(2) / 2; // min chroma block = 1, but MC needs >= 1
+                            let ch = sp.h.max(2) / 2;
+                            if cw == 0 || ch == 0 { continue; }
+                            let part_ref_pic = &ref_pic_list[sp.ref_idx as usize];
                             let chroma_ref = if scale_idx == 4 {
                                 &part_ref_pic.u
                             } else {
@@ -424,7 +512,7 @@ impl Decoder {
                                 chroma_ref, chroma_width, (height / 2) as usize,
                                 (chroma_mb_x + cx_off) as i32,
                                 (chroma_mb_y + cy_off) as i32,
-                                part_mv[p][0] as i32, part_mv[p][1] as i32,
+                                sp.mv[0] as i32, sp.mv[1] as i32,
                                 cw, ch, &mut part_pred,
                             );
                             for r in 0..ch {
@@ -921,6 +1009,60 @@ impl Decoder {
 
         Ok(Some(frame))
     }
+}
+
+/// Motion vector prediction for P_8x8 sub-partitions.
+/// `px`, `py`: sub-partition position within the macroblock (pixel coordinates).
+/// `spw`, `sph`: sub-partition dimensions.
+#[allow(clippy::too_many_arguments)]
+fn predict_mv_sub(
+    mv_store: &[[i16; 2]],
+    ref_idx_store: &[i8],
+    mb_idx: usize,
+    mb_width: usize,
+    px: usize,
+    py: usize,
+    spw: usize,
+    _sph: usize,
+    ref_idx: i8,
+) -> (i16, i16) {
+    // Reuse the general predict_mv with the sub-partition's position and size.
+    // The neighbor lookup functions already handle arbitrary py_off/px_off.
+    let a = get_mv_neighbor_left(mv_store, ref_idx_store, mb_idx, mb_width, py, px);
+    let b = get_mv_neighbor_above(mv_store, ref_idx_store, mb_idx, mb_width, py, px);
+    let c = get_mv_neighbor_above_right(
+        mv_store, ref_idx_store, mb_idx, mb_width, py, px, spw,
+    )
+    .or_else(|| get_mv_neighbor_above_left(mv_store, ref_idx_store, mb_idx, mb_width, py, px));
+
+    // match_count directional logic (same as predict_mv)
+    let ref_a = a.map(|(_, r)| r).unwrap_or(-1);
+    let ref_b = b.map(|(_, r)| r).unwrap_or(-1);
+    let ref_c = c.map(|(_, r)| r).unwrap_or(-1);
+    let match_count =
+        (ref_a == ref_idx) as u8 + (ref_b == ref_idx) as u8 + (ref_c == ref_idx) as u8;
+
+    if match_count == 1 {
+        if ref_a == ref_idx {
+            if let Some((mv, _)) = a { return (mv[0], mv[1]); }
+        }
+        if ref_b == ref_idx {
+            if let Some((mv, _)) = b { return (mv[0], mv[1]); }
+        }
+        if ref_c == ref_idx {
+            if let Some((mv, _)) = c { return (mv[0], mv[1]); }
+        }
+    }
+
+    let mv_a = a.map(|(mv, _)| mv).unwrap_or([0, 0]);
+    let mv_b = b.map(|(mv, _)| mv).unwrap_or([0, 0]);
+    let mv_c = c.map(|(mv, _)| mv).unwrap_or([0, 0]);
+
+    let mut xs = [mv_a[0], mv_b[0], mv_c[0]];
+    let mut ys = [mv_a[1], mv_b[1], mv_c[1]];
+    xs.sort();
+    ys.sort();
+    (xs[1], ys[1])
 }
 
 /// Motion vector prediction for P_Skip macroblocks.
@@ -1693,5 +1835,12 @@ mod tests {
         // 64x32, 3 frames: IDR + 2 P with 50% skip, 37.5% I4x4-in-P, 12.5% P16x8/8x16,
         // mostly static with small moving region
         decode_multiframe_and_compare("p_skip_heavy", 3, 64, 32);
+    }
+
+    #[test]
+    fn test_p_8x8() {
+        // 64x64, 3 frames: IDR + 2P with P_8x8 (2.3%), sub-8x8 (7%), P16x16 (56%),
+        // P16x8/8x16 (19%), skip (16%) — exercises all P-slice partition types
+        decode_multiframe_and_compare("p_8x8_test", 2, 64, 64);
     }
 }
