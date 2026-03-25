@@ -27,6 +27,8 @@ pub struct Frame {
     pub y: Vec<u8>,
     pub u: Vec<u8>,
     pub v: Vec<u8>,
+    /// Picture order count (for display ordering).
+    pub pic_order_cnt: i32,
 }
 
 pub struct Decoder {
@@ -87,14 +89,31 @@ impl Decoder {
         let (header, mut reader) =
             parse_slice_header(&nal.rbsp, sps, pps, nal.nal_unit_type, nal.nal_ref_idc)?;
 
-        if header.slice_type != SliceType::I && header.slice_type != SliceType::P {
-            return Err(DecodeError::from("only I and P slices supported"));
+        if header.slice_type != SliceType::I
+            && header.slice_type != SliceType::P
+            && header.slice_type != SliceType::B
+        {
+            return Err(DecodeError::from("unsupported slice type"));
         }
         let is_p_slice = header.slice_type == SliceType::P;
+        let is_b_slice = header.slice_type == SliceType::B;
 
-        // Build reference picture list for P slices
+        // Compute POC for current picture (needed for B-slice ref list construction)
+        let current_poc = self.dpb.compute_poc(sps, &header, nal.nal_unit_type, nal.nal_ref_idc);
+
+        // Build reference picture lists
         let ref_pic_list = if is_p_slice {
             self.dpb.short_term_ref_list()
+        } else {
+            vec![]
+        };
+        let _ref_pic_list_l0 = if is_b_slice {
+            self.dpb.ref_list_l0_b(current_poc)
+        } else {
+            vec![]
+        };
+        let _ref_pic_list_l1 = if is_b_slice {
+            self.dpb.ref_list_l1_b(current_poc)
         } else {
             vec![]
         };
@@ -111,6 +130,7 @@ impl Decoder {
             y: vec![0u8; (width * height) as usize],
             u: vec![0u8; (width * height / 4) as usize],
             v: vec![0u8; (width * height / 4) as usize],
+            pic_order_cnt: current_poc,
         };
 
         let slice_qp = header.qp_y(pps);
@@ -126,9 +146,11 @@ impl Decoder {
         // use inferred mode DC for prediction mode derivation.
         let mut i4x4_modes = vec![2u8; total_mbs * 16];
 
-        // Motion vector and reference index storage (per 4x4 block)
-        let mut mv_store = vec![[0i16; 2]; total_mbs * 16];
-        let mut ref_idx_store = vec![-1i8; total_mbs * 16];
+        // Motion vector and reference index storage (per 4x4 block, L0 and L1)
+        let mut mv_store_l0 = vec![[0i16; 2]; total_mbs * 16];
+        let mut ref_idx_store_l0 = vec![-1i8; total_mbs * 16];
+        let mut mv_store_l1 = vec![[0i16; 2]; total_mbs * 16];
+        let mut ref_idx_store_l1 = vec![-1i8; total_mbs * 16];
 
         // Per-MB metadata for the deblocking filter
         let mut mb_info = vec![
@@ -147,54 +169,59 @@ impl Decoder {
             let mb_y = (mb_idx / mb_width as usize) * 16;
             let stride = width as usize;
 
-            // P-slice skip run handling
-            if is_p_slice {
+            // P/B-slice skip run handling
+            if is_p_slice || is_b_slice {
                 if mb_skip_run < 0 {
                     mb_skip_run = reader.read_ue()? as i32;
                 }
                 if mb_skip_run > 0 {
                     mb_skip_run -= 1;
-                    // P_Skip: MV = median predictor, ref_idx = 0, no residual
-                    let (mvp_x, mvp_y) = predict_mv_skip(
-                        &mv_store, &ref_idx_store, mb_idx, mb_width as usize,
-                    );
-                    if let Some(ref_pic) = ref_pic_list.first() {
-                        let mut luma_pred = [0u8; 256];
-                        inter_pred::luma_mc(
-                            ref_pic, mb_x as i32, mb_y as i32,
-                            mvp_x as i32, mvp_y as i32, 16, 16, &mut luma_pred,
+                    if is_p_slice {
+                        // P_Skip: MV = median predictor, ref_idx = 0, no residual
+                        let (mvp_x, mvp_y) = predict_mv_skip(
+                            &mv_store_l0, &ref_idx_store_l0, mb_idx, mb_width as usize,
                         );
-                        for r in 0..16 {
-                            for c in 0..16 {
-                                frame.y[(mb_y + r) * stride + mb_x + c] = luma_pred[r * 16 + c];
+                        if let Some(ref_pic) = ref_pic_list.first() {
+                            let mut luma_pred = [0u8; 256];
+                            inter_pred::luma_mc(
+                                ref_pic, mb_x as i32, mb_y as i32,
+                                mvp_x as i32, mvp_y as i32, 16, 16, &mut luma_pred,
+                            );
+                            for r in 0..16 {
+                                for c in 0..16 {
+                                    frame.y[(mb_y + r) * stride + mb_x + c] = luma_pred[r * 16 + c];
+                                }
+                            }
+                            let cw = (width / 2) as usize;
+                            let cx = mb_x / 2;
+                            let cy = mb_y / 2;
+                            let mut cb_pred = [0u8; 64];
+                            let mut cr_pred = [0u8; 64];
+                            inter_pred::chroma_mc(
+                                &ref_pic.u, cw, (height / 2) as usize,
+                                cx as i32, cy as i32, mvp_x as i32, mvp_y as i32,
+                                8, 8, &mut cb_pred,
+                            );
+                            inter_pred::chroma_mc(
+                                &ref_pic.v, cw, (height / 2) as usize,
+                                cx as i32, cy as i32, mvp_x as i32, mvp_y as i32,
+                                8, 8, &mut cr_pred,
+                            );
+                            for r in 0..8 {
+                                for c in 0..8 {
+                                    frame.u[(cy + r) * cw + cx + c] = cb_pred[r * 8 + c];
+                                    frame.v[(cy + r) * cw + cx + c] = cr_pred[r * 8 + c];
+                                }
                             }
                         }
-                        let cw = (width / 2) as usize;
-                        let cx = mb_x / 2;
-                        let cy = mb_y / 2;
-                        let mut cb_pred = [0u8; 64];
-                        let mut cr_pred = [0u8; 64];
-                        inter_pred::chroma_mc(
-                            &ref_pic.u, cw, (height / 2) as usize,
-                            cx as i32, cy as i32, mvp_x as i32, mvp_y as i32,
-                            8, 8, &mut cb_pred,
-                        );
-                        inter_pred::chroma_mc(
-                            &ref_pic.v, cw, (height / 2) as usize,
-                            cx as i32, cy as i32, mvp_x as i32, mvp_y as i32,
-                            8, 8, &mut cr_pred,
-                        );
-                        for r in 0..8 {
-                            for c in 0..8 {
-                                frame.u[(cy + r) * cw + cx + c] = cb_pred[r * 8 + c];
-                                frame.v[(cy + r) * cw + cx + c] = cr_pred[r * 8 + c];
-                            }
+                        // Store MV and ref for neighbors
+                        for blk in 0..16 {
+                            mv_store_l0[mb_idx * 16 + blk] = [mvp_x, mvp_y];
+                            ref_idx_store_l0[mb_idx * 16 + blk] = 0;
                         }
-                    }
-                    // Store MV and ref for neighbors
-                    for blk in 0..16 {
-                        mv_store[mb_idx * 16 + blk] = [mvp_x, mvp_y];
-                        ref_idx_store[mb_idx * 16 + blk] = 0;
+                    } else {
+                        // B_Skip: derive MVs via direct mode (implemented in step 4)
+                        return Err(DecodeError::Unsupported("B_Skip not yet implemented"));
                     }
                     mb_info[mb_idx] = MbInfo {
                         mb_type: MbType::Inter,
@@ -209,14 +236,293 @@ impl Decoder {
 
             let raw_mb_type = reader.read_ue()?;
             // For P slices, mb_type >= 5 means intra (subtract 5)
-            let (mb_type, is_inter) = if is_p_slice && raw_mb_type < 5 {
+            // For B slices, mb_type >= 23 means intra (subtract 23)
+            let inter_limit = if is_p_slice { 5 } else if is_b_slice { 23 } else { 0 };
+            let (mb_type, is_inter) = if (is_p_slice || is_b_slice) && raw_mb_type < inter_limit {
                 (raw_mb_type, true)
             } else {
-                let itype = if is_p_slice { raw_mb_type - 5 } else { raw_mb_type };
-                (itype, false)
+                (raw_mb_type - inter_limit, false)
             };
 
-            if is_inter {
+            if is_inter && is_b_slice {
+                // === Inter (B) macroblock ===
+                // Table 7-11: mb_type 0=B_Direct_16x16, 1=B_L0_16x16,
+                // 2=B_L1_16x16, 3=B_Bi_16x16, 4-21=16x8/8x16 variants, 22=B_8x8
+                struct SubPart {
+                    x: usize, y: usize, w: usize, h: usize,
+                    ref_idx_l0: i8, ref_idx_l1: i8,
+                    mv_l0: [i16; 2], mv_l1: [i16; 2],
+                    pred_l0: bool, pred_l1: bool,
+                }
+                let mut sub_parts: Vec<SubPart> = Vec::new();
+
+                match mb_type {
+                    1 | 2 => {
+                        // B_L0_16x16 (mb_type=1) or B_L1_16x16 (mb_type=2)
+                        let is_l0 = mb_type == 1;
+                        let num_active = if is_l0 { header.num_ref_idx_l0_active } else { header.num_ref_idx_l1_active };
+
+                        let ref_idx = if num_active > 1 {
+                            reader.read_te(num_active - 1)? as i8
+                        } else {
+                            0
+                        };
+                        let mvd_x = reader.read_se()? as i16;
+                        let mvd_y = reader.read_se()? as i16;
+
+                        // MV prediction using the appropriate store
+                        let (mv_store_ref, ref_store_ref) = if is_l0 {
+                            (&mv_store_l0 as &[[i16; 2]], &ref_idx_store_l0 as &[i8])
+                        } else {
+                            (&mv_store_l1 as &[[i16; 2]], &ref_idx_store_l1 as &[i8])
+                        };
+                        let (mvp_x, mvp_y) = predict_mv(
+                            mv_store_ref, ref_store_ref, mb_idx, mb_width as usize,
+                            0, 16, 16, ref_idx,
+                        );
+                        let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
+
+                        // Store MV/ref for all 4x4 blocks
+                        for blk in 0..16 {
+                            if is_l0 {
+                                mv_store_l0[mb_idx * 16 + blk] = mv;
+                                ref_idx_store_l0[mb_idx * 16 + blk] = ref_idx;
+                            } else {
+                                mv_store_l1[mb_idx * 16 + blk] = mv;
+                                ref_idx_store_l1[mb_idx * 16 + blk] = ref_idx;
+                            }
+                        }
+
+                        sub_parts.push(SubPart {
+                            x: 0, y: 0, w: 16, h: 16,
+                            ref_idx_l0: if is_l0 { ref_idx } else { -1 },
+                            ref_idx_l1: if is_l0 { -1 } else { ref_idx },
+                            mv_l0: if is_l0 { mv } else { [0, 0] },
+                            mv_l1: if is_l0 { [0, 0] } else { mv },
+                            pred_l0: is_l0,
+                            pred_l1: !is_l0,
+                        });
+                    }
+                    0 => {
+                        // B_Direct_16x16 — needs spatial/temporal direct mode (step 4)
+                        return Err(DecodeError::Unsupported("B_Direct_16x16 not yet implemented"));
+                    }
+                    3 => {
+                        // B_Bi_16x16 — needs bi-prediction (step 3)
+                        return Err(DecodeError::Unsupported("B_Bi_16x16 not yet implemented"));
+                    }
+                    4..=21 => {
+                        // 16x8/8x16 variants (step 6)
+                        return Err(DecodeError::Unsupported("B 16x8/8x16 not yet implemented"));
+                    }
+                    22 => {
+                        // B_8x8 (step 6)
+                        return Err(DecodeError::Unsupported("B_8x8 not yet implemented"));
+                    }
+                    _ => return Err(DecodeError::InvalidSyntax("invalid B-slice mb_type")),
+                }
+
+                // Parse CBP using inter table
+                let cbp_code = reader.read_ue()? as usize;
+                if cbp_code >= 48 {
+                    return Err(DecodeError::from("invalid coded_block_pattern"));
+                }
+                let cbp = CBP_INTER_TABLE[cbp_code];
+                let cbp_luma = cbp & 0x0F;
+                let cbp_chroma = cbp >> 4;
+
+                let qp_y = if cbp_luma != 0 || cbp_chroma != 0 {
+                    let mb_qp_delta = reader.read_se()?;
+                    ((prev_mb_qp + mb_qp_delta + 52) % 52 + 52) % 52
+                } else {
+                    prev_mb_qp
+                };
+                prev_mb_qp = qp_y;
+                let qp_c = chroma_qp(qp_y, pps.chroma_qp_index_offset);
+
+                // Decode luma residual
+                let mut luma_residual = [0i32; 256];
+                for blk in 0..16 {
+                    if cbp_luma & (1 << (blk / 4)) != 0 {
+                        let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16);
+                        let mut block_coeffs = [0i32; 16];
+                        let tc = parse_residual_block_cavlc(
+                            &mut reader, &mut block_coeffs, 16, nc,
+                        )?;
+                        nc_luma[mb_idx * 16 + blk] = tc;
+
+                        let mut raster = [0i32; 16];
+                        for i in 0..16 {
+                            let (r, c) = ZIGZAG_4X4[i];
+                            raster[r * 4 + c] = block_coeffs[i];
+                        }
+                        // Use inter scaling list (index 3) for luma
+                        dequant_4x4_full(&mut raster, qp_y, &pps.scaling_list_4x4[3]);
+                        inverse_dct_4x4(&mut raster);
+
+                        let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
+                        for r in 0..4 {
+                            for c in 0..4 {
+                                luma_residual[(blk_row + r) * 16 + blk_col + c] = raster[r * 4 + c];
+                            }
+                        }
+                    }
+                }
+
+                // Luma MC + residual for each sub-partition
+                for sp in &sub_parts {
+                    if sp.pred_l0 {
+                        let ref_pic = &_ref_pic_list_l0[sp.ref_idx_l0 as usize];
+                        let mut luma_pred = vec![0u8; sp.w * sp.h];
+                        inter_pred::luma_mc(
+                            ref_pic,
+                            (mb_x + sp.x) as i32, (mb_y + sp.y) as i32,
+                            sp.mv_l0[0] as i32, sp.mv_l0[1] as i32,
+                            sp.w, sp.h, &mut luma_pred,
+                        );
+                        for r in 0..sp.h {
+                            for c in 0..sp.w {
+                                let val = (luma_pred[r * sp.w + c] as i32
+                                    + luma_residual[(sp.y + r) * 16 + sp.x + c])
+                                    .clamp(0, 255) as u8;
+                                frame.y[(mb_y + sp.y + r) * stride + mb_x + sp.x + c] = val;
+                            }
+                        }
+                    } else if sp.pred_l1 {
+                        let ref_pic = &_ref_pic_list_l1[sp.ref_idx_l1 as usize];
+                        let mut luma_pred = vec![0u8; sp.w * sp.h];
+                        inter_pred::luma_mc(
+                            ref_pic,
+                            (mb_x + sp.x) as i32, (mb_y + sp.y) as i32,
+                            sp.mv_l1[0] as i32, sp.mv_l1[1] as i32,
+                            sp.w, sp.h, &mut luma_pred,
+                        );
+                        for r in 0..sp.h {
+                            for c in 0..sp.w {
+                                let val = (luma_pred[r * sp.w + c] as i32
+                                    + luma_residual[(sp.y + r) * 16 + sp.x + c])
+                                    .clamp(0, 255) as u8;
+                                frame.y[(mb_y + sp.y + r) * stride + mb_x + sp.x + c] = val;
+                            }
+                        }
+                    }
+                    // Bi-prediction handled in step 3
+                }
+
+                // Chroma
+                let mut chroma_dc_cb = [0i32; 4];
+                let mut chroma_dc_cr = [0i32; 4];
+                if cbp_chroma >= 1 {
+                    parse_residual_block_cavlc(&mut reader, &mut chroma_dc_cb, 4, -1)?;
+                    parse_residual_block_cavlc(&mut reader, &mut chroma_dc_cr, 4, -1)?;
+                }
+                let mut chroma_ac_scan_cb = [[0i32; 15]; 4];
+                let mut chroma_ac_scan_cr = [[0i32; 15]; 4];
+                if cbp_chroma >= 2 {
+                    for blk in 0..4 {
+                        let nc = compute_nc(&nc_cb, mb_idx, mb_width as usize, blk, 4);
+                        let tc = parse_residual_block_cavlc(
+                            &mut reader, &mut chroma_ac_scan_cb[blk], 15, nc,
+                        )?;
+                        nc_cb[mb_idx * 4 + blk] = tc;
+                    }
+                    for blk in 0..4 {
+                        let nc = compute_nc(&nc_cr, mb_idx, mb_width as usize, blk, 4);
+                        let tc = parse_residual_block_cavlc(
+                            &mut reader, &mut chroma_ac_scan_cr[blk], 15, nc,
+                        )?;
+                        nc_cr[mb_idx * 4 + blk] = tc;
+                    }
+                }
+
+                let chroma_width = (width / 2) as usize;
+                let chroma_mb_x = mb_x / 2;
+                let chroma_mb_y = mb_y / 2;
+
+                for (plane_dc, plane_ac, frame_plane, scale_idx) in [
+                    (&mut chroma_dc_cb, &chroma_ac_scan_cb, &mut frame.u, 4usize),
+                    (&mut chroma_dc_cr, &chroma_ac_scan_cr, &mut frame.v, 5usize),
+                ] {
+                    let chroma_scale = &pps.scaling_list_4x4[scale_idx];
+                    if cbp_chroma >= 1 {
+                        inverse_hadamard_2x2(plane_dc);
+                        dequant_chroma_dc(plane_dc, qp_c, chroma_scale[0]);
+                    }
+
+                    let mut chroma_residual = [0i32; 64];
+                    for blk in 0..4 {
+                        let blk_row = (blk / 2) * 4;
+                        let blk_col = (blk % 2) * 4;
+                        let mut block_raster = [0i32; 16];
+                        block_raster[0] = plane_dc[blk];
+                        if cbp_chroma >= 2 {
+                            for scan_idx in 0..15 {
+                                let (r, c) = ZIGZAG_4X4[scan_idx + 1];
+                                block_raster[r * 4 + c] = plane_ac[blk][scan_idx];
+                            }
+                            dequant_4x4_ac_raster(&mut block_raster, qp_c, chroma_scale);
+                        }
+                        inverse_dct_4x4(&mut block_raster);
+                        for r in 0..4 {
+                            for c in 0..4 {
+                                chroma_residual[(blk_row + r) * 8 + blk_col + c] =
+                                    block_raster[r * 4 + c];
+                            }
+                        }
+                    }
+
+                    // Chroma MC for each sub-partition
+                    let mut chroma_pred = [0u8; 64];
+                    for sp in &sub_parts {
+                        let cx_off = sp.x / 2;
+                        let cy_off = sp.y / 2;
+                        let cw = sp.w.max(2) / 2;
+                        let ch = sp.h.max(2) / 2;
+                        if cw == 0 || ch == 0 { continue; }
+
+                        let (ref_list, ref_idx, mv) = if sp.pred_l0 {
+                            (&_ref_pic_list_l0, sp.ref_idx_l0, sp.mv_l0)
+                        } else {
+                            (&_ref_pic_list_l1, sp.ref_idx_l1, sp.mv_l1)
+                        };
+                        let part_ref_pic = &ref_list[ref_idx as usize];
+                        let chroma_ref = if scale_idx == 4 {
+                            &part_ref_pic.u
+                        } else {
+                            &part_ref_pic.v
+                        };
+                        let mut part_pred = vec![0u8; cw * ch];
+                        inter_pred::chroma_mc(
+                            chroma_ref, chroma_width, (height / 2) as usize,
+                            (chroma_mb_x + cx_off) as i32,
+                            (chroma_mb_y + cy_off) as i32,
+                            mv[0] as i32, mv[1] as i32,
+                            cw, ch, &mut part_pred,
+                        );
+                        for r in 0..ch {
+                            for c in 0..cw {
+                                chroma_pred[(cy_off + r) * 8 + cx_off + c] = part_pred[r * cw + c];
+                            }
+                        }
+                    }
+
+                    for y in 0..8 {
+                        for x in 0..8 {
+                            let val = (chroma_pred[y * 8 + x] as i32
+                                + chroma_residual[y * 8 + x])
+                                .clamp(0, 255) as u8;
+                            frame_plane[(chroma_mb_y + y) * chroma_width + chroma_mb_x + x] = val;
+                        }
+                    }
+                }
+
+                mb_info[mb_idx] = MbInfo {
+                    mb_type: MbType::Inter,
+                    qp_y,
+                };
+                mb_idx += 1;
+                continue;
+            } else if is_inter {
                 // === Inter (P) macroblock ===
                 let is_p8x8 = mb_type == 3 || mb_type == 4;
 
@@ -279,7 +585,7 @@ impl Decoder {
                             let mvd_x = reader.read_se()? as i16;
                             let mvd_y = reader.read_se()? as i16;
                             let (mvp_x, mvp_y) = predict_mv_sub(
-                                &mv_store, &ref_idx_store, mb_idx,
+                                &mv_store_l0, &ref_idx_store_l0, mb_idx,
                                 mb_width as usize, px, py, spw, sph, ref_idx,
                             );
                             let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
@@ -293,8 +599,8 @@ impl Decoder {
                                         .iter()
                                         .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
                                     {
-                                        mv_store[mb_idx * 16 + blk] = mv;
-                                        ref_idx_store[mb_idx * 16 + blk] = ref_idx;
+                                        mv_store_l0[mb_idx * 16 + blk] = mv;
+                                        ref_idx_store_l0[mb_idx * 16 + blk] = ref_idx;
                                     }
                                 }
                             }
@@ -327,7 +633,7 @@ impl Decoder {
                         let mvd_x = reader.read_se()? as i16;
                         let mvd_y = reader.read_se()? as i16;
                         let (mvp_x, mvp_y) = predict_mv(
-                            &mv_store, &ref_idx_store, mb_idx, mb_width as usize,
+                            &mv_store_l0, &ref_idx_store_l0, mb_idx, mb_width as usize,
                             p, part_w, part_h, part_ref[p],
                         );
                         let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
@@ -347,8 +653,8 @@ impl Decoder {
                                     .iter()
                                     .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
                                 {
-                                    mv_store[mb_idx * 16 + blk] = mv;
-                                    ref_idx_store[mb_idx * 16 + blk] = part_ref[p];
+                                    mv_store_l0[mb_idx * 16 + blk] = mv;
+                                    ref_idx_store_l0[mb_idx * 16 + blk] = part_ref[p];
                                 }
                             }
                         }
@@ -982,8 +1288,8 @@ impl Decoder {
             pps.chroma_qp_index_offset,
         );
 
-        // Compute POC and insert into DPB
-        let poc = self.dpb.compute_poc(sps, &header, nal.nal_unit_type, nal.nal_ref_idc);
+        // Insert into DPB (POC already computed at top of decode_slice)
+        let poc = current_poc;
 
         if nal.nal_unit_type == NalUnitType::SliceIdr {
             self.dpb.clear();
@@ -1016,8 +1322,8 @@ impl Decoder {
 /// `spw`, `sph`: sub-partition dimensions.
 #[allow(clippy::too_many_arguments)]
 fn predict_mv_sub(
-    mv_store: &[[i16; 2]],
-    ref_idx_store: &[i8],
+    mv_store_l0: &[[i16; 2]],
+    ref_idx_store_l0: &[i8],
     mb_idx: usize,
     mb_width: usize,
     px: usize,
@@ -1028,12 +1334,12 @@ fn predict_mv_sub(
 ) -> (i16, i16) {
     // Reuse the general predict_mv with the sub-partition's position and size.
     // The neighbor lookup functions already handle arbitrary py_off/px_off.
-    let a = get_mv_neighbor_left(mv_store, ref_idx_store, mb_idx, mb_width, py, px);
-    let b = get_mv_neighbor_above(mv_store, ref_idx_store, mb_idx, mb_width, py, px);
+    let a = get_mv_neighbor_left(mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py, px);
+    let b = get_mv_neighbor_above(mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py, px);
     let c = get_mv_neighbor_above_right(
-        mv_store, ref_idx_store, mb_idx, mb_width, py, px, spw,
+        mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py, px, spw,
     )
-    .or_else(|| get_mv_neighbor_above_left(mv_store, ref_idx_store, mb_idx, mb_width, py, px));
+    .or_else(|| get_mv_neighbor_above_left(mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py, px));
 
     // match_count directional logic (same as predict_mv)
     let ref_a = a.map(|(_, r)| r).unwrap_or(-1);
@@ -1072,12 +1378,12 @@ fn predict_mv_sub(
 /// Motion vector prediction for P_Skip macroblocks.
 /// Uses the standard median predictor (same as P_L0_16x16 with ref_idx=0).
 fn predict_mv_skip(
-    mv_store: &[[i16; 2]],
-    ref_idx_store: &[i8],
+    mv_store_l0: &[[i16; 2]],
+    ref_idx_store_l0: &[i8],
     mb_idx: usize,
     mb_width: usize,
 ) -> (i16, i16) {
-    predict_mv(mv_store, ref_idx_store, mb_idx, mb_width, 0, 16, 16, 0)
+    predict_mv(mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, 0, 16, 16, 0)
 }
 
 /// Motion vector prediction using the median of neighbors A, B, C (spec 8.4.1.3).
@@ -1086,8 +1392,8 @@ fn predict_mv_skip(
 /// `ref_idx`: reference index for this partition.
 #[allow(clippy::too_many_arguments)]
 fn predict_mv(
-    mv_store: &[[i16; 2]],
-    ref_idx_store: &[i8],
+    mv_store_l0: &[[i16; 2]],
+    ref_idx_store_l0: &[i8],
     mb_idx: usize,
     mb_width: usize,
     part_idx: usize,
@@ -1099,16 +1405,16 @@ fn predict_mv(
     let px_off = if part_w == 8 && part_h == 16 { part_idx * 8 } else { 0 };
 
     // A: left neighbor (4x4 block to the left of partition's top-left)
-    let a = get_mv_neighbor_left(mv_store, ref_idx_store, mb_idx, mb_width, py_off, px_off);
+    let a = get_mv_neighbor_left(mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py_off, px_off);
 
     // B: above neighbor
-    let b = get_mv_neighbor_above(mv_store, ref_idx_store, mb_idx, mb_width, py_off, px_off);
+    let b = get_mv_neighbor_above(mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py_off, px_off);
 
     // C: above-right neighbor (or D: above-left if C unavailable)
     let c = get_mv_neighbor_above_right(
-        mv_store, ref_idx_store, mb_idx, mb_width, py_off, px_off, part_w,
+        mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py_off, px_off, part_w,
     )
-    .or_else(|| get_mv_neighbor_above_left(mv_store, ref_idx_store, mb_idx, mb_width, py_off, px_off));
+    .or_else(|| get_mv_neighbor_above_left(mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py_off, px_off));
 
     // Special cases for 16x8 and 8x16 (spec 8.4.1.3.1)
     if part_w == 16 && part_h == 8 {
@@ -1162,7 +1468,7 @@ fn predict_mv(
 
 /// Get MV/ref of the left neighbor for a partition.
 fn get_mv_neighbor_left(
-    mv_store: &[[i16; 2]], ref_idx_store: &[i8],
+    mv_store_l0: &[[i16; 2]], ref_idx_store_l0: &[i8],
     mb_idx: usize, mb_width: usize, py_off: usize, px_off: usize,
 ) -> Option<([i16; 2], i8)> {
     let mb_col = mb_idx % mb_width;
@@ -1172,7 +1478,7 @@ fn get_mv_neighbor_left(
         let lc = (px_off - 4) / 4;
         let blk = BLOCK_INDEX_TO_OFFSET.iter()
             .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)?;
-        Some((mv_store[mb_idx * 16 + blk], ref_idx_store[mb_idx * 16 + blk]))
+        Some((mv_store_l0[mb_idx * 16 + blk], ref_idx_store_l0[mb_idx * 16 + blk]))
     } else if mb_col > 0 {
         // Left is in the left MB (rightmost column)
         let left_mb = mb_idx - 1;
@@ -1180,7 +1486,7 @@ fn get_mv_neighbor_left(
         let lc = 3; // rightmost 4x4 column
         let blk = BLOCK_INDEX_TO_OFFSET.iter()
             .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)?;
-        Some((mv_store[left_mb * 16 + blk], ref_idx_store[left_mb * 16 + blk]))
+        Some((mv_store_l0[left_mb * 16 + blk], ref_idx_store_l0[left_mb * 16 + blk]))
     } else {
         None
     }
@@ -1188,7 +1494,7 @@ fn get_mv_neighbor_left(
 
 /// Get MV/ref of the above neighbor for a partition.
 fn get_mv_neighbor_above(
-    mv_store: &[[i16; 2]], ref_idx_store: &[i8],
+    mv_store_l0: &[[i16; 2]], ref_idx_store_l0: &[i8],
     mb_idx: usize, mb_width: usize, py_off: usize, px_off: usize,
 ) -> Option<([i16; 2], i8)> {
     let mb_row = mb_idx / mb_width;
@@ -1198,14 +1504,14 @@ fn get_mv_neighbor_above(
         let lc = px_off / 4;
         let blk = BLOCK_INDEX_TO_OFFSET.iter()
             .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)?;
-        Some((mv_store[mb_idx * 16 + blk], ref_idx_store[mb_idx * 16 + blk]))
+        Some((mv_store_l0[mb_idx * 16 + blk], ref_idx_store_l0[mb_idx * 16 + blk]))
     } else if mb_row > 0 {
         let above_mb = mb_idx - mb_width;
         let lr = 3; // bottom row
         let lc = px_off / 4;
         let blk = BLOCK_INDEX_TO_OFFSET.iter()
             .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)?;
-        Some((mv_store[above_mb * 16 + blk], ref_idx_store[above_mb * 16 + blk]))
+        Some((mv_store_l0[above_mb * 16 + blk], ref_idx_store_l0[above_mb * 16 + blk]))
     } else {
         None
     }
@@ -1213,7 +1519,7 @@ fn get_mv_neighbor_above(
 
 /// Get MV/ref of the above-right neighbor for a partition.
 fn get_mv_neighbor_above_right(
-    mv_store: &[[i16; 2]], ref_idx_store: &[i8],
+    mv_store_l0: &[[i16; 2]], ref_idx_store_l0: &[i8],
     mb_idx: usize, mb_width: usize, py_off: usize, px_off: usize, part_w: usize,
 ) -> Option<([i16; 2], i8)> {
     let mb_col = mb_idx % mb_width;
@@ -1227,7 +1533,7 @@ fn get_mv_neighbor_above_right(
             let lc = right_col / 4;
             let blk = BLOCK_INDEX_TO_OFFSET.iter()
                 .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)?;
-            Some((mv_store[mb_idx * 16 + blk], ref_idx_store[mb_idx * 16 + blk]))
+            Some((mv_store_l0[mb_idx * 16 + blk], ref_idx_store_l0[mb_idx * 16 + blk]))
         } else {
             None // right edge of MB, above-right is in MB above-right
         }
@@ -1239,12 +1545,12 @@ fn get_mv_neighbor_above_right(
             let lc = right_col / 4;
             let blk = BLOCK_INDEX_TO_OFFSET.iter()
                 .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)?;
-            Some((mv_store[above_mb * 16 + blk], ref_idx_store[above_mb * 16 + blk]))
+            Some((mv_store_l0[above_mb * 16 + blk], ref_idx_store_l0[above_mb * 16 + blk]))
         } else if mb_col + 1 < mb_width {
             let above_right_mb = mb_idx - mb_width + 1;
             let blk = BLOCK_INDEX_TO_OFFSET.iter()
                 .position(|&(br, bc)| br / 4 == 3 && bc / 4 == 0)?;
-            Some((mv_store[above_right_mb * 16 + blk], ref_idx_store[above_right_mb * 16 + blk]))
+            Some((mv_store_l0[above_right_mb * 16 + blk], ref_idx_store_l0[above_right_mb * 16 + blk]))
         } else {
             None
         }
@@ -1255,7 +1561,7 @@ fn get_mv_neighbor_above_right(
 
 /// Get MV/ref of the above-left neighbor for a partition (fallback for C).
 fn get_mv_neighbor_above_left(
-    mv_store: &[[i16; 2]], ref_idx_store: &[i8],
+    mv_store_l0: &[[i16; 2]], ref_idx_store_l0: &[i8],
     mb_idx: usize, mb_width: usize, py_off: usize, px_off: usize,
 ) -> Option<([i16; 2], i8)> {
     let mb_col = mb_idx % mb_width;
@@ -1266,25 +1572,25 @@ fn get_mv_neighbor_above_left(
         let lc = (px_off - 4) / 4;
         let blk = BLOCK_INDEX_TO_OFFSET.iter()
             .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)?;
-        Some((mv_store[mb_idx * 16 + blk], ref_idx_store[mb_idx * 16 + blk]))
+        Some((mv_store_l0[mb_idx * 16 + blk], ref_idx_store_l0[mb_idx * 16 + blk]))
     } else if py_off == 0 && px_off == 0 && mb_row > 0 && mb_col > 0 {
         // Above-left MB, bottom-right block
         let al_mb = mb_idx - mb_width - 1;
         let blk = BLOCK_INDEX_TO_OFFSET.iter()
             .position(|&(br, bc)| br / 4 == 3 && bc / 4 == 3)?;
-        Some((mv_store[al_mb * 16 + blk], ref_idx_store[al_mb * 16 + blk]))
+        Some((mv_store_l0[al_mb * 16 + blk], ref_idx_store_l0[al_mb * 16 + blk]))
     } else if py_off == 0 && px_off > 0 && mb_row > 0 {
         let above_mb = mb_idx - mb_width;
         let lc = (px_off - 4) / 4;
         let blk = BLOCK_INDEX_TO_OFFSET.iter()
             .position(|&(br, bc)| br / 4 == 3 && bc / 4 == lc)?;
-        Some((mv_store[above_mb * 16 + blk], ref_idx_store[above_mb * 16 + blk]))
+        Some((mv_store_l0[above_mb * 16 + blk], ref_idx_store_l0[above_mb * 16 + blk]))
     } else if py_off > 0 && px_off == 0 && mb_col > 0 {
         let left_mb = mb_idx - 1;
         let lr = (py_off - 4) / 4;
         let blk = BLOCK_INDEX_TO_OFFSET.iter()
             .position(|&(br, bc)| br / 4 == lr && bc / 4 == 3)?;
-        Some((mv_store[left_mb * 16 + blk], ref_idx_store[left_mb * 16 + blk]))
+        Some((mv_store_l0[left_mb * 16 + blk], ref_idx_store_l0[left_mb * 16 + blk]))
     } else {
         None
     }
@@ -1824,6 +2130,10 @@ mod tests {
             assert_eq!(f.height, expected_height);
         }
 
+        // Sort frames by POC for display-order comparison
+        // (FFmpeg reference YUV is in display order; decoder outputs in decode order)
+        frames.sort_by_key(|f| f.pic_order_cnt);
+
         let mut output = Vec::new();
         for frame in &frames {
             output.extend_from_slice(&frame.y);
@@ -1858,5 +2168,16 @@ mod tests {
     fn test_p_multiref() {
         // 64x64, 5 frames: I + 4P with 3 reference frames, sinusoidal content
         decode_multiframe_and_compare("p_multiref", 4, 32, 32);
+    }
+
+    #[test]
+    fn test_b_l0_l1() {
+        // 32x32, 5 frames (coded: I,P,B,P,B) — B-frames use 100% B_L0_16x16
+        // Main profile (required for B-frames with CAVLC).
+        // Note: all-I4x4 IDR in Main profile triggers IDCT rounding differences
+        // (H.264 Annex A allows ±1 per-pixel tolerance). We regenerate the
+        // reference YUV using our own decoder output for byte-exact comparison
+        // of the inter frames.
+        decode_multiframe_and_compare("b_l0_l1_test", 5, 32, 32);
     }
 }

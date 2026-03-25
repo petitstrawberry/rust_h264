@@ -97,6 +97,9 @@ pub fn filter_frame(
                 mb_type_q
             };
             let bs = derive_bs(mb_type_p, mb_type_q, edge == 0);
+            if bs == 0 {
+                continue;
+            }
 
             // QP from each side of the edge
             let qp_q = mb_info[mb_idx].qp_y;
@@ -165,6 +168,9 @@ pub fn filter_frame(
                 mb_type_q
             };
             let bs = derive_bs(mb_type_p, mb_type_q, edge == 0);
+            if bs == 0 {
+                continue;
+            }
 
             let qp_q = mb_info[mb_idx].qp_y;
             let qp_p = if edge == 0 {

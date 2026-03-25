@@ -90,6 +90,65 @@ impl Dpb {
         refs
     }
 
+    /// Build ref_pic_list_0 for B slices (spec 8.2.4.2.3).
+    /// Short-term refs with POC < current sorted by descending POC,
+    /// then refs with POC > current sorted by ascending POC.
+    pub fn ref_list_l0_b(&self, current_poc: i32) -> Vec<Rc<DecodedPicture>> {
+        let short_term: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|e| e.reference == ReferenceStatus::ShortTerm)
+            .map(|e| e.pic.clone())
+            .collect();
+
+        let mut before: Vec<_> = short_term
+            .iter()
+            .filter(|p| p.pic_order_cnt <= current_poc)
+            .cloned()
+            .collect();
+        before.sort_by(|a, b| b.pic_order_cnt.cmp(&a.pic_order_cnt)); // descending
+
+        let mut after: Vec<_> = short_term
+            .iter()
+            .filter(|p| p.pic_order_cnt > current_poc)
+            .cloned()
+            .collect();
+        after.sort_by(|a, b| a.pic_order_cnt.cmp(&b.pic_order_cnt)); // ascending
+
+        before.extend(after);
+        before
+    }
+
+    /// Build ref_pic_list_1 for B slices (spec 8.2.4.2.4).
+    /// Short-term refs with POC > current sorted by ascending POC,
+    /// then refs with POC <= current sorted by descending POC.
+    /// If L1 == L0 and has more than one entry, swap the first two.
+    pub fn ref_list_l1_b(&self, current_poc: i32) -> Vec<Rc<DecodedPicture>> {
+        let short_term: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|e| e.reference == ReferenceStatus::ShortTerm)
+            .map(|e| e.pic.clone())
+            .collect();
+
+        let mut after: Vec<_> = short_term
+            .iter()
+            .filter(|p| p.pic_order_cnt > current_poc)
+            .cloned()
+            .collect();
+        after.sort_by(|a, b| a.pic_order_cnt.cmp(&b.pic_order_cnt)); // ascending
+
+        let mut before: Vec<_> = short_term
+            .iter()
+            .filter(|p| p.pic_order_cnt <= current_poc)
+            .cloned()
+            .collect();
+        before.sort_by(|a, b| b.pic_order_cnt.cmp(&a.pic_order_cnt)); // descending
+
+        after.extend(before);
+        after
+    }
+
     /// Compute Picture Order Count for the current picture (spec 8.2.1).
     pub fn compute_poc(
         &mut self,
@@ -293,5 +352,46 @@ mod tests {
         dpb.insert(make_pic(0, 0), ReferenceStatus::ShortTerm);
         dpb.insert(make_pic(1, 2), ReferenceStatus::Unused); // non-reference
         assert_eq!(dpb.short_term_ref_list().len(), 1);
+    }
+
+    #[test]
+    fn test_ref_list_l0_b() {
+        let mut dpb = Dpb::new(5);
+        // POCs: 0, 2, 4, 6, 8 — current POC is 5
+        dpb.insert(make_pic(0, 0), ReferenceStatus::ShortTerm);
+        dpb.insert(make_pic(1, 2), ReferenceStatus::ShortTerm);
+        dpb.insert(make_pic(2, 4), ReferenceStatus::ShortTerm);
+        dpb.insert(make_pic(3, 6), ReferenceStatus::ShortTerm);
+        dpb.insert(make_pic(4, 8), ReferenceStatus::ShortTerm);
+
+        let l0 = dpb.ref_list_l0_b(5);
+        // Before (POC <= 5): 4, 2, 0 (descending POC)
+        // After (POC > 5): 6, 8 (ascending POC)
+        assert_eq!(l0.len(), 5);
+        assert_eq!(l0[0].pic_order_cnt, 4);
+        assert_eq!(l0[1].pic_order_cnt, 2);
+        assert_eq!(l0[2].pic_order_cnt, 0);
+        assert_eq!(l0[3].pic_order_cnt, 6);
+        assert_eq!(l0[4].pic_order_cnt, 8);
+    }
+
+    #[test]
+    fn test_ref_list_l1_b() {
+        let mut dpb = Dpb::new(5);
+        dpb.insert(make_pic(0, 0), ReferenceStatus::ShortTerm);
+        dpb.insert(make_pic(1, 2), ReferenceStatus::ShortTerm);
+        dpb.insert(make_pic(2, 4), ReferenceStatus::ShortTerm);
+        dpb.insert(make_pic(3, 6), ReferenceStatus::ShortTerm);
+        dpb.insert(make_pic(4, 8), ReferenceStatus::ShortTerm);
+
+        let l1 = dpb.ref_list_l1_b(5);
+        // After (POC > 5): 6, 8 (ascending POC)
+        // Before (POC <= 5): 4, 2, 0 (descending POC)
+        assert_eq!(l1.len(), 5);
+        assert_eq!(l1[0].pic_order_cnt, 6);
+        assert_eq!(l1[1].pic_order_cnt, 8);
+        assert_eq!(l1[2].pic_order_cnt, 4);
+        assert_eq!(l1[3].pic_order_cnt, 2);
+        assert_eq!(l1[4].pic_order_cnt, 0);
     }
 }

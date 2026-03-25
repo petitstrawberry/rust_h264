@@ -46,6 +46,10 @@ pub struct SliceHeader {
     pub delta_pic_order_cnt: [i32; 2],
     /// Number of active L0 reference frames for P/B slices (1-based).
     pub num_ref_idx_l0_active: u32,
+    /// Number of active L1 reference frames for B slices (1-based).
+    pub num_ref_idx_l1_active: u32,
+    /// Spatial (true) vs temporal (false) direct mode for B slices.
+    pub direct_spatial_mv_pred_flag: bool,
 }
 
 impl SliceHeader {
@@ -101,18 +105,29 @@ pub fn parse_slice_header(
         }
     }
 
+    // direct_spatial_mv_pred_flag (B-slices only, spec 7.3.3)
+    let mut direct_spatial_mv_pred_flag = false;
+    if slice_type == SliceType::B {
+        direct_spatial_mv_pred_flag = r.read_bit()? != 0;
+    }
+
     // num_ref_idx_active_override (for P/B slices)
     let mut num_ref_idx_l0_active = if slice_type == SliceType::I || slice_type == SliceType::Si {
         0
     } else {
         pps.num_ref_idx_l0_default_active_minus1 + 1
     };
+    let mut num_ref_idx_l1_active = if slice_type == SliceType::B {
+        pps.num_ref_idx_l1_default_active_minus1 + 1
+    } else {
+        0
+    };
     if slice_type != SliceType::I && slice_type != SliceType::Si {
         let num_ref_idx_active_override_flag = r.read_bit()? != 0;
         if num_ref_idx_active_override_flag {
             num_ref_idx_l0_active = r.read_ue()? + 1;
             if slice_type == SliceType::B {
-                let _num_ref_idx_l1_active_minus1 = r.read_ue()?;
+                num_ref_idx_l1_active = r.read_ue()? + 1;
             }
         }
     }
@@ -127,6 +142,56 @@ pub fn parse_slice_header(
                     break;
                 }
                 let _ = r.read_ue()?; // abs_diff_pic_num_minus1 or long_term_pic_num
+            }
+        }
+        if slice_type == SliceType::B {
+            let ref_pic_list_modification_flag_l1 = r.read_bit()? != 0;
+            if ref_pic_list_modification_flag_l1 {
+                loop {
+                    let modification_of_pic_nums_idc = r.read_ue()?;
+                    if modification_of_pic_nums_idc == 3 {
+                        break;
+                    }
+                    let _ = r.read_ue()?;
+                }
+            }
+        }
+    }
+
+    // pred_weight_table (spec 7.3.3.2) — consume but don't store
+    let needs_weight_table = (slice_type == SliceType::P && pps.weighted_pred_flag)
+        || (slice_type == SliceType::B && pps.weighted_bipred_idc == 1);
+    if needs_weight_table {
+        let _luma_log2_weight_denom = r.read_ue()?;
+        let _chroma_log2_weight_denom = r.read_ue()?;
+        for _ in 0..num_ref_idx_l0_active {
+            let luma_weight_flag = r.read_bit()? != 0;
+            if luma_weight_flag {
+                let _ = r.read_se()?; // luma_weight
+                let _ = r.read_se()?; // luma_offset
+            }
+            let chroma_weight_flag = r.read_bit()? != 0;
+            if chroma_weight_flag {
+                for _ in 0..2 {
+                    let _ = r.read_se()?; // chroma_weight
+                    let _ = r.read_se()?; // chroma_offset
+                }
+            }
+        }
+        if slice_type == SliceType::B {
+            for _ in 0..num_ref_idx_l1_active {
+                let luma_weight_flag = r.read_bit()? != 0;
+                if luma_weight_flag {
+                    let _ = r.read_se()?;
+                    let _ = r.read_se()?;
+                }
+                let chroma_weight_flag = r.read_bit()? != 0;
+                if chroma_weight_flag {
+                    for _ in 0..2 {
+                        let _ = r.read_se()?;
+                        let _ = r.read_se()?;
+                    }
+                }
             }
         }
     }
@@ -185,6 +250,8 @@ pub fn parse_slice_header(
         delta_pic_order_cnt_bottom,
         delta_pic_order_cnt,
         num_ref_idx_l0_active,
+        num_ref_idx_l1_active,
+        direct_spatial_mv_pred_flag,
     };
 
     Ok((header, r))
