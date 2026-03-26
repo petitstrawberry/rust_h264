@@ -227,6 +227,7 @@ impl Decoder {
                                     &mv_store_l0, &ref_idx_store_l0,
                                     &mv_store_l1, &ref_idx_store_l1,
                                     mb_idx, mb_width as usize,
+                                    _ref_pic_list_l1.first().map(|p| p.as_ref()),
                                 )
                             } else {
                                 let col_pic = &_ref_pic_list_l1[0];
@@ -398,6 +399,7 @@ impl Decoder {
                                     &mv_store_l0, &ref_idx_store_l0,
                                     &mv_store_l1, &ref_idx_store_l1,
                                     mb_idx, mb_width as usize,
+                                    _ref_pic_list_l1.first().map(|p| p.as_ref()),
                                 )
                             } else {
                                 let col_pic = &_ref_pic_list_l1[0];
@@ -1574,6 +1576,7 @@ fn derive_spatial_direct(
     ref_idx_store_l1: &[i8],
     mb_idx: usize,
     mb_width: usize,
+    col_pic: Option<&DecodedPicture>,
 ) -> ([i16; 2], [i16; 2], i8, i8, bool, bool) {
     let mut ref_idx = [-1i8; 2];
     let mut mv = [[0i16; 2]; 2];
@@ -1649,6 +1652,34 @@ fn derive_spatial_direct(
         ref_idx = [0, 0];
         pred_flag = [true, true];
         mv = [[0, 0], [0, 0]];
+    }
+
+    // Co-located zero-MV refinement (spec 8.4.1.2.2):
+    // If the co-located MB in L1[0] has near-zero MV with ref_idx=0,
+    // zero out spatial MVs for lists where ref_idx == 0.
+    if let Some(col) = col_pic {
+        let col_base = mb_idx * 16;
+        if col_base < col.ref_idx_l0.len() && !col.is_intra {
+            let col_ref = col.ref_idx_l0[col_base];
+            let col_mv = if col_base < col.mv_l0.len() {
+                col.mv_l0[col_base]
+            } else {
+                [0, 0]
+            };
+            // Check: co-located ref_idx_l0 == 0 and |MV| <= 1 in both components
+            if col_ref == 0
+                && col_mv[0].abs() <= 1
+                && col_mv[1].abs() <= 1
+            {
+                // Zero out MVs for lists with ref_idx == 0
+                if ref_idx[0] == 0 {
+                    mv[0] = [0, 0];
+                }
+                if ref_idx[1] == 0 {
+                    mv[1] = [0, 0];
+                }
+            }
+        }
     }
 
     (mv[0], mv[1], ref_idx[0], ref_idx[1], pred_flag[0], pred_flag[1])

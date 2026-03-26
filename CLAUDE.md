@@ -61,7 +61,8 @@ I-frame, P-frame, and B-frame decoding functional. B_Skip, B_Direct_16x16, B_L0_
 - B_Direct_16x16 (spatial/temporal direct mode + residual)
 - B_L0_16x16, B_L1_16x16 (uni-directional), B_Bi_16x16 (bi-directional)
 - Dual MV/ref_idx storage (L0 + L1) for B-slice support
-- Spatial direct mode: min-positive ref_idx from neighbors, median MV prediction
+- Spatial direct mode: min-positive ref_idx from neighbors, median MV prediction,
+  co-located zero-MV refinement
 - Temporal direct mode: co-located MV scaling by POC distance (dist_scale_factor)
 - Bi-prediction averaging for luma and chroma
 
@@ -128,7 +129,6 @@ I-frame, P-frame, and B-frame decoding functional. B_Skip, B_Direct_16x16, B_L0_
 
 ### Not Yet Implemented
 
-- Co-located zero-MV refinement for spatial direct mode
 - B-slice 16x8, 8x16, B_8x8 partitions
 - Multi-B-frame sequences (consecutive B-frames)
 - MBAFF/interlaced mode
