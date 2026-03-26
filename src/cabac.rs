@@ -332,6 +332,165 @@ pub fn init_cabac_states(slice_qp: i32, is_i_slice: bool, cabac_init_idc: u32) -
 
 use crate::cabac_tables::{CABAC_CONTEXT_INIT_I, CABAC_CONTEXT_INIT_PB};
 
+// ---- CABAC residual coefficient decoding (spec 9.3.3.1.3) ----
+
+/// Context base indices for significant_coeff_flag by block category (frame mode).
+#[rustfmt::skip]
+const SIGNIFICANT_COEFF_FLAG_OFFSET: [usize; 5] = [
+    105,    // cat 0: luma DC (I16x16)
+    105+15, // cat 1: luma AC (I16x16)
+    105+29, // cat 2: luma 4x4
+    105+44, // cat 3: chroma DC
+    105+47, // cat 4: chroma AC
+];
+
+/// Context base indices for last_significant_coeff_flag by block category (frame mode).
+#[rustfmt::skip]
+const LAST_COEFF_FLAG_OFFSET: [usize; 5] = [
+    166,    // cat 0
+    166+15, // cat 1
+    166+29, // cat 2
+    166+44, // cat 3
+    166+47, // cat 4
+];
+
+/// Context base indices for coeff_abs_level_minus1 by block category.
+#[rustfmt::skip]
+const COEFF_ABS_LEVEL_M1_OFFSET: [usize; 5] = [
+    227,    // cat 0
+    227+10, // cat 1
+    227+20, // cat 2
+    227+30, // cat 3
+    227+39, // cat 4
+];
+
+/// Node context to CABAC context mapping for coeff_abs_level == 1.
+const COEFF_ABS_LEVEL1_CTX: [u8; 8] = [1, 2, 3, 4, 0, 0, 0, 0];
+
+/// Node context to CABAC context mapping for coeff_abs_level > 1.
+const COEFF_ABS_LEVELGT1_CTX: [u8; 8] = [5, 5, 5, 5, 6, 7, 8, 9];
+
+/// Node context transition after decoding level == 1.
+const LEVEL_TRANSITION_1: [u8; 8] = [1, 2, 3, 3, 4, 5, 6, 7];
+
+/// Node context transition after decoding level > 1.
+const LEVEL_TRANSITION_GT1: [u8; 8] = [4, 4, 4, 4, 5, 6, 7, 7];
+
+impl CabacReader<'_> {
+    /// Decode a CABAC residual block (spec 9.3.3.1.3).
+    ///
+    /// * `state`: mutable CABAC context state array (1024 entries)
+    /// * `cat`: block category (0=luma DC I16x16, 1=luma AC I16x16, 2=luma 4x4, 3=chroma DC, 4=chroma AC)
+    /// * `max_coeff`: maximum number of coefficients (16 for 4x4, 15 for AC, 4 for chroma DC)
+    /// * `coded_block_flag`: whether coded_block_flag was signaled true (caller checks)
+    ///
+    /// Returns coefficients in scan order (caller must apply zigzag/dequant).
+    /// Returns the number of non-zero coefficients.
+    pub fn decode_residual_cabac(
+        &mut self,
+        state: &mut [u8; 1024],
+        cat: usize,
+        max_coeff: usize,
+    ) -> (Vec<(usize, i32)>, u8) {
+        let sig_base = SIGNIFICANT_COEFF_FLAG_OFFSET[cat];
+        let last_base = LAST_COEFF_FLAG_OFFSET[cat];
+        let abs_base = COEFF_ABS_LEVEL_M1_OFFSET[cat];
+
+        // Phase 1: Decode significance map — which positions have non-zero coefficients
+        let mut sig_positions: Vec<usize> = Vec::new();
+
+        for pos in 0..max_coeff - 1 {
+            // significant_coeff_flag: is this position non-zero?
+            if self.get_cabac(&mut state[sig_base + pos]) != 0 {
+                sig_positions.push(pos);
+                // last_significant_coeff_flag: is this the last non-zero?
+                if self.get_cabac(&mut state[last_base + pos]) != 0 {
+                    break;
+                }
+            }
+        }
+        // If we scanned all positions without a "last" flag, the final position is significant
+        if sig_positions.is_empty()
+            || (sig_positions.last() != Some(&(max_coeff - 2))
+                && sig_positions.len() < max_coeff)
+        {
+            // Check: if loop completed without break, last position is implicitly significant
+            if let Some(&last) = sig_positions.last() {
+                if last < max_coeff - 2 {
+                    // Loop ran to end without last flag set — should not happen
+                    // (the last position is always implicitly significant if loop completes)
+                }
+            }
+        }
+        // If the loop ran all the way without a last flag, pos max_coeff-1 is significant
+        if sig_positions.is_empty() || sig_positions.last().copied() != Some(max_coeff - 2) {
+            // Check if loop exited without finding last — in that case, the last position
+            // (max_coeff - 1) is implicitly the last significant coefficient
+            if !sig_positions.is_empty() {
+                // Already found some coefficients, but didn't hit "last" flag
+                // The loop should have been: for pos in 0..max_coeff-1, if all scanned
+                // without last=1, then pos=max_coeff-1 is also significant
+                sig_positions.push(max_coeff - 1);
+            }
+        }
+
+        if sig_positions.is_empty() {
+            return (vec![], 0);
+        }
+
+        let coeff_count = sig_positions.len() as u8;
+
+        // Phase 2: Decode coefficient levels (in reverse order — high frequency first)
+        let mut coeffs = Vec::with_capacity(sig_positions.len());
+        let mut node_ctx = 0usize;
+
+        for &pos in sig_positions.iter().rev() {
+            // Decode |level| - 1
+            let level1_ctx = abs_base + COEFF_ABS_LEVEL1_CTX[node_ctx] as usize;
+
+            let abs_level = if self.get_cabac(&mut state[level1_ctx]) == 0 {
+                // |level| == 1
+                node_ctx = LEVEL_TRANSITION_1[node_ctx] as usize;
+                1i32
+            } else {
+                // |level| > 1: unary coding
+                let gt1_ctx = abs_base + COEFF_ABS_LEVELGT1_CTX[node_ctx] as usize;
+                node_ctx = LEVEL_TRANSITION_GT1[node_ctx] as usize;
+
+                let mut abs_val = 2u32;
+                while abs_val < 15 && self.get_cabac(&mut state[gt1_ctx]) != 0 {
+                    abs_val += 1;
+                }
+
+                if abs_val >= 15 {
+                    // Exponential-Golomb bypass for large values
+                    let mut k = 0u32;
+                    while self.get_cabac_bypass() != 0 && k < 23 {
+                        k += 1;
+                    }
+                    let mut val = 1u32;
+                    while k > 0 {
+                        k -= 1;
+                        val = (val << 1) | self.get_cabac_bypass();
+                    }
+                    abs_val += val - 1;
+                }
+
+                abs_val as i32
+            };
+
+            // Sign via bypass
+            let level = self.get_cabac_bypass_sign(-(abs_level));
+            coeffs.push((pos, level));
+        }
+
+        // Reverse to put in scan order (low freq first)
+        coeffs.reverse();
+
+        (coeffs, coeff_count)
+    }
+}
+
 // ---- CABAC syntax element decoders (spec 9.3.3) ----
 
 impl CabacReader<'_> {
