@@ -31,7 +31,7 @@ This is a Rust project using Cargo:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding functional. B_Skip, B_Direct_16x16, B_L0_16x16, B_L1_16x16, and B_Bi_16x16 implemented (spatial direct mode). B-slice 16x8/8x16/8x8 sub-partitions and temporal direct mode not yet implemented.
+I-frame, P-frame, and B-frame decoding functional. B_Skip, B_Direct_16x16, B_L0_16x16, B_L1_16x16, and B_Bi_16x16 implemented with both spatial and temporal direct modes. B-slice 16x8/8x16/8x8 sub-partitions not yet implemented.
 
 ### Completed
 
@@ -57,11 +57,12 @@ I-frame, P-frame, and B-frame decoding functional. B_Skip, B_Direct_16x16, B_L0_
 - MV prediction with median and directional (match_count) logic
 - Inter CBP table, inter scaling lists (indices 3-5)
 - P_8x8 with all sub-partition types (8x8, 8x4, 4x8, 4x4) and P_8x8ref0
-- B_Skip (spatial direct mode, no residual)
-- B_Direct_16x16 (spatial direct mode + residual)
+- B_Skip (spatial/temporal direct mode, no residual)
+- B_Direct_16x16 (spatial/temporal direct mode + residual)
 - B_L0_16x16, B_L1_16x16 (uni-directional), B_Bi_16x16 (bi-directional)
 - Dual MV/ref_idx storage (L0 + L1) for B-slice support
 - Spatial direct mode: min-positive ref_idx from neighbors, median MV prediction
+- Temporal direct mode: co-located MV scaling by POC distance (dist_scale_factor)
 - Bi-prediction averaging for luma and chroma
 
 **Motion Compensation** (`src/inter_pred.rs`)
@@ -77,6 +78,7 @@ I-frame, P-frame, and B-frame decoding functional. B_Skip, B_Direct_16x16, B_L0_
 - P-slice L0: short-term refs sorted by descending frame_num
 - B-slice L0: refs sorted by POC (before current descending, after ascending)
 - B-slice L1: refs sorted by POC (after current ascending, before descending)
+- Co-located picture MV/ref storage for temporal direct mode
 
 **CAVLC Entropy Decoding** (`src/cavlc.rs`)
 - Complete coeff_token VLC tables (nC 0-2, 2-4, 4-8, 8+, chroma DC)
@@ -114,18 +116,18 @@ I-frame, P-frame, and B-frame decoding functional. B_Skip, B_Direct_16x16, B_L0_
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (56 tests)
+**Test Coverage** (57 tests)
 - Intra: single_frame, multi_mb_frame, i4x4_frame, deblock_frame, mixed_i4x4_frame,
   gradient_48x32, edges (QP=10/35), smooth_80x48, noise_16x16, scaling_test
 - P-slice: p_frame_test (IDR+P), p_skip_heavy (50% skip), p_multi_frame (IDR+3P
   with P16x16/P16x8/8x16/intra-in-P), p_8x8_test (82.8% P_8x8 + sub-8x4),
   p_multiref (IDR+3P with ref=3, multi-reference P8x16)
 - B-slice: b_l0_l1_test (100% B_L0_16x16), b_bi_test (33% B_Bi + 67% B_L1 +
-  intra-in-B), b_skip_test (100% B_Skip, spatial direct mode)
+  intra-in-B), b_skip_test (100% B_Skip, spatial direct), b_temporal_test
+  (100% B_Skip, temporal direct)
 
 ### Not Yet Implemented
 
-- Temporal direct mode (co-located MV scaling)
 - Co-located zero-MV refinement for spatial direct mode
 - B-slice 16x8, 8x16, B_8x8 partitions
 - Multi-B-frame sequences (consecutive B-frames)
