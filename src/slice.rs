@@ -56,6 +56,8 @@ pub struct SliceHeader {
     pub ref_list_mod_l0: Vec<(u32, u32)>,
     /// Ref pic list modification ops for L1.
     pub ref_list_mod_l1: Vec<(u32, u32)>,
+    /// CABAC context initialization index (0-2) for P/B slices. Only valid when entropy_coding_mode_flag=1.
+    pub cabac_init_idc: u32,
 }
 
 impl SliceHeader {
@@ -237,6 +239,16 @@ pub fn parse_slice_header(
 
     let slice_qp_delta = r.read_se()?;
 
+    // cabac_init_idc: parsed when entropy_coding_mode_flag=1 and slice is not I/SI
+    let cabac_init_idc = if pps.entropy_coding_mode_flag
+        && slice_type != SliceType::I
+        && slice_type != SliceType::Si
+    {
+        r.read_ue()?
+    } else {
+        0
+    };
+
     let mut disable_deblocking_filter_idc = 0;
     let mut slice_alpha_c0_offset_div2 = 0;
     let mut slice_beta_offset_div2 = 0;
@@ -269,6 +281,7 @@ pub fn parse_slice_header(
         mmco_ops,
         ref_list_mod_l0,
         ref_list_mod_l1,
+        cabac_init_idc,
     };
 
     Ok((header, r))

@@ -173,6 +173,18 @@ impl BitstreamReader {
         &self.data[self.byte_offset..end]
     }
 
+    /// Get the byte-aligned position for CABAC initialization.
+    /// Aligns to the next byte boundary and returns (byte_offset, reference to data).
+    pub fn cabac_start(&mut self) -> (usize, &[u8]) {
+        // CABAC starts after cabac_alignment_one_bit + byte alignment
+        // The slice header is followed by a 1-bit then byte-aligned CABAC data
+        if self.bit_offset != 0 {
+            self.bit_offset = 0;
+            self.byte_offset += 1;
+        }
+        (self.byte_offset, &self.data[..self.data_len])
+    }
+
     pub fn bits_remaining(&self) -> usize {
         if self.byte_offset >= self.data_len {
             return 0;

@@ -210,8 +210,8 @@ impl<'a> CabacReader<'a> {
     fn refill(&mut self) {
         let b0 = if self.pos < self.data.len() { self.data[self.pos] } else { 0 };
         let b1 = if self.pos + 1 < self.data.len() { self.data[self.pos + 1] } else { 0 };
-        self.low += (b0 as u32) << 9;
-        self.low += (b1 as u32) << 1;
+        self.low = self.low.wrapping_add((b0 as u32) << 9);
+        self.low = self.low.wrapping_add((b1 as u32) << 1);
         self.low = self.low.wrapping_sub(CABAC_MASK);
         self.pos += 2;
     }
@@ -251,7 +251,7 @@ impl<'a> CabacReader<'a> {
         // Renormalization
         let shift = norm_shift(self.range);
         self.range <<= shift;
-        self.low <<= shift;
+        self.low = self.low.wrapping_shl(shift);
         if self.low & CABAC_MASK == 0 {
             self.refill2();
         }
@@ -261,7 +261,7 @@ impl<'a> CabacReader<'a> {
     /// Decode a bypass (equiprobable) bit — no context adaptation.
     #[inline]
     pub fn get_cabac_bypass(&mut self) -> u32 {
-        self.low += self.low;
+        self.low = self.low.wrapping_add(self.low);
         if self.low & CABAC_MASK == 0 {
             self.refill();
         }
@@ -269,7 +269,7 @@ impl<'a> CabacReader<'a> {
         if self.low < range {
             0
         } else {
-            self.low -= range;
+            self.low = self.low.wrapping_sub(range);
             1
         }
     }
@@ -278,7 +278,7 @@ impl<'a> CabacReader<'a> {
     /// Returns +val or -val.
     #[inline]
     pub fn get_cabac_bypass_sign(&mut self, val: i32) -> i32 {
-        self.low += self.low;
+        self.low = self.low.wrapping_add(self.low);
         if self.low & CABAC_MASK == 0 {
             self.refill();
         }
@@ -297,7 +297,7 @@ impl<'a> CabacReader<'a> {
             // Renormalize once
             let shift = (self.range.wrapping_sub(0x100)) >> 31;
             self.range <<= shift;
-            self.low <<= shift;
+            self.low = self.low.wrapping_shl(shift);
             if self.low & CABAC_MASK == 0 {
                 self.refill();
             }

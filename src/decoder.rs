@@ -182,13 +182,235 @@ impl Decoder {
             total_mbs
         ];
 
+        // CABAC or CAVLC?
+        let use_cabac = pps.entropy_coding_mode_flag;
+
+        // Initialize CABAC engine if needed
+        let cabac_byte_pos = if use_cabac {
+            // Read cabac_alignment_one_bit and align to byte boundary
+            let _ = reader.read_bit(); // cabac_alignment_one_bit (should be 1)
+            let (pos, _data) = reader.cabac_start();
+            Some(pos)
+        } else {
+            None
+        };
+        // Create CabacReader from original RBSP data (avoids borrow conflict with reader)
+        let mut cabac_reader = cabac_byte_pos
+            .map(|pos| crate::cabac::CabacReader::new(&nal.rbsp, pos));
+        let mut cabac_state = if use_cabac {
+            crate::cabac::init_cabac_states(
+                slice_qp,
+                header.slice_type == SliceType::I,
+                header.cabac_init_idc,
+            )
+        } else {
+            [0u8; 1024]
+        };
+
         let mut mb_skip_run: i32 = -1; // -1 = not initialized for P slices
+        let mut last_qp_delta_nonzero = false; // for CABAC QP delta context
 
         let mut mb_idx = header.first_mb_in_slice as usize;
         while mb_idx < total_mbs {
             let mb_x = (mb_idx % mb_width as usize) * 16;
             let mb_y = (mb_idx / mb_width as usize) * 16;
             let stride = width as usize;
+
+            // CABAC decode path
+            if use_cabac {
+                let cr = cabac_reader.as_mut().unwrap();
+                let st = &mut cabac_state;
+
+                // End-of-slice check via terminate (not for the first MB)
+                if mb_idx > header.first_mb_in_slice as usize && cr.get_cabac_terminate() != 0 {
+                    break;
+                }
+
+                // For P/B slices with CABAC, return unsupported for now
+                if is_p_slice || is_b_slice {
+                    return Err(DecodeError::Unsupported("CABAC P/B slices not yet integrated"));
+                }
+
+                // I-slice CABAC: decode mb_type
+                let left_is_i16 = if !mb_idx.is_multiple_of(mb_width as usize) {
+                    mb_info[mb_idx - 1].mb_type == MbType::Intra
+                } else { false };
+                let top_is_i16 = if mb_idx >= mb_width as usize {
+                    mb_info[mb_idx - mb_width as usize].mb_type == MbType::Intra
+                } else { false };
+                let mb_type = cr.decode_intra_mb_type(st, 3, left_is_i16, top_is_i16);
+
+                // I_PCM
+                if mb_type == 25 {
+                    return Err(DecodeError::Unsupported("CABAC I_PCM not yet integrated"));
+                }
+
+                if mb_type == 0 {
+                    // I4x4 via CABAC
+                    let mut pred_modes = [2u8; 16];
+                    for blk in 0..16 {
+                        let predicted = predict_i4x4_mode(
+                            &i4x4_modes, mb_idx, mb_width as usize, blk,
+                        );
+                        pred_modes[blk] = cr.decode_intra4x4_pred_mode(st, predicted);
+                        i4x4_modes[mb_idx * 16 + blk] = pred_modes[blk];
+                    }
+
+                    // TODO: track neighbor chroma pred modes for proper context
+                    let intra_chroma_pred_mode = cr.decode_chroma_pred_mode(st, 0, 0);
+
+                    // CBP — TODO: track neighbor CBP for proper context
+                    let cbp_luma = cr.decode_cbp_luma(st, 0x0F, 0x0F);
+                    let cbp_chroma = cr.decode_cbp_chroma(st, 0, 0);
+
+                    let qp_y = if cbp_luma != 0 || cbp_chroma != 0 {
+                        let delta = cr.decode_mb_qp_delta(st, last_qp_delta_nonzero);
+                        last_qp_delta_nonzero = delta != 0;
+                        ((prev_mb_qp + delta + 52) % 52 + 52) % 52
+                    } else {
+                        last_qp_delta_nonzero = false;
+                        prev_mb_qp
+                    };
+                    prev_mb_qp = qp_y;
+                    let _qp_c = chroma_qp(qp_y, pps.chroma_qp_index_offset);
+
+                    // Decode and reconstruct each 4x4 luma block
+                    for blk in 0..16 {
+                        let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
+                        let px = mb_x + blk_col;
+                        let py = mb_y + blk_row;
+
+                        let mut block_coeffs = [0i32; 16];
+                        if cbp_luma & (1 << (blk / 4)) != 0 {
+                            // Check coded_block_flag
+                            // TODO: proper neighbor NZ tracking for CABAC CBF context
+                            let left_nz_blk = false;
+                            let top_nz_blk = false;
+
+                            if cr.decode_coded_block_flag(st, 2, left_nz_blk, top_nz_blk) {
+                                let (coeffs, tc) = cr.decode_residual_cabac(st, 2, 16);
+                                nc_luma[mb_idx * 16 + blk] = tc;
+                                // Place coefficients in scan order
+                                for (pos, val) in coeffs {
+                                    let (r, c) = ZIGZAG_4X4[pos];
+                                    block_coeffs[r * 4 + c] = val;
+                                }
+                                dequant_4x4_full(&mut block_coeffs, qp_y, &pps.scaling_list_4x4[0]);
+                            }
+                        }
+                        inverse_dct_4x4(&mut block_coeffs);
+
+                        // I4x4 prediction
+                        let above_buf: Option<[u8; 8]> = if py > 0 {
+                            let mut buf = [0u8; 8];
+                            for (i, b) in buf.iter_mut().enumerate().take(4) {
+                                *b = frame.y[(py - 1) * stride + px + i];
+                            }
+                            let local_row = py - mb_y;
+                            let topright_avail = if local_row == 0 {
+                                px + 4 < stride
+                            } else {
+                                !matches!(blk, 3 | 7 | 11 | 13 | 15)
+                            };
+                            if topright_avail {
+                                for (i, b) in buf.iter_mut().enumerate().skip(4) {
+                                    let col = (px + i).min(stride - 1);
+                                    *b = frame.y[(py - 1) * stride + col];
+                                }
+                            } else {
+                                let last = buf[3];
+                                buf[4..8].fill(last);
+                            }
+                            Some(buf)
+                        } else { None };
+                        let left_buf: Option<[u8; 4]> = if px > 0 {
+                            let mut buf = [0u8; 4];
+                            for (i, b) in buf.iter_mut().enumerate() {
+                                *b = frame.y[(py + i) * stride + px - 1];
+                            }
+                            Some(buf)
+                        } else { None };
+                        let above_left_val = if px > 0 && py > 0 {
+                            Some(frame.y[(py - 1) * stride + px - 1])
+                        } else { None };
+
+                        let mut pred = [0u8; 16];
+                        predict_intra_4x4(
+                            pred_modes[blk],
+                            above_buf.as_ref().map(|b| &b[..]),
+                            left_buf.as_ref().map(|b| &b[..]),
+                            above_left_val,
+                            &mut pred,
+                        );
+
+                        for r in 0..4 {
+                            for c in 0..4 {
+                                let val = (pred[r * 4 + c] as i32 + block_coeffs[r * 4 + c])
+                                    .clamp(0, 255) as u8;
+                                frame.y[(py + r) * stride + px + c] = val;
+                            }
+                        }
+                    }
+
+                    // Chroma (simplified — reuse existing chroma decode pattern)
+                    let chroma_width = (width / 2) as usize;
+                    let chroma_mb_x = mb_x / 2;
+                    let chroma_mb_y = mb_y / 2;
+
+                    // Chroma prediction
+                    let above_chroma_u = if mb_y > 0 {
+                        let mut buf = [0u8; 8];
+                        buf.copy_from_slice(&frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8]);
+                        Some(buf)
+                    } else { None };
+                    let left_chroma_u = if mb_x > 0 {
+                        let mut buf = [0u8; 8];
+                        for (i, b) in buf.iter_mut().enumerate() { *b = frame.u[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1]; }
+                        Some(buf)
+                    } else { None };
+                    let al_u = if mb_x > 0 && mb_y > 0 {
+                        Some(frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
+                    } else { None };
+
+                    let above_chroma_v = if mb_y > 0 {
+                        let mut buf = [0u8; 8];
+                        buf.copy_from_slice(&frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8]);
+                        Some(buf)
+                    } else { None };
+                    let left_chroma_v = if mb_x > 0 {
+                        let mut buf = [0u8; 8];
+                        for (i, b) in buf.iter_mut().enumerate() { *b = frame.v[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1]; }
+                        Some(buf)
+                    } else { None };
+                    let al_v = if mb_x > 0 && mb_y > 0 {
+                        Some(frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
+                    } else { None };
+
+                    let mut pred_u = [0u8; 64];
+                    let mut pred_v = [0u8; 64];
+                    predict_chroma_8x8(intra_chroma_pred_mode, above_chroma_u.as_ref().map(|b| &b[..]),
+                        left_chroma_u.as_ref().map(|b| &b[..]), al_u, &mut pred_u);
+                    predict_chroma_8x8(intra_chroma_pred_mode, above_chroma_v.as_ref().map(|b| &b[..]),
+                        left_chroma_v.as_ref().map(|b| &b[..]), al_v, &mut pred_v);
+
+                    // Chroma residual: DC + AC (simplified — skip CABAC chroma residual for now)
+                    // TODO: decode chroma DC and AC with CABAC
+                    for y in 0..8 {
+                        for x in 0..8 {
+                            frame.u[(chroma_mb_y + y) * chroma_width + chroma_mb_x + x] = pred_u[y * 8 + x];
+                            frame.v[(chroma_mb_y + y) * chroma_width + chroma_mb_x + x] = pred_v[y * 8 + x];
+                        }
+                    }
+
+                    mb_info[mb_idx] = MbInfo { mb_type: MbType::Intra, qp_y };
+                } else {
+                    // I16x16 via CABAC
+                    return Err(DecodeError::Unsupported("CABAC I16x16 not yet integrated"));
+                }
+
+                mb_idx += 1;
+                continue;
+            }
 
             // P/B-slice skip run handling
             if is_p_slice || is_b_slice {
