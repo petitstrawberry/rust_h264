@@ -462,12 +462,393 @@ impl Decoder {
                         });
                     }
                     4..=21 => {
-                        // 16x8/8x16 variants (step 6)
-                        return Err(DecodeError::Unsupported("B 16x8/8x16 not yet implemented"));
+                        // B 16x8/8x16 variants (Table 7-11)
+                        // Each type specifies partition size and per-partition pred direction
+                        // Format: (part_w, part_h, [(pred_l0_0, pred_l1_0), (pred_l0_1, pred_l1_1)])
+                        #[rustfmt::skip]
+                        #[allow(clippy::type_complexity)]
+                        const B_PART_TABLE: [(usize, usize, [(bool, bool); 2]); 18] = [
+                            // mb_type 4-5: B_L0_L0
+                            (16, 8, [(true,false),(true,false)]),  // 4
+                            (8, 16, [(true,false),(true,false)]),  // 5
+                            // mb_type 6-7: B_L1_L1
+                            (16, 8, [(false,true),(false,true)]), // 6
+                            (8, 16, [(false,true),(false,true)]), // 7
+                            // mb_type 8-9: B_L0_L1
+                            (16, 8, [(true,false),(false,true)]), // 8
+                            (8, 16, [(true,false),(false,true)]), // 9
+                            // mb_type 10-11: B_L1_L0
+                            (16, 8, [(false,true),(true,false)]), // 10
+                            (8, 16, [(false,true),(true,false)]), // 11
+                            // mb_type 12-13: B_L0_Bi
+                            (16, 8, [(true,false),(true,true)]),  // 12
+                            (8, 16, [(true,false),(true,true)]),  // 13
+                            // mb_type 14-15: B_L1_Bi
+                            (16, 8, [(false,true),(true,true)]),  // 14
+                            (8, 16, [(false,true),(true,true)]),  // 15
+                            // mb_type 16-17: B_Bi_L0
+                            (16, 8, [(true,true),(true,false)]),  // 16
+                            (8, 16, [(true,true),(true,false)]),  // 17
+                            // mb_type 18-19: B_Bi_L1
+                            (16, 8, [(true,true),(false,true)]),  // 18
+                            (8, 16, [(true,true),(false,true)]),  // 19
+                            // mb_type 20-21: B_Bi_Bi
+                            (16, 8, [(true,true),(true,true)]),   // 20
+                            (8, 16, [(true,true),(true,true)]),   // 21
+                        ];
+                        let entry = B_PART_TABLE[(mb_type - 4) as usize];
+                        let (part_w, part_h) = (entry.0, entry.1);
+                        let pred_flags = entry.2;
+
+                        // Parse ref_idx: for each list, for each partition (spec 7.3.5.1)
+                        let mut part_ref_l0 = [-1i8; 2];
+                        let mut part_ref_l1 = [-1i8; 2];
+                        for p in 0..2 {
+                            if pred_flags[p].0 && header.num_ref_idx_l0_active > 1 {
+                                part_ref_l0[p] = reader.read_te(header.num_ref_idx_l0_active - 1)? as i8;
+                            } else if pred_flags[p].0 {
+                                part_ref_l0[p] = 0;
+                            }
+                        }
+                        for p in 0..2 {
+                            if pred_flags[p].1 && header.num_ref_idx_l1_active > 1 {
+                                part_ref_l1[p] = reader.read_te(header.num_ref_idx_l1_active - 1)? as i8;
+                            } else if pred_flags[p].1 {
+                                part_ref_l1[p] = 0;
+                            }
+                        }
+
+                        // Parse MVD: for each list, for each partition (spec 7.3.5.1)
+                        // Order: L0 part0, L0 part1, L1 part0, L1 part1
+                        let mut mv_l0_parts = [[0i16; 2]; 2];
+                        let mut mv_l1_parts = [[0i16; 2]; 2];
+                        for p in 0..2 {
+                            if pred_flags[p].0 {
+                                // Store ref_idx_l0 before predicting (partition 1 needs partition 0's data)
+                                let (py_off, px_off) = if part_h == 8 { (p * 8, 0) } else { (0, p * 8) };
+                                for r in (0..part_h).step_by(4) {
+                                    for c in (0..part_w).step_by(4) {
+                                        let lr = (py_off + r) / 4;
+                                        let lc = (px_off + c) / 4;
+                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                            .iter()
+                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                        {
+                                            ref_idx_store_l0[mb_idx * 16 + blk] = part_ref_l0[p];
+                                        }
+                                    }
+                                }
+                                let mvd_x = reader.read_se()? as i16;
+                                let mvd_y = reader.read_se()? as i16;
+                                let (mvp_x, mvp_y) = predict_mv(
+                                    &mv_store_l0, &ref_idx_store_l0, mb_idx, mb_width as usize,
+                                    p, part_w, part_h, part_ref_l0[p],
+                                );
+                                mv_l0_parts[p] = [mvp_x + mvd_x, mvp_y + mvd_y];
+                                // Store MV immediately for partition 1 to read partition 0
+                                for r in (0..part_h).step_by(4) {
+                                    for c in (0..part_w).step_by(4) {
+                                        let lr = (py_off + r) / 4;
+                                        let lc = (px_off + c) / 4;
+                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                            .iter()
+                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                        {
+                                            mv_store_l0[mb_idx * 16 + blk] = mv_l0_parts[p];
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        for p in 0..2 {
+                            if pred_flags[p].1 {
+                                let (py_off, px_off) = if part_h == 8 { (p * 8, 0) } else { (0, p * 8) };
+                                for r in (0..part_h).step_by(4) {
+                                    for c in (0..part_w).step_by(4) {
+                                        let lr = (py_off + r) / 4;
+                                        let lc = (px_off + c) / 4;
+                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                            .iter()
+                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                        {
+                                            ref_idx_store_l1[mb_idx * 16 + blk] = part_ref_l1[p];
+                                        }
+                                    }
+                                }
+                                let mvd_x = reader.read_se()? as i16;
+                                let mvd_y = reader.read_se()? as i16;
+                                let (mvp_x, mvp_y) = predict_mv(
+                                    &mv_store_l1, &ref_idx_store_l1, mb_idx, mb_width as usize,
+                                    p, part_w, part_h, part_ref_l1[p],
+                                );
+                                mv_l1_parts[p] = [mvp_x + mvd_x, mvp_y + mvd_y];
+                                for r in (0..part_h).step_by(4) {
+                                    for c in (0..part_w).step_by(4) {
+                                        let lr = (py_off + r) / 4;
+                                        let lc = (px_off + c) / 4;
+                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                            .iter()
+                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                        {
+                                            mv_store_l1[mb_idx * 16 + blk] = mv_l1_parts[p];
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Build sub_parts for MC
+                        for p in 0..2 {
+                            let (py_off, px_off) = if part_h == 8 { (p * 8, 0) } else { (0, p * 8) };
+                            sub_parts.push(SubPart {
+                                x: px_off, y: py_off, w: part_w, h: part_h,
+                                ref_idx_l0: part_ref_l0[p], ref_idx_l1: part_ref_l1[p],
+                                mv_l0: mv_l0_parts[p], mv_l1: mv_l1_parts[p],
+                                pred_l0: pred_flags[p].0, pred_l1: pred_flags[p].1,
+                            });
+                        }
                     }
                     22 => {
-                        // B_8x8 (step 6)
-                        return Err(DecodeError::Unsupported("B_8x8 not yet implemented"));
+                        // B_8x8: 4 sub-MBs, each with its own sub_mb_type
+                        // Table 7-17: sub_mb_type 0-12
+                        // Format: (sub_w, sub_h, pred_l0, pred_l1)
+                        #[rustfmt::skip]
+                        const B_SUB_TABLE: [(usize, usize, bool, bool); 13] = [
+                            (8, 8, false, false), // 0: B_Direct_8x8
+                            (8, 8, true, false),  // 1: B_L0_8x8
+                            (8, 8, false, true),  // 2: B_L1_8x8
+                            (8, 8, true, true),   // 3: B_Bi_8x8
+                            (8, 4, true, false),  // 4: B_L0_8x4
+                            (4, 8, true, false),  // 5: B_L0_4x8
+                            (8, 4, false, true),  // 6: B_L1_8x4
+                            (4, 8, false, true),  // 7: B_L1_4x8
+                            (8, 4, true, true),   // 8: B_Bi_8x4
+                            (4, 8, true, true),   // 9: B_Bi_4x8
+                            (4, 4, true, false),  // 10: B_L0_4x4
+                            (4, 4, false, true),  // 11: B_L1_4x4
+                            (4, 4, true, true),   // 12: B_Bi_4x4
+                        ];
+
+                        let sub_mb_origins = [(0, 0), (0, 8), (8, 0), (8, 8)];
+                        let mut sub_mb_types = [0u32; 4];
+                        for smt in &mut sub_mb_types {
+                            *smt = reader.read_ue()?;
+                        }
+
+                        // Parse ref_idx for each 8x8 sub-MB
+                        let mut sub_ref_l0 = [-1i8; 4];
+                        let mut sub_ref_l1 = [-1i8; 4];
+                        for smb in 0..4 {
+                            if sub_mb_types[smb] == 0 { continue; } // B_Direct_8x8: no ref_idx
+                            let (_, _, pl0, _) = B_SUB_TABLE[sub_mb_types[smb] as usize];
+                            if pl0 && header.num_ref_idx_l0_active > 1 {
+                                sub_ref_l0[smb] = reader.read_te(header.num_ref_idx_l0_active - 1)? as i8;
+                            } else if pl0 {
+                                sub_ref_l0[smb] = 0;
+                            }
+                        }
+                        for smb in 0..4 {
+                            if sub_mb_types[smb] == 0 { continue; }
+                            let (_, _, _, pl1) = B_SUB_TABLE[sub_mb_types[smb] as usize];
+                            if pl1 && header.num_ref_idx_l1_active > 1 {
+                                sub_ref_l1[smb] = reader.read_te(header.num_ref_idx_l1_active - 1)? as i8;
+                            } else if pl1 {
+                                sub_ref_l1[smb] = 0;
+                            }
+                        }
+
+                        // Store ref_idx into cache for MV prediction (both lists)
+                        for list in 0..2 {
+                            let ref_store = if list == 0 { &mut ref_idx_store_l0 } else { &mut ref_idx_store_l1 };
+                            let sub_ref = if list == 0 { &sub_ref_l0 } else { &sub_ref_l1 };
+                            for smb in 0..4 {
+                                let (sy, sx) = sub_mb_origins[smb];
+                                for r in (0..8).step_by(4) {
+                                    for c in (0..8).step_by(4) {
+                                        let lr = (sy + r) / 4;
+                                        let lc = (sx + c) / 4;
+                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                            .iter()
+                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                        {
+                                            ref_store[mb_idx * 16 + blk] = sub_ref[smb];
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Collect sub-partition layouts for each sub-MB
+                        struct SubLayout {
+                            smb: usize, sx: usize, sy: usize,
+                            sub_w: usize, sub_h: usize,
+                            pl0: bool, pl1: bool,
+                            offsets: Vec<(usize, usize)>, // (dx, dy) within 8x8
+                        }
+                        let mut layouts: Vec<SubLayout> = Vec::new();
+                        for smb in 0..4 {
+                            let (sy, sx) = sub_mb_origins[smb];
+                            let smt = sub_mb_types[smb] as usize;
+                            if smt == 0 {
+                                // B_Direct_8x8: handled separately below
+                                layouts.push(SubLayout {
+                                    smb, sx, sy, sub_w: 8, sub_h: 8,
+                                    pl0: false, pl1: false, // direct mode flag
+                                    offsets: vec![(0, 0)],
+                                });
+                                continue;
+                            }
+                            let (sub_w, sub_h, pl0, pl1) = B_SUB_TABLE[smt];
+                            let offsets = match (sub_w, sub_h) {
+                                (8, 8) => vec![(0, 0)],
+                                (8, 4) => vec![(0, 0), (0, 4)],
+                                (4, 8) => vec![(0, 0), (4, 0)],
+                                (4, 4) => vec![(0, 0), (4, 0), (0, 4), (4, 4)],
+                                _ => unreachable!(),
+                            };
+                            layouts.push(SubLayout { smb, sx, sy, sub_w, sub_h, pl0, pl1, offsets });
+                        }
+
+                        // Parse MVDs: for each list, for each sub-MB, for each sub-partition
+                        // (spec 7.3.5.1 parsing order)
+                        struct SubMv {
+                            mv_l0: [i16; 2], mv_l1: [i16; 2],
+                        }
+                        let mut sub_mvs: Vec<SubMv> = Vec::new();
+                        // Initialize with zeros
+                        for layout in &layouts {
+                            for &(_dx, _dy) in &layout.offsets {
+                                sub_mvs.push(SubMv { mv_l0: [0; 2], mv_l1: [0; 2] });
+                            }
+                        }
+
+                        // L0 MVDs first
+                        let mut idx = 0;
+                        for layout in &layouts {
+                            if sub_mb_types[layout.smb] == 0 { idx += 1; continue; } // direct
+                            for &(dx, dy) in &layout.offsets {
+                                if layout.pl0 {
+                                    let px = layout.sx + dx;
+                                    let py = layout.sy + dy;
+                                    let mvd_x = reader.read_se()? as i16;
+                                    let mvd_y = reader.read_se()? as i16;
+                                    let (mvp_x, mvp_y) = predict_mv_sub(
+                                        &mv_store_l0, &ref_idx_store_l0, mb_idx,
+                                        mb_width as usize, px, py, layout.sub_w, layout.sub_h,
+                                        sub_ref_l0[layout.smb],
+                                    );
+                                    let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
+                                    sub_mvs[idx].mv_l0 = mv;
+                                    // Store immediately for subsequent sub-partition prediction
+                                    for r in (0..layout.sub_h).step_by(4) {
+                                        for c in (0..layout.sub_w).step_by(4) {
+                                            let lr = (py + r) / 4;
+                                            let lc = (px + c) / 4;
+                                            if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                                .iter()
+                                                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                            {
+                                                mv_store_l0[mb_idx * 16 + blk] = mv;
+                                            }
+                                        }
+                                    }
+                                }
+                                idx += 1;
+                            }
+                        }
+
+                        // L1 MVDs second
+                        idx = 0;
+                        for layout in &layouts {
+                            if sub_mb_types[layout.smb] == 0 { idx += 1; continue; }
+                            for &(dx, dy) in &layout.offsets {
+                                if layout.pl1 {
+                                    let px = layout.sx + dx;
+                                    let py = layout.sy + dy;
+                                    let mvd_x = reader.read_se()? as i16;
+                                    let mvd_y = reader.read_se()? as i16;
+                                    let (mvp_x, mvp_y) = predict_mv_sub(
+                                        &mv_store_l1, &ref_idx_store_l1, mb_idx,
+                                        mb_width as usize, px, py, layout.sub_w, layout.sub_h,
+                                        sub_ref_l1[layout.smb],
+                                    );
+                                    let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
+                                    sub_mvs[idx].mv_l1 = mv;
+                                    for r in (0..layout.sub_h).step_by(4) {
+                                        for c in (0..layout.sub_w).step_by(4) {
+                                            let lr = (py + r) / 4;
+                                            let lc = (px + c) / 4;
+                                            if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                                .iter()
+                                                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                            {
+                                                mv_store_l1[mb_idx * 16 + blk] = mv;
+                                            }
+                                        }
+                                    }
+                                }
+                                idx += 1;
+                            }
+                        }
+
+                        // Handle B_Direct_8x8 sub-MBs and build sub_parts
+                        idx = 0;
+                        for layout in &layouts {
+                            if sub_mb_types[layout.smb] == 0 {
+                                // B_Direct_8x8
+                                let (mv_l0, mv_l1, ri_l0, ri_l1, pl0, pl1) =
+                                    if header.direct_spatial_mv_pred_flag {
+                                        derive_spatial_direct(
+                                            &mv_store_l0, &ref_idx_store_l0,
+                                            &mv_store_l1, &ref_idx_store_l1,
+                                            mb_idx, mb_width as usize,
+                                            _ref_pic_list_l1.first().map(|p| p.as_ref()),
+                                        )
+                                    } else {
+                                        let col_pic = &_ref_pic_list_l1[0];
+                                        derive_temporal_direct(
+                                            col_pic, &_ref_pic_list_l0,
+                                            current_poc, col_pic.pic_order_cnt, mb_idx,
+                                        )
+                                    };
+                                for r in (0..8).step_by(4) {
+                                    for c in (0..8).step_by(4) {
+                                        let lr = (layout.sy + r) / 4;
+                                        let lc = (layout.sx + c) / 4;
+                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                            .iter()
+                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                        {
+                                            mv_store_l0[mb_idx * 16 + blk] = mv_l0;
+                                            ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
+                                            mv_store_l1[mb_idx * 16 + blk] = mv_l1;
+                                            ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
+                                        }
+                                    }
+                                }
+                                sub_parts.push(SubPart {
+                                    x: layout.sx, y: layout.sy, w: 8, h: 8,
+                                    ref_idx_l0: ri_l0, ref_idx_l1: ri_l1,
+                                    mv_l0, mv_l1, pred_l0: pl0, pred_l1: pl1,
+                                });
+                                idx += 1;
+                            } else {
+                                let smt = sub_mb_types[layout.smb] as usize;
+                                let (_, _, pl0, pl1) = B_SUB_TABLE[smt];
+                                for &(dx, dy) in &layout.offsets {
+                                    sub_parts.push(SubPart {
+                                        x: layout.sx + dx, y: layout.sy + dy,
+                                        w: layout.sub_w, h: layout.sub_h,
+                                        ref_idx_l0: sub_ref_l0[layout.smb],
+                                        ref_idx_l1: sub_ref_l1[layout.smb],
+                                        mv_l0: sub_mvs[idx].mv_l0,
+                                        mv_l1: sub_mvs[idx].mv_l1,
+                                        pred_l0: pl0, pred_l1: pl1,
+                                    });
+                                    idx += 1;
+                                }
+                            }
+                        }
                     }
                     _ => return Err(DecodeError::InvalidSyntax("invalid B-slice mb_type")),
                 }
@@ -2553,5 +2934,12 @@ mod tests {
         // 32x32, 5 frames (coded: I,P,B,P,B) — B-frames use 100% B_Skip
         // (temporal direct mode)
         decode_multiframe_and_compare("b_temporal_test", 5, 32, 32);
+    }
+
+    #[test]
+    fn test_b_partitions() {
+        // 64x64, 5 frames (I,B,P,B,P) — B-frames with 37.5% B16x16,
+        // 40.6% B16x8/8x16, 5.5% B_8x8, 15.6% direct, 87.9% Bi
+        decode_multiframe_and_compare("b_parts_test", 5, 64, 64);
     }
 }
