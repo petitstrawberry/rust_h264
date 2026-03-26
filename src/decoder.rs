@@ -187,8 +187,8 @@ impl Decoder {
 
         // Initialize CABAC engine if needed
         let cabac_byte_pos = if use_cabac {
-            // Read cabac_alignment_one_bit and align to byte boundary
-            let _ = reader.read_bit(); // cabac_alignment_one_bit (should be 1)
+            // Align to byte boundary (the cabac_alignment_one_bit + zero padding
+            // are handled by aligning the bitstream reader)
             let (pos, _data) = reader.cabac_start();
             Some(pos)
         } else {

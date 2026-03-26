@@ -322,8 +322,10 @@ pub fn init_cabac_states(slice_qp: i32, is_i_slice: bool, cabac_init_idc: u32) -
     for i in 0..1024 {
         let m = tab[i][0] as i32;
         let n = tab[i][1] as i32;
-        let pre = 2 * ((m * qp) >> 4) + n - 127;
-        let pre = pre.clamp(1, 126);
+        let mut pre = 2 * (((m * qp) >> 4) + n) - 127;
+        // Map to state: pre ^= pre >> 31 (not abs — gives abs(x)-1 for negative x)
+        pre ^= pre >> 31;
+        if pre > 124 { pre = 124 + (pre & 1); }
         // pre is now 1..126; state = pre (odd = MPS=1, even = MPS=0)
         states[i] = pre as u8;
     }
@@ -396,42 +398,24 @@ impl CabacReader<'_> {
         let last_base = LAST_COEFF_FLAG_OFFSET[cat];
         let abs_base = COEFF_ABS_LEVEL_M1_OFFSET[cat];
 
-        // Phase 1: Decode significance map — which positions have non-zero coefficients
+        // Phase 1: Decode significance map (which positions have non-zero coefficients)
+        // Matches DECODE_SIGNIFICANCE macro: scan 0..max_coeff-2, then implicitly add
+        // max_coeff-1 if loop completes without last_significant_coeff_flag=1.
         let mut sig_positions: Vec<usize> = Vec::new();
+        let mut found_last = false;
 
         for pos in 0..max_coeff - 1 {
-            // significant_coeff_flag: is this position non-zero?
             if self.get_cabac(&mut state[sig_base + pos]) != 0 {
                 sig_positions.push(pos);
-                // last_significant_coeff_flag: is this the last non-zero?
                 if self.get_cabac(&mut state[last_base + pos]) != 0 {
+                    found_last = true;
                     break;
                 }
             }
         }
-        // If we scanned all positions without a "last" flag, the final position is significant
-        if sig_positions.is_empty()
-            || (sig_positions.last() != Some(&(max_coeff - 2))
-                && sig_positions.len() < max_coeff)
-        {
-            // Check: if loop completed without break, last position is implicitly significant
-            if let Some(&last) = sig_positions.last() {
-                if last < max_coeff - 2 {
-                    // Loop ran to end without last flag set — should not happen
-                    // (the last position is always implicitly significant if loop completes)
-                }
-            }
-        }
-        // If the loop ran all the way without a last flag, pos max_coeff-1 is significant
-        if sig_positions.is_empty() || sig_positions.last().copied() != Some(max_coeff - 2) {
-            // Check if loop exited without finding last — in that case, the last position
-            // (max_coeff - 1) is implicitly the last significant coefficient
-            if !sig_positions.is_empty() {
-                // Already found some coefficients, but didn't hit "last" flag
-                // The loop should have been: for pos in 0..max_coeff-1, if all scanned
-                // without last=1, then pos=max_coeff-1 is also significant
-                sig_positions.push(max_coeff - 1);
-            }
+        if !found_last {
+            // Last position is implicitly significant
+            sig_positions.push(max_coeff - 1);
         }
 
         if sig_positions.is_empty() {
@@ -841,7 +825,7 @@ mod tests {
         // Just verify it doesn't panic and produces valid ranges
         let states = init_cabac_states(26, true, 0);
         for &s in &states {
-            assert!(s >= 1 && s <= 126);
+            assert!(s <= 126);
         }
     }
 }
