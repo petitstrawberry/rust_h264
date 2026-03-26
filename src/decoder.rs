@@ -220,8 +220,87 @@ impl Decoder {
                             ref_idx_store_l0[mb_idx * 16 + blk] = 0;
                         }
                     } else {
-                        // B_Skip: derive MVs via direct mode (implemented in step 4)
-                        return Err(DecodeError::Unsupported("B_Skip not yet implemented"));
+                        // B_Skip: derive MVs via spatial direct mode, no residual
+                        let (mv_l0, mv_l1, ri_l0, ri_l1, pl0, pl1) =
+                            derive_spatial_direct(
+                                &mv_store_l0, &ref_idx_store_l0,
+                                &mv_store_l1, &ref_idx_store_l1,
+                                mb_idx, mb_width as usize,
+                            );
+                        for blk in 0..16 {
+                            mv_store_l0[mb_idx * 16 + blk] = mv_l0;
+                            ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
+                            mv_store_l1[mb_idx * 16 + blk] = mv_l1;
+                            ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
+                        }
+                        // MC: single-list or bi-prediction
+                        let mut luma_pred = [0u8; 256];
+                        if pl0 && pl1 {
+                            let mut p0 = [0u8; 256];
+                            let mut p1 = [0u8; 256];
+                            inter_pred::luma_mc(
+                                &_ref_pic_list_l0[ri_l0 as usize],
+                                mb_x as i32, mb_y as i32,
+                                mv_l0[0] as i32, mv_l0[1] as i32, 16, 16, &mut p0,
+                            );
+                            inter_pred::luma_mc(
+                                &_ref_pic_list_l1[ri_l1 as usize],
+                                mb_x as i32, mb_y as i32,
+                                mv_l1[0] as i32, mv_l1[1] as i32, 16, 16, &mut p1,
+                            );
+                            inter_pred::bi_pred_avg(&p0, &p1, &mut luma_pred);
+                        } else if pl0 {
+                            inter_pred::luma_mc(
+                                &_ref_pic_list_l0[ri_l0 as usize],
+                                mb_x as i32, mb_y as i32,
+                                mv_l0[0] as i32, mv_l0[1] as i32, 16, 16, &mut luma_pred,
+                            );
+                        } else if pl1 {
+                            inter_pred::luma_mc(
+                                &_ref_pic_list_l1[ri_l1 as usize],
+                                mb_x as i32, mb_y as i32,
+                                mv_l1[0] as i32, mv_l1[1] as i32, 16, 16, &mut luma_pred,
+                            );
+                        }
+                        for r in 0..16 {
+                            for c in 0..16 {
+                                frame.y[(mb_y + r) * stride + mb_x + c] = luma_pred[r * 16 + c];
+                            }
+                        }
+                        // Chroma
+                        let cw = (width / 2) as usize;
+                        let cx = mb_x / 2;
+                        let cy = mb_y / 2;
+                        let chroma_h = (height / 2) as usize;
+                        for plane_idx in 0..2 {
+                            let mut chroma_pred = [0u8; 64];
+                            if pl0 && pl1 {
+                                let mut c0 = [0u8; 64];
+                                let mut c1 = [0u8; 64];
+                                let ref_l0 = &_ref_pic_list_l0[ri_l0 as usize];
+                                let ref_l1 = &_ref_pic_list_l1[ri_l1 as usize];
+                                let cr0 = if plane_idx == 0 { &ref_l0.u } else { &ref_l0.v };
+                                let cr1 = if plane_idx == 0 { &ref_l1.u } else { &ref_l1.v };
+                                inter_pred::chroma_mc(cr0, cw, chroma_h, cx as i32, cy as i32, mv_l0[0] as i32, mv_l0[1] as i32, 8, 8, &mut c0);
+                                inter_pred::chroma_mc(cr1, cw, chroma_h, cx as i32, cy as i32, mv_l1[0] as i32, mv_l1[1] as i32, 8, 8, &mut c1);
+                                inter_pred::bi_pred_avg(&c0, &c1, &mut chroma_pred);
+                            } else {
+                                let (ref_list, ri, mv) = if pl0 {
+                                    (&_ref_pic_list_l0, ri_l0, mv_l0)
+                                } else {
+                                    (&_ref_pic_list_l1, ri_l1, mv_l1)
+                                };
+                                let ref_pic = &ref_list[ri as usize];
+                                let cr = if plane_idx == 0 { &ref_pic.u } else { &ref_pic.v };
+                                inter_pred::chroma_mc(cr, cw, chroma_h, cx as i32, cy as i32, mv[0] as i32, mv[1] as i32, 8, 8, &mut chroma_pred);
+                            }
+                            let fp = if plane_idx == 0 { &mut frame.u } else { &mut frame.v };
+                            for r in 0..8 {
+                                for c in 0..8 {
+                                    fp[(cy + r) * cw + cx + c] = chroma_pred[r * 8 + c];
+                                }
+                            }
+                        }
                     }
                     mb_info[mb_idx] = MbInfo {
                         mb_type: MbType::Inter,
@@ -304,8 +383,25 @@ impl Decoder {
                         });
                     }
                     0 => {
-                        // B_Direct_16x16 — needs spatial/temporal direct mode (step 4)
-                        return Err(DecodeError::Unsupported("B_Direct_16x16 not yet implemented"));
+                        // B_Direct_16x16: derive MVs via spatial direct mode
+                        let (mv_l0, mv_l1, ri_l0, ri_l1, pl0, pl1) =
+                            derive_spatial_direct(
+                                &mv_store_l0, &ref_idx_store_l0,
+                                &mv_store_l1, &ref_idx_store_l1,
+                                mb_idx, mb_width as usize,
+                            );
+                        for blk in 0..16 {
+                            mv_store_l0[mb_idx * 16 + blk] = mv_l0;
+                            ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
+                            mv_store_l1[mb_idx * 16 + blk] = mv_l1;
+                            ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
+                        }
+                        sub_parts.push(SubPart {
+                            x: 0, y: 0, w: 16, h: 16,
+                            ref_idx_l0: ri_l0, ref_idx_l1: ri_l1,
+                            mv_l0, mv_l1,
+                            pred_l0: pl0, pred_l1: pl1,
+                        });
                     }
                     3 => {
                         // B_Bi_16x16: both L0 and L1, averaged
@@ -1448,6 +1544,96 @@ fn predict_mv_skip(
     predict_mv(mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, 0, 16, 16, 0)
 }
 
+/// Spatial direct mode MV derivation for B-slices (spec 8.4.1.2.2).
+/// Returns (mv_l0, mv_l1, ref_idx_l0, ref_idx_l1, pred_l0, pred_l1).
+#[allow(clippy::type_complexity)]
+fn derive_spatial_direct(
+    mv_store_l0: &[[i16; 2]],
+    ref_idx_store_l0: &[i8],
+    mv_store_l1: &[[i16; 2]],
+    ref_idx_store_l1: &[i8],
+    mb_idx: usize,
+    mb_width: usize,
+) -> ([i16; 2], [i16; 2], i8, i8, bool, bool) {
+    let mut ref_idx = [-1i8; 2];
+    let mut mv = [[0i16; 2]; 2];
+    let mut pred_flag = [false; 2];
+
+    // For each list, find min-positive ref_idx from neighbors and derive MV
+    for list in 0..2 {
+        let (mv_s, ref_s) = if list == 0 {
+            (mv_store_l0, ref_idx_store_l0)
+        } else {
+            (mv_store_l1, ref_idx_store_l1)
+        };
+
+        let a = get_mv_neighbor_left(mv_s, ref_s, mb_idx, mb_width, 0, 0);
+        let b = get_mv_neighbor_above(mv_s, ref_s, mb_idx, mb_width, 0, 0);
+        let c = get_mv_neighbor_above_right(mv_s, ref_s, mb_idx, mb_width, 0, 0, 16)
+            .or_else(|| get_mv_neighbor_above_left(mv_s, ref_s, mb_idx, mb_width, 0, 0));
+
+        let ref_a = a.map(|(_, r)| r).unwrap_or(-1);
+        let ref_b = b.map(|(_, r)| r).unwrap_or(-1);
+        let ref_c = c.map(|(_, r)| r).unwrap_or(-1);
+
+        // Min-positive rule: minimum of valid (>= 0) ref indices
+        let min_ref = [ref_a, ref_b, ref_c]
+            .iter()
+            .filter(|&&r| r >= 0)
+            .min()
+            .copied()
+            .unwrap_or(-1);
+
+        ref_idx[list] = min_ref;
+
+        if min_ref >= 0 {
+            pred_flag[list] = true;
+
+            // Median MV prediction with match_count directional logic
+            let match_count = (ref_a == min_ref) as u8
+                + (ref_b == min_ref) as u8
+                + (ref_c == min_ref) as u8;
+
+            if match_count == 1 {
+                // Use the single matching neighbor's MV
+                if ref_a == min_ref {
+                    if let Some((m, _)) = a { mv[list] = m; continue; }
+                }
+                if ref_b == min_ref {
+                    if let Some((m, _)) = b { mv[list] = m; continue; }
+                }
+                if ref_c == min_ref {
+                    if let Some((m, _)) = c { mv[list] = m; continue; }
+                }
+            }
+
+            // match_count >= 2 or fallback: median
+            if let (None, None, Some((m, _))) = (b, c, a) {
+                mv[list] = m;
+                continue;
+            }
+
+            let mv_a = a.map(|(m, _)| m).unwrap_or([0, 0]);
+            let mv_b = b.map(|(m, _)| m).unwrap_or([0, 0]);
+            let mv_c = c.map(|(m, _)| m).unwrap_or([0, 0]);
+            let mut xs = [mv_a[0], mv_b[0], mv_c[0]];
+            let mut ys = [mv_a[1], mv_b[1], mv_c[1]];
+            xs.sort();
+            ys.sort();
+            mv[list] = [xs[1], ys[1]];
+        }
+    }
+
+    // If both refs invalid, default to ref_idx=0 for both lists (bi-prediction)
+    if ref_idx[0] < 0 && ref_idx[1] < 0 {
+        ref_idx = [0, 0];
+        pred_flag = [true, true];
+        mv = [[0, 0], [0, 0]];
+    }
+
+    (mv[0], mv[1], ref_idx[0], ref_idx[1], pred_flag[0], pred_flag[1])
+}
+
 /// Motion vector prediction using the median of neighbors A, B, C (spec 8.4.1.3).
 /// `part_idx`: partition index (0 for first/only partition).
 /// `part_w`, `part_h`: partition dimensions.
@@ -2248,5 +2434,12 @@ mod tests {
         // 32x32, 5 frames (coded: I,P,B,P,P) — B-frame has 33% B_Bi_16x16,
         // 67% B_L1_16x16, 25% intra-in-B
         decode_multiframe_and_compare("b_bi_test", 5, 32, 32);
+    }
+
+    #[test]
+    fn test_b_skip() {
+        // 32x32, 5 frames (coded: I,P,B,P,B) — B-frames use 100% B_Skip
+        // (spatial direct mode)
+        decode_multiframe_and_compare("b_skip_test", 5, 32, 32);
     }
 }

@@ -31,7 +31,7 @@ This is a Rust project using Cargo:
 
 ## Status
 
-I-frame, P-frame, and basic B-frame decoding functional. B_L0_16x16, B_L1_16x16, and B_Bi_16x16 implemented. B_Skip/B_Direct and B-slice sub-partitions not yet implemented.
+I-frame, P-frame, and B-frame decoding functional. B_Skip, B_Direct_16x16, B_L0_16x16, B_L1_16x16, and B_Bi_16x16 implemented (spatial direct mode). B-slice 16x8/8x16/8x8 sub-partitions and temporal direct mode not yet implemented.
 
 ### Completed
 
@@ -57,8 +57,11 @@ I-frame, P-frame, and basic B-frame decoding functional. B_L0_16x16, B_L1_16x16,
 - MV prediction with median and directional (match_count) logic
 - Inter CBP table, inter scaling lists (indices 3-5)
 - P_8x8 with all sub-partition types (8x8, 8x4, 4x8, 4x4) and P_8x8ref0
+- B_Skip (spatial direct mode, no residual)
+- B_Direct_16x16 (spatial direct mode + residual)
 - B_L0_16x16, B_L1_16x16 (uni-directional), B_Bi_16x16 (bi-directional)
 - Dual MV/ref_idx storage (L0 + L1) for B-slice support
+- Spatial direct mode: min-positive ref_idx from neighbors, median MV prediction
 - Bi-prediction averaging for luma and chroma
 
 **Motion Compensation** (`src/inter_pred.rs`)
@@ -111,18 +114,19 @@ I-frame, P-frame, and basic B-frame decoding functional. B_L0_16x16, B_L1_16x16,
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (55 tests)
+**Test Coverage** (56 tests)
 - Intra: single_frame, multi_mb_frame, i4x4_frame, deblock_frame, mixed_i4x4_frame,
   gradient_48x32, edges (QP=10/35), smooth_80x48, noise_16x16, scaling_test
 - P-slice: p_frame_test (IDR+P), p_skip_heavy (50% skip), p_multi_frame (IDR+3P
   with P16x16/P16x8/8x16/intra-in-P), p_8x8_test (82.8% P_8x8 + sub-8x4),
   p_multiref (IDR+3P with ref=3, multi-reference P8x16)
 - B-slice: b_l0_l1_test (100% B_L0_16x16), b_bi_test (33% B_Bi + 67% B_L1 +
-  intra-in-B)
+  intra-in-B), b_skip_test (100% B_Skip, spatial direct mode)
 
 ### Not Yet Implemented
 
-- B_Skip / B_Direct (spatial and temporal direct mode)
+- Temporal direct mode (co-located MV scaling)
+- Co-located zero-MV refinement for spatial direct mode
 - B-slice 16x8, 8x16, B_8x8 partitions
 - Multi-B-frame sequences (consecutive B-frames)
 - MBAFF/interlaced mode
