@@ -709,6 +709,43 @@ impl Decoder {
                             layouts.push(SubLayout { smb, sx, sy, sub_w, sub_h, pl0, pl1, offsets });
                         }
 
+                        // Derive B_Direct_8x8 MVs BEFORE MVD parsing
+                        // (non-direct sub-MBs need direct neighbors' MVs for prediction)
+                        for layout in &layouts {
+                            if sub_mb_types[layout.smb] == 0 {
+                                let (d_mv_l0, d_mv_l1, d_ri_l0, d_ri_l1, _, _) =
+                                    if header.direct_spatial_mv_pred_flag {
+                                        derive_spatial_direct(
+                                            &mv_store_l0, &ref_idx_store_l0,
+                                            &mv_store_l1, &ref_idx_store_l1,
+                                            mb_idx, mb_width as usize,
+                                            _ref_pic_list_l1.first().map(|p| p.as_ref()),
+                                        )
+                                    } else {
+                                        let col_pic = &_ref_pic_list_l1[0];
+                                        derive_temporal_direct(
+                                            col_pic, &_ref_pic_list_l0,
+                                            current_poc, col_pic.pic_order_cnt, mb_idx,
+                                        )
+                                    };
+                                for r in (0..8).step_by(4) {
+                                    for c in (0..8).step_by(4) {
+                                        let lr = (layout.sy + r) / 4;
+                                        let lc = (layout.sx + c) / 4;
+                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                            .iter()
+                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                        {
+                                            mv_store_l0[mb_idx * 16 + blk] = d_mv_l0;
+                                            ref_idx_store_l0[mb_idx * 16 + blk] = d_ri_l0;
+                                            mv_store_l1[mb_idx * 16 + blk] = d_mv_l1;
+                                            ref_idx_store_l1[mb_idx * 16 + blk] = d_ri_l1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         // Parse MVDs: for each list, for each sub-MB, for each sub-partition
                         // (spec 7.3.5.1 parsing order)
                         struct SubMv {
@@ -791,41 +828,21 @@ impl Decoder {
                             }
                         }
 
-                        // Handle B_Direct_8x8 sub-MBs and build sub_parts
+                        // Build sub_parts from stored MVs
                         idx = 0;
                         for layout in &layouts {
                             if sub_mb_types[layout.smb] == 0 {
-                                // B_Direct_8x8
-                                let (mv_l0, mv_l1, ri_l0, ri_l1, pl0, pl1) =
-                                    if header.direct_spatial_mv_pred_flag {
-                                        derive_spatial_direct(
-                                            &mv_store_l0, &ref_idx_store_l0,
-                                            &mv_store_l1, &ref_idx_store_l1,
-                                            mb_idx, mb_width as usize,
-                                            _ref_pic_list_l1.first().map(|p| p.as_ref()),
-                                        )
-                                    } else {
-                                        let col_pic = &_ref_pic_list_l1[0];
-                                        derive_temporal_direct(
-                                            col_pic, &_ref_pic_list_l0,
-                                            current_poc, col_pic.pic_order_cnt, mb_idx,
-                                        )
-                                    };
-                                for r in (0..8).step_by(4) {
-                                    for c in (0..8).step_by(4) {
-                                        let lr = (layout.sy + r) / 4;
-                                        let lc = (layout.sx + c) / 4;
-                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                            .iter()
-                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                        {
-                                            mv_store_l0[mb_idx * 16 + blk] = mv_l0;
-                                            ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
-                                            mv_store_l1[mb_idx * 16 + blk] = mv_l1;
-                                            ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
-                                        }
-                                    }
-                                }
+                                // B_Direct_8x8: MVs already derived and stored above
+                                let base = mb_idx * 16;
+                                let blk0 = BLOCK_INDEX_TO_OFFSET.iter()
+                                    .position(|&(br, bc)| br / 4 == layout.sy / 4 && bc / 4 == layout.sx / 4)
+                                    .unwrap_or(0);
+                                let mv_l0 = mv_store_l0[base + blk0];
+                                let mv_l1 = mv_store_l1[base + blk0];
+                                let ri_l0 = ref_idx_store_l0[base + blk0];
+                                let ri_l1 = ref_idx_store_l1[base + blk0];
+                                let pl0 = ri_l0 >= 0;
+                                let pl1 = ri_l1 >= 0;
                                 sub_parts.push(SubPart {
                                     x: layout.sx, y: layout.sy, w: 8, h: 8,
                                     ref_idx_l0: ri_l0, ref_idx_l1: ri_l1,
