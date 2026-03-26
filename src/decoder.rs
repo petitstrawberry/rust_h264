@@ -102,21 +102,42 @@ impl Decoder {
         let current_poc = self.dpb.compute_poc(sps, &header, nal.nal_unit_type, nal.nal_ref_idc);
 
         // Build reference picture lists
-        let ref_pic_list = if is_p_slice {
+        let max_pic_num = 1u32 << (sps.log2_max_frame_num_minus4 + 4);
+        let mut ref_pic_list = if is_p_slice {
             self.dpb.short_term_ref_list()
         } else {
             vec![]
         };
-        let _ref_pic_list_l0 = if is_b_slice {
+        let mut _ref_pic_list_l0 = if is_b_slice {
             self.dpb.ref_list_l0_b(current_poc)
         } else {
             vec![]
         };
-        let _ref_pic_list_l1 = if is_b_slice {
+        let mut _ref_pic_list_l1 = if is_b_slice {
             self.dpb.ref_list_l1_b(current_poc)
         } else {
             vec![]
         };
+
+        // Apply ref_pic_list_modification (spec 8.2.4.3)
+        if is_p_slice && !header.ref_list_mod_l0.is_empty() {
+            Dpb::apply_ref_list_modification(
+                &mut ref_pic_list, &header.ref_list_mod_l0,
+                header.frame_num, max_pic_num,
+            );
+        }
+        if is_b_slice && !header.ref_list_mod_l0.is_empty() {
+            Dpb::apply_ref_list_modification(
+                &mut _ref_pic_list_l0, &header.ref_list_mod_l0,
+                header.frame_num, max_pic_num,
+            );
+        }
+        if is_b_slice && !header.ref_list_mod_l1.is_empty() {
+            Dpb::apply_ref_list_modification(
+                &mut _ref_pic_list_l1, &header.ref_list_mod_l1,
+                header.frame_num, max_pic_num,
+            );
+        }
 
         let width = sps.width();
         let height = sps.height();
@@ -2973,5 +2994,12 @@ mod tests {
         // 64x64, 8 frames (I,B,P,B,P,B,P,P) — multiple B-frames across
         // the sequence with skip, direct, and various partition types
         decode_multiframe_and_compare("b_multi_test", 8, 64, 64);
+    }
+
+    #[test]
+    fn test_b_hierarchical() {
+        // 64x64, 8 frames with bframes=3, ref=2 — hierarchical B-frames
+        // with reference B-frames and ref_pic_list_modification reordering
+        decode_multiframe_and_compare("b_hier_test", 8, 64, 64);
     }
 }

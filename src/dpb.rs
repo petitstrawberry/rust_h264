@@ -170,6 +170,49 @@ impl Dpb {
         after
     }
 
+    /// Apply ref_pic_list_modification to reorder a reference list (spec 8.2.4.3).
+    /// `ops`: list of (modification_of_pic_nums_idc, abs_diff_pic_num_minus1)
+    /// `frame_num`: current picture's frame_num
+    /// `max_pic_num`: 1 << (log2_max_frame_num_minus4 + 4)
+    pub fn apply_ref_list_modification(
+        ref_list: &mut Vec<Rc<DecodedPicture>>,
+        ops: &[(u32, u32)],
+        frame_num: u32,
+        max_pic_num: u32,
+    ) {
+        if ops.is_empty() {
+            return;
+        }
+        let mut pred_pic_num = frame_num;
+        for (idx, &(idc, val)) in ops.iter().enumerate() {
+            if idc > 1 {
+                continue; // Skip long-term ref ops (idc=2) for now
+            }
+            let abs_diff = val + 1;
+            let pic_num = if idc == 0 {
+                // Subtract
+                if pred_pic_num >= abs_diff {
+                    pred_pic_num - abs_diff
+                } else {
+                    pred_pic_num + max_pic_num - abs_diff
+                }
+            } else {
+                // Add
+                let sum = pred_pic_num + abs_diff;
+                if sum >= max_pic_num { sum - max_pic_num } else { sum }
+            };
+            pred_pic_num = pic_num;
+
+            // Find the picture with this frame_num in the ref list
+            if let Some(pos) = ref_list.iter().position(|p| p.frame_num == pic_num) {
+                // Move it to position `idx`
+                let entry = ref_list.remove(pos);
+                let insert_at = idx.min(ref_list.len());
+                ref_list.insert(insert_at, entry);
+            }
+        }
+    }
+
     /// Compute Picture Order Count for the current picture (spec 8.2.1).
     pub fn compute_poc(
         &mut self,

@@ -52,6 +52,10 @@ pub struct SliceHeader {
     pub direct_spatial_mv_pred_flag: bool,
     /// MMCO operations: (op_code, parameter). Currently only op=1 (mark short-term unused).
     pub mmco_ops: Vec<(u32, u32)>,
+    /// Ref pic list modification ops for L0: (idc, abs_diff_pic_num_minus1).
+    pub ref_list_mod_l0: Vec<(u32, u32)>,
+    /// Ref pic list modification ops for L1.
+    pub ref_list_mod_l1: Vec<(u32, u32)>,
 }
 
 impl SliceHeader {
@@ -134,27 +138,27 @@ pub fn parse_slice_header(
         }
     }
 
-    // ref_pic_list_modification (spec 7.3.3.1) — skip/consume for now
+    // ref_pic_list_modification (spec 7.3.3.1)
+    let mut ref_list_mod_l0 = Vec::new();
+    let mut ref_list_mod_l1 = Vec::new();
     if slice_type != SliceType::I && slice_type != SliceType::Si {
         let ref_pic_list_modification_flag_l0 = r.read_bit()? != 0;
         if ref_pic_list_modification_flag_l0 {
             loop {
-                let modification_of_pic_nums_idc = r.read_ue()?;
-                if modification_of_pic_nums_idc == 3 {
-                    break;
-                }
-                let _ = r.read_ue()?; // abs_diff_pic_num_minus1 or long_term_pic_num
+                let idc = r.read_ue()?;
+                if idc == 3 { break; }
+                let val = r.read_ue()?;
+                ref_list_mod_l0.push((idc, val));
             }
         }
         if slice_type == SliceType::B {
             let ref_pic_list_modification_flag_l1 = r.read_bit()? != 0;
             if ref_pic_list_modification_flag_l1 {
                 loop {
-                    let modification_of_pic_nums_idc = r.read_ue()?;
-                    if modification_of_pic_nums_idc == 3 {
-                        break;
-                    }
-                    let _ = r.read_ue()?;
+                    let idc = r.read_ue()?;
+                    if idc == 3 { break; }
+                    let val = r.read_ue()?;
+                    ref_list_mod_l1.push((idc, val));
                 }
             }
         }
@@ -263,6 +267,8 @@ pub fn parse_slice_header(
         num_ref_idx_l1_active,
         direct_spatial_mv_pred_flag,
         mmco_ops,
+        ref_list_mod_l0,
+        ref_list_mod_l1,
     };
 
     Ok((header, r))
