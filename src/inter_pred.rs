@@ -208,6 +208,10 @@ mod tests {
             height,
             frame_num: 0,
             pic_order_cnt: 0,
+            mv_l0: vec![],
+            ref_idx_l0: vec![],
+            mb_width: width / 16,
+            is_intra: false,
         })
     }
 

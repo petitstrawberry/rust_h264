@@ -28,6 +28,14 @@ pub struct DecodedPicture {
     pub height: u32,
     pub frame_num: u32,
     pub pic_order_cnt: i32,
+    /// Per-4x4-block L0 motion vectors (for temporal direct mode co-located access).
+    pub mv_l0: Vec<[i16; 2]>,
+    /// Per-4x4-block L0 reference indices.
+    pub ref_idx_l0: Vec<i8>,
+    /// Width in macroblocks (for indexing into mv_l0/ref_idx_l0).
+    pub mb_width: u32,
+    /// Whether this picture is intra-only (all MBs are intra).
+    pub is_intra: bool,
 }
 
 /// A DPB entry wrapping an Rc<DecodedPicture> with mutable status.
@@ -297,6 +305,10 @@ mod tests {
             height: 16,
             frame_num,
             pic_order_cnt: poc,
+            mv_l0: vec![],
+            ref_idx_l0: vec![],
+            mb_width: 1,
+            is_intra: false,
         })
     }
 

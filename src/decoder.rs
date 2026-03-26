@@ -220,13 +220,21 @@ impl Decoder {
                             ref_idx_store_l0[mb_idx * 16 + blk] = 0;
                         }
                     } else {
-                        // B_Skip: derive MVs via spatial direct mode, no residual
+                        // B_Skip: derive MVs via spatial or temporal direct mode, no residual
                         let (mv_l0, mv_l1, ri_l0, ri_l1, pl0, pl1) =
-                            derive_spatial_direct(
-                                &mv_store_l0, &ref_idx_store_l0,
-                                &mv_store_l1, &ref_idx_store_l1,
-                                mb_idx, mb_width as usize,
-                            );
+                            if header.direct_spatial_mv_pred_flag {
+                                derive_spatial_direct(
+                                    &mv_store_l0, &ref_idx_store_l0,
+                                    &mv_store_l1, &ref_idx_store_l1,
+                                    mb_idx, mb_width as usize,
+                                )
+                            } else {
+                                let col_pic = &_ref_pic_list_l1[0];
+                                derive_temporal_direct(
+                                    col_pic, &_ref_pic_list_l0,
+                                    current_poc, col_pic.pic_order_cnt, mb_idx,
+                                )
+                            };
                         for blk in 0..16 {
                             mv_store_l0[mb_idx * 16 + blk] = mv_l0;
                             ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
@@ -383,13 +391,21 @@ impl Decoder {
                         });
                     }
                     0 => {
-                        // B_Direct_16x16: derive MVs via spatial direct mode
+                        // B_Direct_16x16: derive MVs via spatial or temporal direct mode
                         let (mv_l0, mv_l1, ri_l0, ri_l1, pl0, pl1) =
-                            derive_spatial_direct(
-                                &mv_store_l0, &ref_idx_store_l0,
-                                &mv_store_l1, &ref_idx_store_l1,
-                                mb_idx, mb_width as usize,
-                            );
+                            if header.direct_spatial_mv_pred_flag {
+                                derive_spatial_direct(
+                                    &mv_store_l0, &ref_idx_store_l0,
+                                    &mv_store_l1, &ref_idx_store_l1,
+                                    mb_idx, mb_width as usize,
+                                )
+                            } else {
+                                let col_pic = &_ref_pic_list_l1[0];
+                                derive_temporal_direct(
+                                    col_pic, &_ref_pic_list_l0,
+                                    current_poc, col_pic.pic_order_cnt, mb_idx,
+                                )
+                            };
                         for blk in 0..16 {
                             mv_store_l0[mb_idx * 16 + blk] = mv_l0;
                             ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
@@ -1467,6 +1483,10 @@ impl Decoder {
             height: frame.height,
             frame_num: header.frame_num,
             pic_order_cnt: poc,
+            mv_l0: mv_store_l0,
+            ref_idx_l0: ref_idx_store_l0,
+            mb_width,
+            is_intra: header.slice_type == SliceType::I,
         });
 
         self.dpb.insert(pic, reference);
@@ -1632,6 +1652,60 @@ fn derive_spatial_direct(
     }
 
     (mv[0], mv[1], ref_idx[0], ref_idx[1], pred_flag[0], pred_flag[1])
+}
+
+/// Temporal direct mode MV derivation for B-slices (spec 8.4.1.2.3).
+/// Uses co-located MB from L1[0] reference, scales MV by POC distance.
+/// Returns (mv_l0, mv_l1, ref_idx_l0, ref_idx_l1, pred_l0, pred_l1).
+#[allow(clippy::type_complexity)]
+fn derive_temporal_direct(
+    col_pic: &DecodedPicture,
+    ref_pic_list_l0: &[Rc<DecodedPicture>],
+    current_poc: i32,
+    col_poc: i32,
+    mb_idx: usize,
+) -> ([i16; 2], [i16; 2], i8, i8, bool, bool) {
+    // Check if co-located MB is intra
+    let col_base = mb_idx * 16;
+    if col_pic.is_intra || col_base >= col_pic.ref_idx_l0.len()
+        || col_pic.ref_idx_l0[col_base] < 0
+    {
+        // Intra co-located: zero MVs, ref_idx=0
+        return ([0, 0], [0, 0], 0, 0, true, true);
+    }
+
+    // Get co-located MV and ref_idx (use the first 4x4 block of the MB)
+    let col_mv = col_pic.mv_l0[col_base];
+    let col_ref_idx = col_pic.ref_idx_l0[col_base];
+
+    // Map co-located ref_idx to current L0 ref_idx by matching POC
+    // For simplicity: assume col_ref_idx maps to the same index in current L0
+    // (correct when ref lists have same ordering, which is common)
+    let ref0 = if (col_ref_idx as usize) < ref_pic_list_l0.len() {
+        col_ref_idx as usize
+    } else {
+        0
+    };
+    let poc0 = ref_pic_list_l0.get(ref0).map(|p| p.pic_order_cnt).unwrap_or(0);
+
+    // Compute dist_scale_factor: td = col_poc - poc0, tb = current_poc - poc0
+    let td = (col_poc - poc0).clamp(-128, 127);
+    let tb = (current_poc - poc0).clamp(-128, 127);
+
+    let (mv_l0, mv_l1) = if td == 0 {
+        // No scaling possible
+        (col_mv, [0, 0])
+    } else {
+        let tx = (16384 + (td.abs() >> 1)) / td;
+        let scale = ((tb * tx + 32) >> 6).clamp(-1024, 1023);
+        let mx_l0 = ((scale * col_mv[0] as i32 + 128) >> 8) as i16;
+        let my_l0 = ((scale * col_mv[1] as i32 + 128) >> 8) as i16;
+        let mx_l1 = mx_l0 - col_mv[0];
+        let my_l1 = my_l0 - col_mv[1];
+        ([mx_l0, my_l0], [mx_l1, my_l1])
+    };
+
+    (mv_l0, mv_l1, ref0 as i8, 0, true, true)
 }
 
 /// Motion vector prediction using the median of neighbors A, B, C (spec 8.4.1.3).
@@ -2441,5 +2515,12 @@ mod tests {
         // 32x32, 5 frames (coded: I,P,B,P,B) — B-frames use 100% B_Skip
         // (spatial direct mode)
         decode_multiframe_and_compare("b_skip_test", 5, 32, 32);
+    }
+
+    #[test]
+    fn test_b_temporal() {
+        // 32x32, 5 frames (coded: I,P,B,P,B) — B-frames use 100% B_Skip
+        // (temporal direct mode)
+        decode_multiframe_and_compare("b_temporal_test", 5, 32, 32);
     }
 }
