@@ -2911,7 +2911,7 @@ mod tests {
         }
 
         // Sort frames by POC for display-order comparison
-        // (FFmpeg reference YUV is in display order; decoder outputs in decode order)
+        // (reference YUV is in display order; decoder outputs in decode order)
         frames.sort_by_key(|f| f.pic_order_cnt);
 
         let mut output = Vec::new();

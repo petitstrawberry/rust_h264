@@ -168,7 +168,6 @@ pub fn predict_intra_4x4(
         }
         5 => {
             // Vertical-Right (spec 8.3.1.2.6)
-            // Use FFmpeg's direct assignment approach for correctness
             let a = above.unwrap_or(&[128; 8]);
             let l = left.unwrap_or(&[128; 4]);
             let p = above_left.unwrap_or(128);
@@ -197,7 +196,6 @@ pub fn predict_intra_4x4(
         }
         6 => {
             // Horizontal-Down (spec 8.3.1.2.7)
-            // Use FFmpeg's direct assignment approach for correctness
             let a = above.unwrap_or(&[128; 8]);
             let l = left.unwrap_or(&[128; 4]);
             let p = above_left.unwrap_or(128);

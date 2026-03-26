@@ -1,4 +1,6 @@
 pub mod bitstream;
+pub mod cabac;
+mod cabac_tables;
 pub mod error;
 pub mod cavlc;
 pub mod deblock;
