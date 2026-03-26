@@ -31,7 +31,7 @@ This is a Rust project using Cargo:
 
 ## Status
 
-I-frame and P-frame decoding functional. B-slice decoding not yet implemented.
+I-frame, P-frame, and basic B-frame decoding functional. B_L0_16x16, B_L1_16x16, and B_Bi_16x16 implemented. B_Skip/B_Direct and B-slice sub-partitions not yet implemented.
 
 ### Completed
 
@@ -40,6 +40,7 @@ I-frame and P-frame decoding functional. B-slice decoding not yet implemented.
 - Decoded reference picture marking for IDR and non-IDR slices
 - Deblocking filter parameter parsing
 - P-slice fields: num_ref_idx_l0_active, ref_pic_list_modification, dec_ref_pic_marking
+- B-slice fields: num_ref_idx_l1_active, direct_spatial_mv_pred_flag, L1 ref_pic_list_modification, pred_weight_table (consumed)
 
 **Intra Macroblock Decoding** (`src/decoder.rs`)
 - I4x4 macroblocks with all 9 prediction modes
@@ -56,17 +57,23 @@ I-frame and P-frame decoding functional. B-slice decoding not yet implemented.
 - MV prediction with median and directional (match_count) logic
 - Inter CBP table, inter scaling lists (indices 3-5)
 - P_8x8 with all sub-partition types (8x8, 8x4, 4x8, 4x4) and P_8x8ref0
+- B_L0_16x16, B_L1_16x16 (uni-directional), B_Bi_16x16 (bi-directional)
+- Dual MV/ref_idx storage (L0 + L1) for B-slice support
+- Bi-prediction averaging for luma and chroma
 
 **Motion Compensation** (`src/inter_pred.rs`)
 - Luma: 6-tap FIR filter for half-pel, bilinear averaging for quarter-pel (all 16 positions)
 - Chroma: bilinear interpolation at eighth-pel precision
+- Bi-prediction: `bi_pred_avg` pixel averaging of L0 and L1 predictions
 - Boundary clipping per spec 8.4.2.2.1
 
 **Decoded Picture Buffer** (`src/dpb.rs`)
 - Reference frame storage with `Rc<DecodedPicture>` sharing
 - Sliding window marking (spec 8.2.5.3)
 - POC computation for types 0, 1, 2
-- Short-term reference list sorted by descending frame_num
+- P-slice L0: short-term refs sorted by descending frame_num
+- B-slice L0: refs sorted by POC (before current descending, after ascending)
+- B-slice L1: refs sorted by POC (after current ascending, before descending)
 
 **CAVLC Entropy Decoding** (`src/cavlc.rs`)
 - Complete coeff_token VLC tables (nC 0-2, 2-4, 4-8, 8+, chroma DC)
@@ -87,7 +94,7 @@ I-frame and P-frame decoding functional. B-slice decoding not yet implemented.
 **Intra Prediction** (`src/intra_pred.rs`)
 - I16x16: vertical, horizontal, DC, plane (4 modes)
 - I4x4: all 9 modes with above-right availability checks
-- Chroma 8x8: DC, horizontal, vertical, plane (4 modes)
+- Chroma 8x8: DC (per-4x4-quadrant), horizontal, vertical, plane (4 modes)
 
 **Transform & Quantization** (`src/residual.rs`)
 - 4x4 inverse integer DCT
@@ -104,15 +111,19 @@ I-frame and P-frame decoding functional. B-slice decoding not yet implemented.
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (51 tests, all byte-exact against FFmpeg)
+**Test Coverage** (55 tests)
 - Intra: single_frame, multi_mb_frame, i4x4_frame, deblock_frame, mixed_i4x4_frame,
   gradient_48x32, edges (QP=10/35), smooth_80x48, noise_16x16, scaling_test
-- Inter: p_frame_test (IDR+P), p_skip_heavy (50% skip), p_multi_frame (IDR+3P
+- P-slice: p_frame_test (IDR+P), p_skip_heavy (50% skip), p_multi_frame (IDR+3P
   with P16x16/P16x8/8x16/intra-in-P), p_8x8_test (82.8% P_8x8 + sub-8x4),
   p_multiref (IDR+3P with ref=3, multi-reference P8x16)
+- B-slice: b_l0_l1_test (100% B_L0_16x16), b_bi_test (33% B_Bi + 67% B_L1 +
+  intra-in-B)
 
 ### Not Yet Implemented
 
-- B-slice decoding (bi-prediction, temporal direct mode)
+- B_Skip / B_Direct (spatial and temporal direct mode)
+- B-slice 16x8, 8x16, B_8x8 partitions
+- Multi-B-frame sequences (consecutive B-frames)
 - MBAFF/interlaced mode
 - CABAC entropy decoding

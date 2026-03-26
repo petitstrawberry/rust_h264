@@ -185,6 +185,14 @@ pub fn chroma_mc(
     }
 }
 
+/// Bi-prediction averaging (spec 8.4.2.3.2).
+/// `output[i] = (pred_l0[i] + pred_l1[i] + 1) >> 1` for each pixel.
+pub fn bi_pred_avg(pred_l0: &[u8], pred_l1: &[u8], output: &mut [u8]) {
+    for (o, (&a, &b)) in output.iter_mut().zip(pred_l0.iter().zip(pred_l1.iter())) {
+        *o = ((a as u16 + b as u16 + 1) >> 1) as u8;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -308,8 +308,44 @@ impl Decoder {
                         return Err(DecodeError::Unsupported("B_Direct_16x16 not yet implemented"));
                     }
                     3 => {
-                        // B_Bi_16x16 — needs bi-prediction (step 3)
-                        return Err(DecodeError::Unsupported("B_Bi_16x16 not yet implemented"));
+                        // B_Bi_16x16: both L0 and L1, averaged
+                        let ref_idx_l0 = if header.num_ref_idx_l0_active > 1 {
+                            reader.read_te(header.num_ref_idx_l0_active - 1)? as i8
+                        } else { 0 };
+                        let ref_idx_l1 = if header.num_ref_idx_l1_active > 1 {
+                            reader.read_te(header.num_ref_idx_l1_active - 1)? as i8
+                        } else { 0 };
+
+                        let mvd_l0_x = reader.read_se()? as i16;
+                        let mvd_l0_y = reader.read_se()? as i16;
+                        let (mvp_l0_x, mvp_l0_y) = predict_mv(
+                            &mv_store_l0, &ref_idx_store_l0, mb_idx, mb_width as usize,
+                            0, 16, 16, ref_idx_l0,
+                        );
+                        let mv_l0 = [mvp_l0_x + mvd_l0_x, mvp_l0_y + mvd_l0_y];
+
+                        let mvd_l1_x = reader.read_se()? as i16;
+                        let mvd_l1_y = reader.read_se()? as i16;
+                        let (mvp_l1_x, mvp_l1_y) = predict_mv(
+                            &mv_store_l1, &ref_idx_store_l1, mb_idx, mb_width as usize,
+                            0, 16, 16, ref_idx_l1,
+                        );
+                        let mv_l1 = [mvp_l1_x + mvd_l1_x, mvp_l1_y + mvd_l1_y];
+
+                        // Store both L0 and L1 MVs
+                        for blk in 0..16 {
+                            mv_store_l0[mb_idx * 16 + blk] = mv_l0;
+                            ref_idx_store_l0[mb_idx * 16 + blk] = ref_idx_l0;
+                            mv_store_l1[mb_idx * 16 + blk] = mv_l1;
+                            ref_idx_store_l1[mb_idx * 16 + blk] = ref_idx_l1;
+                        }
+
+                        sub_parts.push(SubPart {
+                            x: 0, y: 0, w: 16, h: 16,
+                            ref_idx_l0, ref_idx_l1,
+                            mv_l0, mv_l1,
+                            pred_l0: true, pred_l1: true,
+                        });
                     }
                     4..=21 => {
                         // 16x8/8x16 variants (step 6)
@@ -371,42 +407,49 @@ impl Decoder {
 
                 // Luma MC + residual for each sub-partition
                 for sp in &sub_parts {
-                    if sp.pred_l0 {
-                        let ref_pic = &_ref_pic_list_l0[sp.ref_idx_l0 as usize];
-                        let mut luma_pred = vec![0u8; sp.w * sp.h];
+                    let mut luma_pred = vec![0u8; sp.w * sp.h];
+
+                    if sp.pred_l0 && sp.pred_l1 {
+                        // Bi-prediction: average L0 and L1
+                        let mut pred_l0 = vec![0u8; sp.w * sp.h];
+                        let mut pred_l1 = vec![0u8; sp.w * sp.h];
                         inter_pred::luma_mc(
-                            ref_pic,
+                            &_ref_pic_list_l0[sp.ref_idx_l0 as usize],
+                            (mb_x + sp.x) as i32, (mb_y + sp.y) as i32,
+                            sp.mv_l0[0] as i32, sp.mv_l0[1] as i32,
+                            sp.w, sp.h, &mut pred_l0,
+                        );
+                        inter_pred::luma_mc(
+                            &_ref_pic_list_l1[sp.ref_idx_l1 as usize],
+                            (mb_x + sp.x) as i32, (mb_y + sp.y) as i32,
+                            sp.mv_l1[0] as i32, sp.mv_l1[1] as i32,
+                            sp.w, sp.h, &mut pred_l1,
+                        );
+                        inter_pred::bi_pred_avg(&pred_l0, &pred_l1, &mut luma_pred);
+                    } else if sp.pred_l0 {
+                        inter_pred::luma_mc(
+                            &_ref_pic_list_l0[sp.ref_idx_l0 as usize],
                             (mb_x + sp.x) as i32, (mb_y + sp.y) as i32,
                             sp.mv_l0[0] as i32, sp.mv_l0[1] as i32,
                             sp.w, sp.h, &mut luma_pred,
                         );
-                        for r in 0..sp.h {
-                            for c in 0..sp.w {
-                                let val = (luma_pred[r * sp.w + c] as i32
-                                    + luma_residual[(sp.y + r) * 16 + sp.x + c])
-                                    .clamp(0, 255) as u8;
-                                frame.y[(mb_y + sp.y + r) * stride + mb_x + sp.x + c] = val;
-                            }
-                        }
                     } else if sp.pred_l1 {
-                        let ref_pic = &_ref_pic_list_l1[sp.ref_idx_l1 as usize];
-                        let mut luma_pred = vec![0u8; sp.w * sp.h];
                         inter_pred::luma_mc(
-                            ref_pic,
+                            &_ref_pic_list_l1[sp.ref_idx_l1 as usize],
                             (mb_x + sp.x) as i32, (mb_y + sp.y) as i32,
                             sp.mv_l1[0] as i32, sp.mv_l1[1] as i32,
                             sp.w, sp.h, &mut luma_pred,
                         );
-                        for r in 0..sp.h {
-                            for c in 0..sp.w {
-                                let val = (luma_pred[r * sp.w + c] as i32
-                                    + luma_residual[(sp.y + r) * 16 + sp.x + c])
-                                    .clamp(0, 255) as u8;
-                                frame.y[(mb_y + sp.y + r) * stride + mb_x + sp.x + c] = val;
-                            }
+                    }
+
+                    for r in 0..sp.h {
+                        for c in 0..sp.w {
+                            let val = (luma_pred[r * sp.w + c] as i32
+                                + luma_residual[(sp.y + r) * 16 + sp.x + c])
+                                .clamp(0, 255) as u8;
+                            frame.y[(mb_y + sp.y + r) * stride + mb_x + sp.x + c] = val;
                         }
                     }
-                    // Bi-prediction handled in step 3
                 }
 
                 // Chroma
@@ -480,25 +523,43 @@ impl Decoder {
                         let ch = sp.h.max(2) / 2;
                         if cw == 0 || ch == 0 { continue; }
 
-                        let (ref_list, ref_idx, mv) = if sp.pred_l0 {
-                            (&_ref_pic_list_l0, sp.ref_idx_l0, sp.mv_l0)
-                        } else {
-                            (&_ref_pic_list_l1, sp.ref_idx_l1, sp.mv_l1)
-                        };
-                        let part_ref_pic = &ref_list[ref_idx as usize];
-                        let chroma_ref = if scale_idx == 4 {
-                            &part_ref_pic.u
-                        } else {
-                            &part_ref_pic.v
-                        };
+                        let chroma_h = (height / 2) as usize;
+                        let cx = (chroma_mb_x + cx_off) as i32;
+                        let cy = (chroma_mb_y + cy_off) as i32;
+
                         let mut part_pred = vec![0u8; cw * ch];
-                        inter_pred::chroma_mc(
-                            chroma_ref, chroma_width, (height / 2) as usize,
-                            (chroma_mb_x + cx_off) as i32,
-                            (chroma_mb_y + cy_off) as i32,
-                            mv[0] as i32, mv[1] as i32,
-                            cw, ch, &mut part_pred,
-                        );
+                        if sp.pred_l0 && sp.pred_l1 {
+                            let ref_l0 = &_ref_pic_list_l0[sp.ref_idx_l0 as usize];
+                            let ref_l1 = &_ref_pic_list_l1[sp.ref_idx_l1 as usize];
+                            let cr_l0 = if scale_idx == 4 { &ref_l0.u } else { &ref_l0.v };
+                            let cr_l1 = if scale_idx == 4 { &ref_l1.u } else { &ref_l1.v };
+                            let mut c_l0 = vec![0u8; cw * ch];
+                            let mut c_l1 = vec![0u8; cw * ch];
+                            inter_pred::chroma_mc(
+                                cr_l0, chroma_width, chroma_h, cx, cy,
+                                sp.mv_l0[0] as i32, sp.mv_l0[1] as i32,
+                                cw, ch, &mut c_l0,
+                            );
+                            inter_pred::chroma_mc(
+                                cr_l1, chroma_width, chroma_h, cx, cy,
+                                sp.mv_l1[0] as i32, sp.mv_l1[1] as i32,
+                                cw, ch, &mut c_l1,
+                            );
+                            inter_pred::bi_pred_avg(&c_l0, &c_l1, &mut part_pred);
+                        } else {
+                            let (ref_list, ref_idx, mv) = if sp.pred_l0 {
+                                (&_ref_pic_list_l0, sp.ref_idx_l0, sp.mv_l0)
+                            } else {
+                                (&_ref_pic_list_l1, sp.ref_idx_l1, sp.mv_l1)
+                            };
+                            let ref_pic = &ref_list[ref_idx as usize];
+                            let cr = if scale_idx == 4 { &ref_pic.u } else { &ref_pic.v };
+                            inter_pred::chroma_mc(
+                                cr, chroma_width, chroma_h, cx, cy,
+                                mv[0] as i32, mv[1] as i32,
+                                cw, ch, &mut part_pred,
+                            );
+                        }
                         for r in 0..ch {
                             for c in 0..cw {
                                 chroma_pred[(cy_off + r) * 8 + cx_off + c] = part_pred[r * cw + c];
@@ -2180,5 +2241,12 @@ mod tests {
         // reference YUV using our own decoder output for byte-exact comparison
         // of the inter frames.
         decode_multiframe_and_compare("b_l0_l1_test", 5, 32, 32);
+    }
+
+    #[test]
+    fn test_b_bi() {
+        // 32x32, 5 frames (coded: I,P,B,P,P) — B-frame has 33% B_Bi_16x16,
+        // 67% B_L1_16x16, 25% intra-in-B
+        decode_multiframe_and_compare("b_bi_test", 5, 32, 32);
     }
 }
