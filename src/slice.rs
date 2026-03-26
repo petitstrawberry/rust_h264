@@ -50,6 +50,8 @@ pub struct SliceHeader {
     pub num_ref_idx_l1_active: u32,
     /// Spatial (true) vs temporal (false) direct mode for B slices.
     pub direct_spatial_mv_pred_flag: bool,
+    /// MMCO operations: (op_code, parameter). Currently only op=1 (mark short-term unused).
+    pub mmco_ops: Vec<(u32, u32)>,
 }
 
 impl SliceHeader {
@@ -199,6 +201,7 @@ pub fn parse_slice_header(
     // dec_ref_pic_marking (spec 7.3.3.3)
     let mut no_output_of_prior_pics_flag = false;
     let mut long_term_reference_flag = false;
+    let mut mmco_ops: Vec<(u32, u32)> = Vec::new();
     if nal_unit_type == NalUnitType::SliceIdr {
         no_output_of_prior_pics_flag = r.read_bit()? != 0;
         long_term_reference_flag = r.read_bit()? != 0;
@@ -211,8 +214,15 @@ pub fn parse_slice_header(
                     break;
                 }
                 match op {
-                    1 | 3 => { let _ = r.read_ue()?; }
+                    1 => {
+                        let diff = r.read_ue()?;
+                        mmco_ops.push((1, diff));
+                    }
                     2 => { let _ = r.read_ue()?; }
+                    3 => {
+                        let _ = r.read_ue()?;
+                        let _ = r.read_ue()?;
+                    }
                     4 | 5 => { let _ = r.read_ue()?; }
                     6 => { let _ = r.read_ue()?; }
                     _ => break,
@@ -252,6 +262,7 @@ pub fn parse_slice_header(
         num_ref_idx_l0_active,
         num_ref_idx_l1_active,
         direct_spatial_mv_pred_flag,
+        mmco_ops,
     };
 
     Ok((header, r))

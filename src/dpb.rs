@@ -154,6 +154,19 @@ impl Dpb {
         before.sort_by(|a, b| b.pic_order_cnt.cmp(&a.pic_order_cnt)); // descending
 
         after.extend(before);
+
+        // Spec 8.2.4.2.4: if L1 == L0 and has more than one entry, swap first two
+        let l0 = self.ref_list_l0_b(current_poc);
+        if after.len() > 1
+            && after.len() == l0.len()
+            && after
+                .iter()
+                .zip(l0.iter())
+                .all(|(a, b)| a.pic_order_cnt == b.pic_order_cnt)
+        {
+            after.swap(0, 1);
+        }
+
         after
     }
 
@@ -262,15 +275,18 @@ impl Dpb {
     }
 
     /// Sliding window reference marking (spec 8.2.5.3).
-    /// If short-term ref count >= max_ref_frames, mark the oldest as unused.
+    /// While short-term ref count >= max_ref_frames, mark the oldest as unused.
     fn sliding_window_mark(&mut self) {
-        let short_term_count = self
-            .entries
-            .iter()
-            .filter(|e| e.reference == ReferenceStatus::ShortTerm)
-            .count();
-
-        if short_term_count >= self.max_ref_frames && self.max_ref_frames > 0 {
+        let max = self.max_ref_frames.max(1);
+        while self.max_ref_frames > 0 {
+            let short_term_count = self
+                .entries
+                .iter()
+                .filter(|e| e.reference == ReferenceStatus::ShortTerm)
+                .count();
+            if short_term_count < max {
+                break;
+            }
             // Find the short-term ref with the smallest frame_num
             if let Some(idx) = self
                 .entries
@@ -281,8 +297,21 @@ impl Dpb {
                 .map(|(i, _)| i)
             {
                 self.entries[idx].reference = ReferenceStatus::Unused;
+            } else {
+                break;
             }
         }
+    }
+
+    /// Mark a short-term reference as unused by frame_num (MMCO op=1).
+    pub fn mark_short_term_unused(&mut self, frame_num: u32) {
+        for entry in &mut self.entries {
+            if entry.reference == ReferenceStatus::ShortTerm && entry.pic.frame_num == frame_num {
+                entry.reference = ReferenceStatus::Unused;
+                break;
+            }
+        }
+        self.remove_unused();
     }
 
     /// Remove entries that are unused for reference (freeing memory).

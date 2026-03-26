@@ -1875,6 +1875,14 @@ impl Decoder {
             ReferenceStatus::Unused
         };
 
+        // Apply MMCO operations before inserting current picture (spec 8.2.5.4)
+        for &(op, param) in &header.mmco_ops {
+            if op == 1 {
+                let pic_num_to_remove = header.frame_num as i32 - (param as i32 + 1);
+                self.dpb.mark_short_term_unused(pic_num_to_remove as u32);
+            }
+        }
+
         let pic = Rc::new(DecodedPicture {
             y: frame.y.clone(),
             u: frame.u.clone(),
@@ -2958,5 +2966,12 @@ mod tests {
         // 64x64, 5 frames (I,B,P,B,P) — B-frames with 37.5% B16x16,
         // 40.6% B16x8/8x16, 5.5% B_8x8, 15.6% direct, 87.9% Bi
         decode_multiframe_and_compare("b_parts_test", 5, 64, 64);
+    }
+
+    #[test]
+    fn test_b_multi_frame() {
+        // 64x64, 8 frames (I,B,P,B,P,B,P,P) — multiple B-frames across
+        // the sequence with skip, direct, and various partition types
+        decode_multiframe_and_compare("b_multi_test", 8, 64, 64);
     }
 }
