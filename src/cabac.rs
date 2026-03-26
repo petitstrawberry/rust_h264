@@ -332,6 +332,310 @@ pub fn init_cabac_states(slice_qp: i32, is_i_slice: bool, cabac_init_idc: u32) -
 
 use crate::cabac_tables::{CABAC_CONTEXT_INIT_I, CABAC_CONTEXT_INIT_PB};
 
+// ---- CABAC syntax element decoders (spec 9.3.3) ----
+
+impl CabacReader<'_> {
+    /// Decode mb_skip_flag (spec 9.3.3.1.1).
+    /// `left_skip`, `top_skip`: whether left/top MB was skipped.
+    /// `is_b_slice`: true for B-slices (uses different context base).
+    pub fn decode_mb_skip(&mut self, state: &mut [u8; 1024],
+                          left_skip: bool, top_skip: bool, is_b_slice: bool) -> bool {
+        let mut ctx = 0u32;
+        if !left_skip { ctx += 1; }
+        if !top_skip { ctx += 1; }
+        let base = if is_b_slice { 24 } else { 11 };
+        self.get_cabac(&mut state[(base + ctx) as usize]) != 0
+    }
+
+    /// Decode intra mb_type (spec 9.3.3.1.1.1).
+    /// Returns mb_type for I-slice: 0=I4x4, 1-24=I16x16 variants, 25=I_PCM.
+    pub fn decode_intra_mb_type(&mut self, state: &mut [u8; 1024],
+                                 ctx_base: usize,
+                                 left_is_intra16: bool, top_is_intra16: bool) -> u32 {
+        let mut ctx = 0usize;
+        if left_is_intra16 { ctx += 1; }
+        if top_is_intra16 { ctx += 1; }
+
+        // First bit: I4x4 (0) vs I16x16/PCM
+        if self.get_cabac(&mut state[ctx_base + ctx]) == 0 {
+            return 0; // I4x4
+        }
+
+        // Check for PCM (terminate)
+        if self.get_cabac_terminate() != 0 {
+            return 25; // I_PCM
+        }
+
+        // Decode I16x16 sub-type: cbp_luma(1bit) + cbp_chroma(2bits) + pred_mode(2bits)
+        // mb_type = 1 + 12*cbp_luma_nz + 4*cbp_chroma + pred_mode
+        let cbp_luma_nz = self.get_cabac(&mut state[ctx_base + 3]);
+        let cbp_chroma_bit0 = self.get_cabac(&mut state[ctx_base + 4]);
+        let cbp_chroma = if cbp_chroma_bit0 != 0 {
+            1 + self.get_cabac(&mut state[ctx_base + 5])
+        } else {
+            0
+        };
+        let pred_mode_bit0 = self.get_cabac(&mut state[ctx_base + 6]);
+        let pred_mode = (pred_mode_bit0 << 1) | self.get_cabac(&mut state[ctx_base + 7]);
+
+        1 + 12 * cbp_luma_nz + 4 * cbp_chroma + pred_mode
+    }
+
+    /// Decode P-slice mb_type.
+    /// Returns: 0=P_L0_16x16, 1=P_L0_L0_16x8, 2=P_L0_L0_8x16, 3=P_8x8, 4=P_8x8ref0,
+    ///          5+=intra (subtract 5 and interpret as I-slice mb_type).
+    pub fn decode_p_mb_type(&mut self, state: &mut [u8; 1024]) -> u32 {
+        if self.get_cabac(&mut state[14]) == 0 {
+            // P-type
+            if self.get_cabac(&mut state[15]) == 0 {
+                3 * self.get_cabac(&mut state[16]) // 0 (P_L0_16x16) or 3 (P_8x8)
+            } else {
+                2 - self.get_cabac(&mut state[17]) // 1 (P_L0_L0_16x8) or 2 (P_L0_L0_8x16)
+            }
+        } else {
+            // Intra in P-slice
+            5 + self.decode_intra_mb_type(state, 17, false, false)
+        }
+    }
+
+    /// Decode B-slice mb_type.
+    /// Returns: 0=B_Direct_16x16, 1-22=B inter types, 23+=intra.
+    pub fn decode_b_mb_type(&mut self, state: &mut [u8; 1024],
+                             left_is_direct: bool, top_is_direct: bool) -> u32 {
+        let mut ctx = 27usize;
+        if !left_is_direct { ctx += 1; }
+        if !top_is_direct { ctx += 1; }
+
+        if self.get_cabac(&mut state[ctx]) == 0 {
+            return 0; // B_Direct_16x16
+        }
+
+        if self.get_cabac(&mut state[30]) == 0 {
+            // B_L0_16x16 or B_L1_16x16
+            return 1 + self.get_cabac(&mut state[32]);
+        }
+
+        let mut bits = self.get_cabac(&mut state[31]) << 3;
+        bits |= self.get_cabac(&mut state[32]) << 2;
+        bits |= self.get_cabac(&mut state[32]) << 1;
+        bits |= self.get_cabac(&mut state[32]);
+
+        if bits < 8 {
+            bits + 3
+        } else if bits == 13 {
+            // Intra in B-slice
+            23 + self.decode_intra_mb_type(state, 32, false, false)
+        } else if bits == 14 {
+            11 // B_L1_L0_8x16
+        } else if bits == 15 {
+            22 // B_8x8
+        } else {
+            let extra = self.get_cabac(&mut state[32]);
+            (bits << 1 | extra) - 4
+        }
+    }
+
+    /// Decode P-slice sub_mb_type.
+    /// Returns: 0=P_L0_8x8, 1=P_L0_8x4, 2=P_L0_4x8, 3=P_L0_4x4.
+    pub fn decode_p_sub_mb_type(&mut self, state: &mut [u8; 1024]) -> u32 {
+        if self.get_cabac(&mut state[21]) != 0 {
+            0 // P_L0_8x8
+        } else if self.get_cabac(&mut state[22]) == 0 {
+            1 // P_L0_8x4
+        } else if self.get_cabac(&mut state[23]) != 0 {
+            2 // P_L0_4x8
+        } else {
+            3 // P_L0_4x4
+        }
+    }
+
+    /// Decode B-slice sub_mb_type.
+    /// Returns: 0=B_Direct_8x8, 1-12=B sub types.
+    pub fn decode_b_sub_mb_type(&mut self, state: &mut [u8; 1024]) -> u32 {
+        if self.get_cabac(&mut state[36]) == 0 {
+            return 0; // B_Direct_8x8
+        }
+        if self.get_cabac(&mut state[37]) == 0 {
+            return 1 + self.get_cabac(&mut state[39]); // B_L0_8x8(1) or B_L1_8x8(2)
+        }
+        let mut t = 3u32;
+        if self.get_cabac(&mut state[38]) != 0 {
+            if self.get_cabac(&mut state[39]) != 0 {
+                return 11 + self.get_cabac(&mut state[39]); // B_L0_4x4(11) or B_Bi_4x4(12)
+            }
+            t += 4; // 7
+        }
+        // t is 3 or 7
+        t += 2 * self.get_cabac(&mut state[39]);
+        t += self.get_cabac(&mut state[39]);
+        t // 3-6 or 7-10
+    }
+
+    /// Decode intra4x4 prediction mode (spec 9.3.3.1.1.3).
+    /// `pred_mode`: the predicted (most probable) mode.
+    pub fn decode_intra4x4_pred_mode(&mut self, state: &mut [u8; 1024],
+                                      pred_mode: u8) -> u8 {
+        if self.get_cabac(&mut state[68]) != 0 {
+            return pred_mode;
+        }
+        let mut mode = self.get_cabac(&mut state[69]) as u8;
+        mode |= (self.get_cabac(&mut state[69]) as u8) << 1;
+        mode |= (self.get_cabac(&mut state[69]) as u8) << 2;
+        if mode >= pred_mode { mode + 1 } else { mode }
+    }
+
+    /// Decode chroma intra prediction mode (spec 9.3.3.1.1.4).
+    /// `left_mode`, `top_mode`: neighbor chroma prediction modes (0 = DC).
+    pub fn decode_chroma_pred_mode(&mut self, state: &mut [u8; 1024],
+                                    left_mode: u8, top_mode: u8) -> u8 {
+        let mut ctx = 64usize;
+        if left_mode != 0 { ctx += 1; }
+        if top_mode != 0 { ctx += 1; }
+        // Note: ctx is computed from neighbor modes, not the state index offset
+        let ctx_offset = ctx - 64;
+
+        if self.get_cabac(&mut state[64 + ctx_offset]) == 0 {
+            return 0; // DC
+        }
+        if self.get_cabac(&mut state[67]) == 0 {
+            return 1; // Horizontal
+        }
+        if self.get_cabac(&mut state[67]) == 0 {
+            return 2; // Vertical
+        }
+        3 // Plane
+    }
+
+    /// Decode CBP luma (4 bits for 4 8x8 blocks) (spec 9.3.3.1.1.5).
+    /// `left_cbp`, `top_cbp`: neighbor CBP values.
+    pub fn decode_cbp_luma(&mut self, state: &mut [u8; 1024],
+                            left_cbp: u8, top_cbp: u8) -> u8 {
+        let mut cbp = 0u8;
+        // Block 0: left=bit1 of left_cbp, top=bit2 of top_cbp
+        let ctx0 = (((left_cbp >> 1) & 1) == 0) as usize + 2 * (((top_cbp >> 2) & 1) == 0) as usize;
+        cbp |= self.get_cabac(&mut state[73 + ctx0]) as u8;
+        // Block 1: left=bit0 of cbp, top=bit3 of top_cbp
+        let ctx1 = ((cbp & 1) == 0) as usize + 2 * (((top_cbp >> 3) & 1) == 0) as usize;
+        cbp |= (self.get_cabac(&mut state[73 + ctx1]) as u8) << 1;
+        // Block 2: left=bit3 of left_cbp, top=bit0 of cbp
+        let ctx2 = (((left_cbp >> 3) & 1) == 0) as usize + 2 * ((cbp & 1) == 0) as usize;
+        cbp |= (self.get_cabac(&mut state[73 + ctx2]) as u8) << 2;
+        // Block 3: left=bit2 of cbp, top=bit1 of cbp
+        let ctx3 = (((cbp >> 2) & 1) == 0) as usize + 2 * (((cbp >> 1) & 1) == 0) as usize;
+        cbp |= (self.get_cabac(&mut state[73 + ctx3]) as u8) << 3;
+        cbp
+    }
+
+    /// Decode CBP chroma (0, 1, or 2) (spec 9.3.3.1.1.5).
+    /// `left_cbp_chroma`, `top_cbp_chroma`: neighbor chroma CBP (0-2).
+    pub fn decode_cbp_chroma(&mut self, state: &mut [u8; 1024],
+                              left_cbp_chroma: u8, top_cbp_chroma: u8) -> u8 {
+        let ctx0 = (left_cbp_chroma > 0) as usize + 2 * (top_cbp_chroma > 0) as usize;
+        if self.get_cabac(&mut state[77 + ctx0]) == 0 {
+            return 0;
+        }
+        let ctx1 = 4 + (left_cbp_chroma == 2) as usize + 2 * (top_cbp_chroma == 2) as usize;
+        1 + self.get_cabac(&mut state[77 + ctx1]) as u8
+    }
+
+    /// Decode reference index (unary with context switching) (spec 9.3.3.1.1.6).
+    /// `left_ref`, `top_ref`: neighbor ref indices (-1 if unavailable).
+    pub fn decode_ref_idx(&mut self, state: &mut [u8; 1024],
+                           left_ref: i8, top_ref: i8) -> i8 {
+        let mut ctx = 54usize;
+        if left_ref > 0 { ctx += 1; }
+        if top_ref > 0 { ctx += 2; }
+
+        if self.get_cabac(&mut state[ctx]) == 0 {
+            return 0;
+        }
+        let mut ref_idx = 1i8;
+        ctx = 58; // context 4+ (54 + 4)
+        while self.get_cabac(&mut state[ctx]) != 0 {
+            ref_idx += 1;
+            ctx = 59; // stay at context 5 (54 + 5) for subsequent
+            if ref_idx >= 32 { break; }
+        }
+        ref_idx
+    }
+
+    /// Decode motion vector difference component (spec 9.3.3.1.1.7).
+    /// `ctx_base`: 40 for X, 47 for Y.
+    /// `amvd`: sum of absolute MVD values from left and top neighbors.
+    pub fn decode_mvd_comp(&mut self, state: &mut [u8; 1024],
+                            ctx_base: usize, amvd: u32) -> i32 {
+        // Context selection based on sum of neighbor MVDs
+        let ctx_offset = if amvd < 3 { 0 } else if amvd <= 32 { 1 } else { 2 };
+        let ctx = ctx_base + ctx_offset;
+
+        if self.get_cabac(&mut state[ctx]) == 0 {
+            return 0;
+        }
+
+        // Unary coding for magnitude 1-8
+        let mut abs_mvd = 1u32;
+        let mut uctx = ctx_base + 3;
+        while abs_mvd < 9 && self.get_cabac(&mut state[uctx]) != 0 {
+            if abs_mvd < 4 {
+                uctx += 1;
+            }
+            abs_mvd += 1;
+        }
+
+        // Exponential-Golomb bypass coding for magnitude >= 9
+        if abs_mvd >= 9 {
+            let mut k = 3u32;
+            while self.get_cabac_bypass() != 0 {
+                abs_mvd += 1 << k;
+                k += 1;
+            }
+            while k > 0 {
+                k -= 1;
+                abs_mvd += self.get_cabac_bypass() << k;
+            }
+        }
+
+        // Sign via bypass
+        self.get_cabac_bypass_sign(-(abs_mvd as i32))
+    }
+
+    /// Decode QP delta (spec 9.3.3.1.1.5).
+    /// `last_qp_delta_nonzero`: whether previous MB had non-zero QP delta.
+    pub fn decode_mb_qp_delta(&mut self, state: &mut [u8; 1024],
+                               last_qp_delta_nonzero: bool) -> i32 {
+        let ctx = 60 + last_qp_delta_nonzero as usize;
+        if self.get_cabac(&mut state[ctx]) == 0 {
+            return 0;
+        }
+
+        let mut val = 1u32;
+        let mut uctx = 62usize;
+        while self.get_cabac(&mut state[uctx]) != 0 {
+            uctx = 63;
+            val += 1;
+            if val > 52 { break; }
+        }
+
+        // Convert unary to signed: 1->1, 2->-1, 3->2, 4->-2, ...
+        if val & 1 != 0 {
+            ((val + 1) >> 1) as i32
+        } else {
+            -(((val + 1) >> 1) as i32)
+        }
+    }
+
+    /// Decode coded_block_flag for a block (spec 9.3.3.1.1.9).
+    /// `cat`: block category (0-4 for 4:2:0).
+    /// `left_nz`: whether left neighbor has non-zero coefficients.
+    /// `top_nz`: whether top neighbor has non-zero coefficients.
+    pub fn decode_coded_block_flag(&mut self, state: &mut [u8; 1024],
+                                    cat: usize, left_nz: bool, top_nz: bool) -> bool {
+        const CBF_BASE: [usize; 5] = [85, 89, 93, 97, 101];
+        let ctx = CBF_BASE[cat] + left_nz as usize + 2 * top_nz as usize;
+        self.get_cabac(&mut state[ctx]) != 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
