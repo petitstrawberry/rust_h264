@@ -247,6 +247,11 @@ impl Decoder {
 
                 if mb_type == 0 {
                     // I4x4 via CABAC
+                    // High profile: decode transform_8x8_mode_flag (context 399)
+                    if pps.transform_8x8_mode_flag {
+                        let _t8x8 = cr.get_cabac(&mut st[399]);
+                        // TODO: handle 8x8 DCT if t8x8 != 0
+                    }
                     let mut pred_modes = [2u8; 16];
                     for blk in 0..16 {
                         let predicted = predict_i4x4_mode(
@@ -287,13 +292,14 @@ impl Decoder {
                             let left_nz_blk = false;
                             let top_nz_blk = false;
 
-                            if cr.decode_coded_block_flag(st, 2, left_nz_blk, top_nz_blk) {
+                            let cbf = cr.decode_coded_block_flag(st, 2, left_nz_blk, top_nz_blk);
+                            if cbf {
                                 let (coeffs, tc) = cr.decode_residual_cabac(st, 2, 16);
                                 nc_luma[mb_idx * 16 + blk] = tc;
                                 // Place coefficients in scan order
-                                for (pos, val) in coeffs {
-                                    let (r, c) = ZIGZAG_4X4[pos];
-                                    block_coeffs[r * 4 + c] = val;
+                                for (pos, val) in &coeffs {
+                                    let (r, c) = ZIGZAG_4X4[*pos];
+                                    block_coeffs[r * 4 + c] = *val;
                                 }
                                 dequant_4x4_full(&mut block_coeffs, qp_y, &pps.scaling_list_4x4[0]);
                             }

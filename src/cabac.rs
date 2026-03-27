@@ -167,10 +167,6 @@ fn lps_range_lookup(range: u32, state: u8) -> u32 {
     LPS_RANGE[2 * (range & 0xC0) as usize + state as usize] as u32
 }
 
-#[inline]
-fn mlps_state(s: u8) -> u8 {
-    MLPS_STATE[128 + s as usize]
-}
 
 /// CABAC binary arithmetic decoder context.
 pub struct CabacReader<'a> {
@@ -182,21 +178,21 @@ pub struct CabacReader<'a> {
 
 impl<'a> CabacReader<'a> {
     /// Initialize the CABAC decoder from RBSP data at a given byte position.
+    /// Spec 9.3.1.2: codIRange = 510, codIOffset = read_bits(9).
+    /// Internal representation matches common implementations: low stores
+    /// codIOffset shifted left by (CABAC_BITS + 1) bits with buffered data.
     pub fn new(data: &'a [u8], byte_offset: usize) -> Self {
-        let mut pos = byte_offset;
-        let mut low: u32 = (data[pos] as u32) << 18;
+        // Read first two bytes to get codIOffset (9 bits) plus buffer
+        let b0 = data[byte_offset] as u32;
+        let b1 = data[byte_offset + 1] as u32;
+        // low = (b0 << 8 | b1) << 10, but split as b0 << 18 + b1 << 10
+        let mut low = (b0 << 18) | (b1 << 10);
+        let mut pos = byte_offset + 2;
+        // Pre-fill additional buffer bits from byte 2
+        // The +2 is the initial offset for the renormalization counter
+        low = low.wrapping_add((data[pos] as u32) << 2);
+        low = low.wrapping_add(2);
         pos += 1;
-        low += (data[pos] as u32) << 10;
-        pos += 1;
-        // Alignment: if next read is on 2-byte boundary, add 1<<9
-        // otherwise read another byte
-        if pos.is_multiple_of(2) {
-            low += 1 << 9;
-        } else {
-            low += (data[pos] as u32) << 2;
-            low += 2;
-            pos += 1;
-        }
         CabacReader {
             low,
             range: 0x1FE,
@@ -238,14 +234,14 @@ impl<'a> CabacReader<'a> {
         let range_lps = lps_range_lookup(self.range, s);
 
         self.range -= range_lps;
-        // Check if we're decoding the LPS
-        let lps_mask = ((self.range << (CABAC_BITS + 1)).wrapping_sub(self.low)) >> 31;
+        // Check if we're decoding the LPS (signed shift for sign extension)
+        let lps_mask = (((self.range << (CABAC_BITS + 1)).wrapping_sub(self.low)) as i32 >> 31) as u32;
 
         self.low = self.low.wrapping_sub((self.range << (CABAC_BITS + 1)) & lps_mask);
-        self.range += (range_lps.wrapping_sub(self.range)) & lps_mask;
+        self.range = self.range.wrapping_add(range_lps.wrapping_sub(self.range) & lps_mask);
 
-        let s = s ^ (lps_mask as u8);
-        *state = mlps_state(s);
+        let s = (s as i32) ^ (lps_mask as i32);
+        *state = MLPS_STATE[(128 + s) as usize];
         let bit = (s & 1) as u32;
 
         // Renormalization
@@ -405,10 +401,13 @@ impl CabacReader<'_> {
         let mut found_last = false;
 
         for pos in 0..max_coeff - 1 {
-            if self.get_cabac(&mut state[sig_base + pos]) != 0 {
+            let sig = self.get_cabac(&mut state[sig_base + pos]);
+            if sig != 0 {
                 sig_positions.push(pos);
-                if self.get_cabac(&mut state[last_base + pos]) != 0 {
+                let last = self.get_cabac(&mut state[last_base + pos]);
+                if last != 0 {
                     found_last = true;
+                    eprintln!();
                     break;
                 }
             }
@@ -814,10 +813,10 @@ mod tests {
     #[test]
     fn test_mlps_state_transitions() {
         // LPS transition from state 0 should go to state 2
-        assert_eq!(mlps_state(0), 2);
+        assert_eq!(MLPS_STATE[128 + 0], 2);
         // MPS transition from state 126 should go to state 126
-        assert_eq!(mlps_state(126), 126);
-        assert_eq!(mlps_state(127), 127);
+        assert_eq!(MLPS_STATE[128 + 126], 126);
+        assert_eq!(MLPS_STATE[128 + 127], 127);
     }
 
     #[test]
