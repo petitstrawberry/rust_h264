@@ -287,10 +287,11 @@ impl Decoder {
 
                         let mut block_coeffs = [0i32; 16];
                         if cbp_luma & (1 << (blk / 4)) != 0 {
-                            // Check coded_block_flag
-                            // TODO: proper neighbor NZ tracking for CABAC CBF context
-                            let left_nz_blk = false;
-                            let top_nz_blk = false;
+                            // CBF neighbor lookup for CABAC context
+                            let left_nz_blk = cabac_neighbor_nz_luma(
+                                &nc_luma, mb_idx, mb_width as usize, blk, true);
+                            let top_nz_blk = cabac_neighbor_nz_luma(
+                                &nc_luma, mb_idx, mb_width as usize, blk, false);
 
                             let cbf = cr.decode_coded_block_flag(st, 2, left_nz_blk, top_nz_blk);
                             if cbf {
@@ -419,7 +420,11 @@ impl Decoder {
                     if cbp_chroma >= 2 {
                         // Chroma AC: cat=4, max_coeff=15
                         for blk in 0..4 {
-                            if cr.decode_coded_block_flag(st, 4, false, false) {
+                            let left_nz = cabac_neighbor_nz_chroma(
+                                &nc_cb, mb_idx, mb_width as usize, blk, true);
+                            let top_nz = cabac_neighbor_nz_chroma(
+                                &nc_cb, mb_idx, mb_width as usize, blk, false);
+                            if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                 let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
                                 nc_cb[mb_idx * 4 + blk] = tc;
                                 for (pos, val) in coeffs {
@@ -428,7 +433,11 @@ impl Decoder {
                             }
                         }
                         for blk in 0..4 {
-                            if cr.decode_coded_block_flag(st, 4, false, false) {
+                            let left_nz = cabac_neighbor_nz_chroma(
+                                &nc_cr, mb_idx, mb_width as usize, blk, true);
+                            let top_nz = cabac_neighbor_nz_chroma(
+                                &nc_cr, mb_idx, mb_width as usize, blk, false);
+                            if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                 let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
                                 nc_cr[mb_idx * 4 + blk] = tc;
                                 for (pos, val) in coeffs {
@@ -2680,6 +2689,77 @@ fn get_mv_neighbor_above_left(
 /// Predict I4x4 mode from left (A) and above (B) neighbor block modes.
 /// H.264 spec 8.3.1.1: predicted mode = min(modeA, modeB).
 /// If either neighbor is unavailable, predicted mode is DC (2).
+/// CABAC coded_block_flag neighbor lookup for luma 4x4 blocks.
+/// Returns whether the left (is_left=true) or top (is_left=false) neighbor has non-zero coeffs.
+fn cabac_neighbor_nz_luma(
+    nc_luma: &[u8], mb_idx: usize, mb_width: usize, blk: usize, is_left: bool,
+) -> bool {
+    // Neighbor block indices: within-MB (>=0) or cross-MB (negative, encoded as -(blk+1))
+    #[rustfmt::skip]
+    const LEFT: [i8; 16] = [-6, 0, -8, 2, 1, 4, 3, 6, -14, 8, -16, 10, 9, 12, 11, 14];
+    #[rustfmt::skip]
+    const TOP: [i8; 16] = [-11, -12, 0, 1, -15, -16, 4, 5, 2, 3, 8, 9, 6, 7, 12, 13];
+
+    let neighbor = if is_left { LEFT[blk] } else { TOP[blk] };
+
+    if neighbor >= 0 {
+        // Same MB
+        nc_luma[mb_idx * 16 + neighbor as usize] > 0
+    } else {
+        // Cross-MB: decode the encoded block index
+        let neighbor_blk = (-(neighbor + 1)) as usize;
+        let neighbor_mb = if is_left {
+            if mb_idx.checked_rem(mb_width) == Some(0) { return false; }
+            mb_idx - 1
+        } else {
+            if mb_idx < mb_width { return false; }
+            mb_idx - mb_width
+        };
+        nc_luma[neighbor_mb * 16 + neighbor_blk] > 0
+    }
+}
+
+/// CABAC coded_block_flag neighbor lookup for chroma 4x4 blocks (4 blocks per MB).
+fn cabac_neighbor_nz_chroma(
+    nc_chroma: &[u8], mb_idx: usize, mb_width: usize, blk: usize, is_left: bool,
+) -> bool {
+    // Chroma block layout: 0=(0,0), 1=(0,4), 2=(4,0), 3=(4,4)
+    // Left neighbors: blk0→left_mb blk1, blk1→blk0, blk2→left_mb blk3, blk3→blk2
+    // Top neighbors: blk0→top_mb blk2, blk1→top_mb blk3, blk2→blk0, blk3→blk1
+    let (same_mb_neighbor, cross_mb_blk) = if is_left {
+        match blk {
+            0 => (None, Some(1)),
+            1 => (Some(0), None),
+            2 => (None, Some(3)),
+            3 => (Some(2), None),
+            _ => (None, None),
+        }
+    } else {
+        match blk {
+            0 => (None, Some(2)),
+            1 => (None, Some(3)),
+            2 => (Some(0), None),
+            3 => (Some(1), None),
+            _ => (None, None),
+        }
+    };
+
+    if let Some(nb) = same_mb_neighbor {
+        nc_chroma[mb_idx * 4 + nb] > 0
+    } else if let Some(nb) = cross_mb_blk {
+        let neighbor_mb = if is_left {
+            if mb_idx.checked_rem(mb_width) == Some(0) { return false; }
+            mb_idx - 1
+        } else {
+            if mb_idx < mb_width { return false; }
+            mb_idx - mb_width
+        };
+        nc_chroma[neighbor_mb * 4 + nb] > 0
+    } else {
+        false
+    }
+}
+
 fn predict_i4x4_mode(
     modes: &[u8],
     mb_idx: usize,
