@@ -224,6 +224,7 @@ impl Decoder {
         let mut mb_is_direct = vec![false; total_mbs];
         // Track per-4x4-block MVD for CABAC amvd context (absolute MVD values)
         let mut mvd_store = vec![[0i16; 2]; total_mbs * 16];
+        let mut mvd_store_l1 = vec![[0i16; 2]; total_mbs * 16];
 
         let mut mb_idx = header.first_mb_in_slice as usize;
         while mb_idx < total_mbs {
@@ -244,12 +245,17 @@ impl Decoder {
                 // P/B-slice CABAC path
                 if is_p_slice || is_b_slice {
                     // Decode skip flag
+                    // Unavailable neighbors are treated as skipped (ctx not incremented)
                     let left_skip = if !mb_idx.is_multiple_of(mb_width as usize) {
                         mb_skip[mb_idx - 1]
-                    } else { false };
+                    } else {
+                        true
+                    };
                     let top_skip = if mb_idx >= mb_width as usize {
                         mb_skip[mb_idx - mb_width as usize]
-                    } else { false };
+                    } else {
+                        true
+                    };
                     let is_skip = cr.decode_mb_skip(st, left_skip, top_skip, is_b_slice);
 
                     if is_skip {
@@ -1468,8 +1474,896 @@ impl Decoder {
                         mb_idx += 1;
                         continue;
                     } else {
-                        // B-slice inter with CABAC — for now unsupported
-                        return Err(DecodeError::Unsupported("CABAC B-slice inter not yet integrated"));
+                        // B-slice inter with CABAC
+                        // raw_mb_type mapping (from decode_b_mb_type):
+                        // 0: B_Direct_16x16
+                        // 1: B_L0_16x16, 2: B_L1_16x16, 3: B_Bi_16x16
+                        // 4-21: B 16x8/8x16 partition variants
+                        // 22: B_8x8
+
+                        #[rustfmt::skip]
+                        #[allow(clippy::type_complexity)]
+                        const B_PART_TABLE: [(usize, usize, [(bool, bool); 2]); 18] = [
+                            (16, 8, [(true,false),(true,false)]),  // 4: B_L0_L0_16x8
+                            (8, 16, [(true,false),(true,false)]),  // 5: B_L0_L0_8x16
+                            (16, 8, [(false,true),(false,true)]),  // 6: B_L1_L1_16x8
+                            (8, 16, [(false,true),(false,true)]),  // 7: B_L1_L1_8x16
+                            (16, 8, [(true,false),(false,true)]),  // 8: B_L0_L1_16x8
+                            (8, 16, [(true,false),(false,true)]),  // 9: B_L0_L1_8x16
+                            (16, 8, [(false,true),(true,false)]),  // 10: B_L1_L0_16x8
+                            (8, 16, [(false,true),(true,false)]),  // 11: B_L1_L0_8x16
+                            (16, 8, [(true,false),(true,true)]),   // 12: B_L0_Bi_16x8
+                            (8, 16, [(true,false),(true,true)]),   // 13: B_L0_Bi_8x16
+                            (16, 8, [(false,true),(true,true)]),   // 14: B_L1_Bi_16x8
+                            (8, 16, [(false,true),(true,true)]),   // 15: B_L1_Bi_8x16
+                            (16, 8, [(true,true),(true,false)]),   // 16: B_Bi_L0_16x8
+                            (8, 16, [(true,true),(true,false)]),   // 17: B_Bi_L0_8x16
+                            (16, 8, [(true,true),(false,true)]),   // 18: B_Bi_L1_16x8
+                            (8, 16, [(true,true),(false,true)]),   // 19: B_Bi_L1_8x16
+                            (16, 8, [(true,true),(true,true)]),    // 20: B_Bi_Bi_16x8
+                            (8, 16, [(true,true),(true,true)]),    // 21: B_Bi_Bi_8x16
+                        ];
+
+                        #[rustfmt::skip]
+                        const B_SUB_TABLE: [(usize, usize, bool, bool); 13] = [
+                            (8, 8, false, false), // 0: B_Direct_8x8
+                            (8, 8, true, false),  // 1: B_L0_8x8
+                            (8, 8, false, true),  // 2: B_L1_8x8
+                            (8, 8, true, true),   // 3: B_Bi_8x8
+                            (8, 4, true, false),  // 4: B_L0_8x4
+                            (4, 8, true, false),  // 5: B_L0_4x8
+                            (8, 4, false, true),  // 6: B_L1_8x4
+                            (4, 8, false, true),  // 7: B_L1_4x8
+                            (8, 4, true, true),   // 8: B_Bi_8x4
+                            (4, 8, true, true),   // 9: B_Bi_4x8
+                            (4, 4, true, false),  // 10: B_L0_4x4
+                            (4, 4, false, true),  // 11: B_L1_4x4
+                            (4, 4, true, true),   // 12: B_Bi_4x4
+                        ];
+
+                        struct BSubPart {
+                            x: usize, y: usize, w: usize, h: usize,
+                            ref_idx_l0: i8, ref_idx_l1: i8,
+                            mv_l0: [i16; 2], mv_l1: [i16; 2],
+                            pred_l0: bool, pred_l1: bool,
+                        }
+                        let mut b_sub_parts: Vec<BSubPart> = Vec::new();
+
+                        if raw_mb_type == 0 {
+                            // B_Direct_16x16
+                            mb_is_direct[mb_idx] = true;
+                            let (mv_l0, mv_l1, ri_l0, ri_l1, pl0, pl1) =
+                                if header.direct_spatial_mv_pred_flag {
+                                    derive_spatial_direct(
+                                        &mv_store_l0, &ref_idx_store_l0,
+                                        &mv_store_l1, &ref_idx_store_l1,
+                                        mb_idx, mb_width as usize,
+                                        _ref_pic_list_l1.first().map(|p| p.as_ref()),
+                                    )
+                                } else {
+                                    let col_pic = &_ref_pic_list_l1[0];
+                                    derive_temporal_direct(
+                                        col_pic, &_ref_pic_list_l0,
+                                        current_poc, col_pic.pic_order_cnt, mb_idx,
+                                    )
+                                };
+                            for blk in 0..16 {
+                                mv_store_l0[mb_idx * 16 + blk] = mv_l0;
+                                ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
+                                mv_store_l1[mb_idx * 16 + blk] = mv_l1;
+                                ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
+                            }
+                            b_sub_parts.push(BSubPart {
+                                x: 0, y: 0, w: 16, h: 16,
+                                ref_idx_l0: ri_l0, ref_idx_l1: ri_l1,
+                                mv_l0, mv_l1, pred_l0: pl0, pred_l1: pl1,
+                            });
+                        } else if raw_mb_type <= 3 {
+                            // B_L0_16x16 (1), B_L1_16x16 (2), B_Bi_16x16 (3)
+                            let pred_l0 = raw_mb_type == 1 || raw_mb_type == 3;
+                            let pred_l1 = raw_mb_type == 2 || raw_mb_type == 3;
+
+                            let mut ref_l0 = 0i8;
+                            let mut ref_l1 = 0i8;
+
+                            if pred_l0 && header.num_ref_idx_l0_active > 1 {
+                                let (left_ref, top_ref) = cabac_neighbor_ref(
+                                    &ref_idx_store_l0, mb_idx, mb_width as usize, 0, 0,
+                                );
+                                ref_l0 = cr.decode_ref_idx(st, left_ref, top_ref);
+                            }
+                            if pred_l1 && header.num_ref_idx_l1_active > 1 {
+                                let (left_ref, top_ref) = cabac_neighbor_ref(
+                                    &ref_idx_store_l1, mb_idx, mb_width as usize, 0, 0,
+                                );
+                                ref_l1 = cr.decode_ref_idx(st, left_ref, top_ref);
+                            }
+
+                            let mut mv_l0 = [0i16; 2];
+                            let mut mv_l1 = [0i16; 2];
+
+                            if pred_l0 {
+                                let amvd_x = cabac_amvd(
+                                    &mvd_store, mb_idx, mb_width as usize, 0, 0, 0,
+                                );
+                                let amvd_y = cabac_amvd(
+                                    &mvd_store, mb_idx, mb_width as usize, 0, 0, 1,
+                                );
+                                let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
+                                let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
+                                let (mvp_x, mvp_y) = predict_mv(
+                                    &mv_store_l0, &ref_idx_store_l0,
+                                    mb_idx, mb_width as usize, 0, 16, 16, ref_l0,
+                                );
+                                mv_l0 = [mvp_x + mvd_x, mvp_y + mvd_y];
+                                for blk in 0..16 {
+                                    mv_store_l0[mb_idx * 16 + blk] = mv_l0;
+                                    ref_idx_store_l0[mb_idx * 16 + blk] = ref_l0;
+                                    mvd_store[mb_idx * 16 + blk] = [mvd_x, mvd_y];
+                                }
+                            }
+                            if pred_l1 {
+                                let amvd_x = cabac_amvd(
+                                    &mvd_store_l1, mb_idx, mb_width as usize, 0, 0, 0,
+                                );
+                                let amvd_y = cabac_amvd(
+                                    &mvd_store_l1, mb_idx, mb_width as usize, 0, 0, 1,
+                                );
+                                let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
+                                let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
+                                let (mvp_x, mvp_y) = predict_mv(
+                                    &mv_store_l1, &ref_idx_store_l1,
+                                    mb_idx, mb_width as usize, 0, 16, 16, ref_l1,
+                                );
+                                mv_l1 = [mvp_x + mvd_x, mvp_y + mvd_y];
+                                for blk in 0..16 {
+                                    mv_store_l1[mb_idx * 16 + blk] = mv_l1;
+                                    ref_idx_store_l1[mb_idx * 16 + blk] = ref_l1;
+                                    mvd_store_l1[mb_idx * 16 + blk] = [mvd_x, mvd_y];
+                                }
+                            }
+
+                            // Set default ref_idx for inactive list
+                            if !pred_l0 {
+                                for blk in 0..16 {
+                                    ref_idx_store_l0[mb_idx * 16 + blk] = -1;
+                                }
+                            }
+                            if !pred_l1 {
+                                for blk in 0..16 {
+                                    ref_idx_store_l1[mb_idx * 16 + blk] = -1;
+                                }
+                            }
+
+                            b_sub_parts.push(BSubPart {
+                                x: 0, y: 0, w: 16, h: 16,
+                                ref_idx_l0: if pred_l0 { ref_l0 } else { -1 },
+                                ref_idx_l1: if pred_l1 { ref_l1 } else { -1 },
+                                mv_l0, mv_l1, pred_l0, pred_l1,
+                            });
+                        } else if raw_mb_type <= 21 {
+                            // B 16x8/8x16 partition variants (mb_type 4-21)
+                            let entry = B_PART_TABLE[(raw_mb_type - 4) as usize];
+                            let (part_w, part_h) = (entry.0, entry.1);
+                            let pred_flags = entry.2;
+
+                            // Parse ref_idx: L0 for all partitions, then L1 for all
+                            let mut part_ref_l0 = [-1i8; 2];
+                            let mut part_ref_l1 = [-1i8; 2];
+                            for p in 0..2 {
+                                if pred_flags[p].0 {
+                                    if header.num_ref_idx_l0_active > 1 {
+                                        let (py_off, px_off) = if part_h == 8 {
+                                            (p * 8, 0)
+                                        } else {
+                                            (0, p * 8)
+                                        };
+                                        let (left_ref, top_ref) = cabac_neighbor_ref(
+                                            &ref_idx_store_l0, mb_idx,
+                                            mb_width as usize, py_off, px_off,
+                                        );
+                                        part_ref_l0[p] = cr.decode_ref_idx(st, left_ref, top_ref);
+                                    } else {
+                                        part_ref_l0[p] = 0;
+                                    }
+                                }
+                            }
+                            for p in 0..2 {
+                                if pred_flags[p].1 {
+                                    if header.num_ref_idx_l1_active > 1 {
+                                        let (py_off, px_off) = if part_h == 8 {
+                                            (p * 8, 0)
+                                        } else {
+                                            (0, p * 8)
+                                        };
+                                        let (left_ref, top_ref) = cabac_neighbor_ref(
+                                            &ref_idx_store_l1, mb_idx,
+                                            mb_width as usize, py_off, px_off,
+                                        );
+                                        part_ref_l1[p] = cr.decode_ref_idx(st, left_ref, top_ref);
+                                    } else {
+                                        part_ref_l1[p] = 0;
+                                    }
+                                }
+                            }
+
+                            // Parse MVDs: L0 for all partitions, then L1 for all
+                            let mut mv_l0_parts = [[0i16; 2]; 2];
+                            let mut mv_l1_parts = [[0i16; 2]; 2];
+
+                            for p in 0..2 {
+                                if pred_flags[p].0 {
+                                    let (py_off, px_off) = if part_h == 8 {
+                                        (p * 8, 0)
+                                    } else {
+                                        (0, p * 8)
+                                    };
+                                    // Store ref_idx before MV prediction
+                                    for r in (0..part_h).step_by(4) {
+                                        for c in (0..part_w).step_by(4) {
+                                            let lr = (py_off + r) / 4;
+                                            let lc = (px_off + c) / 4;
+                                            if let Some(blk) = BLOCK_INDEX_TO_OFFSET.iter()
+                                                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                            {
+                                                ref_idx_store_l0[mb_idx * 16 + blk] = part_ref_l0[p];
+                                            }
+                                        }
+                                    }
+                                    let amvd_x = cabac_amvd(
+                                        &mvd_store, mb_idx, mb_width as usize,
+                                        py_off, px_off, 0,
+                                    );
+                                    let amvd_y = cabac_amvd(
+                                        &mvd_store, mb_idx, mb_width as usize,
+                                        py_off, px_off, 1,
+                                    );
+                                    let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
+                                    let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
+                                    let (mvp_x, mvp_y) = predict_mv(
+                                        &mv_store_l0, &ref_idx_store_l0,
+                                        mb_idx, mb_width as usize,
+                                        p, part_w, part_h, part_ref_l0[p],
+                                    );
+                                    mv_l0_parts[p] = [mvp_x + mvd_x, mvp_y + mvd_y];
+                                    // Store MV and MVD immediately for partition 1 prediction
+                                    for r in (0..part_h).step_by(4) {
+                                        for c in (0..part_w).step_by(4) {
+                                            let lr = (py_off + r) / 4;
+                                            let lc = (px_off + c) / 4;
+                                            if let Some(blk) = BLOCK_INDEX_TO_OFFSET.iter()
+                                                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                            {
+                                                mv_store_l0[mb_idx * 16 + blk] = mv_l0_parts[p];
+                                                mvd_store[mb_idx * 16 + blk] = [mvd_x, mvd_y];
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Inactive L0: set ref_idx = -1
+                                    let (py_off, px_off) = if part_h == 8 {
+                                        (p * 8, 0)
+                                    } else {
+                                        (0, p * 8)
+                                    };
+                                    for r in (0..part_h).step_by(4) {
+                                        for c in (0..part_w).step_by(4) {
+                                            let lr = (py_off + r) / 4;
+                                            let lc = (px_off + c) / 4;
+                                            if let Some(blk) = BLOCK_INDEX_TO_OFFSET.iter()
+                                                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                            {
+                                                ref_idx_store_l0[mb_idx * 16 + blk] = -1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            for p in 0..2 {
+                                if pred_flags[p].1 {
+                                    let (py_off, px_off) = if part_h == 8 {
+                                        (p * 8, 0)
+                                    } else {
+                                        (0, p * 8)
+                                    };
+                                    // Store ref_idx before MV prediction
+                                    for r in (0..part_h).step_by(4) {
+                                        for c in (0..part_w).step_by(4) {
+                                            let lr = (py_off + r) / 4;
+                                            let lc = (px_off + c) / 4;
+                                            if let Some(blk) = BLOCK_INDEX_TO_OFFSET.iter()
+                                                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                            {
+                                                ref_idx_store_l1[mb_idx * 16 + blk] = part_ref_l1[p];
+                                            }
+                                        }
+                                    }
+                                    let amvd_x = cabac_amvd(
+                                        &mvd_store_l1, mb_idx, mb_width as usize,
+                                        py_off, px_off, 0,
+                                    );
+                                    let amvd_y = cabac_amvd(
+                                        &mvd_store_l1, mb_idx, mb_width as usize,
+                                        py_off, px_off, 1,
+                                    );
+                                    let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
+                                    let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
+                                    let (mvp_x, mvp_y) = predict_mv(
+                                        &mv_store_l1, &ref_idx_store_l1,
+                                        mb_idx, mb_width as usize,
+                                        p, part_w, part_h, part_ref_l1[p],
+                                    );
+                                    mv_l1_parts[p] = [mvp_x + mvd_x, mvp_y + mvd_y];
+                                    for r in (0..part_h).step_by(4) {
+                                        for c in (0..part_w).step_by(4) {
+                                            let lr = (py_off + r) / 4;
+                                            let lc = (px_off + c) / 4;
+                                            if let Some(blk) = BLOCK_INDEX_TO_OFFSET.iter()
+                                                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                            {
+                                                mv_store_l1[mb_idx * 16 + blk] = mv_l1_parts[p];
+                                                mvd_store_l1[mb_idx * 16 + blk] = [mvd_x, mvd_y];
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    let (py_off, px_off) = if part_h == 8 {
+                                        (p * 8, 0)
+                                    } else {
+                                        (0, p * 8)
+                                    };
+                                    for r in (0..part_h).step_by(4) {
+                                        for c in (0..part_w).step_by(4) {
+                                            let lr = (py_off + r) / 4;
+                                            let lc = (px_off + c) / 4;
+                                            if let Some(blk) = BLOCK_INDEX_TO_OFFSET.iter()
+                                                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                            {
+                                                ref_idx_store_l1[mb_idx * 16 + blk] = -1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Build sub_parts for MC
+                            for p in 0..2 {
+                                let (py_off, px_off) = if part_h == 8 {
+                                    (p * 8, 0)
+                                } else {
+                                    (0, p * 8)
+                                };
+                                b_sub_parts.push(BSubPart {
+                                    x: px_off, y: py_off, w: part_w, h: part_h,
+                                    ref_idx_l0: part_ref_l0[p],
+                                    ref_idx_l1: part_ref_l1[p],
+                                    mv_l0: mv_l0_parts[p],
+                                    mv_l1: mv_l1_parts[p],
+                                    pred_l0: pred_flags[p].0,
+                                    pred_l1: pred_flags[p].1,
+                                });
+                            }
+                        } else if raw_mb_type == 22 {
+                            // B_8x8
+                            let sub_mb_origins = [(0usize, 0usize), (0, 8), (8, 0), (8, 8)];
+                            let mut sub_mb_types = [0u32; 4];
+                            for smt in &mut sub_mb_types {
+                                *smt = cr.decode_b_sub_mb_type(st);
+                            }
+
+                            // Parse ref_idx: L0 for all sub-MBs, then L1
+                            let mut sub_ref_l0 = [-1i8; 4];
+                            let mut sub_ref_l1 = [-1i8; 4];
+                            for smb in 0..4 {
+                                if sub_mb_types[smb] == 0 { continue; }
+                                let (_, _, pl0, _) = B_SUB_TABLE[sub_mb_types[smb] as usize];
+                                if pl0 {
+                                    if header.num_ref_idx_l0_active > 1 {
+                                        let (sy, sx) = sub_mb_origins[smb];
+                                        let (left_ref, top_ref) = cabac_neighbor_ref(
+                                            &ref_idx_store_l0, mb_idx,
+                                            mb_width as usize, sy, sx,
+                                        );
+                                        sub_ref_l0[smb] = cr.decode_ref_idx(st, left_ref, top_ref);
+                                    } else {
+                                        sub_ref_l0[smb] = 0;
+                                    }
+                                }
+                            }
+                            for smb in 0..4 {
+                                if sub_mb_types[smb] == 0 { continue; }
+                                let (_, _, _, pl1) = B_SUB_TABLE[sub_mb_types[smb] as usize];
+                                if pl1 {
+                                    if header.num_ref_idx_l1_active > 1 {
+                                        let (sy, sx) = sub_mb_origins[smb];
+                                        let (left_ref, top_ref) = cabac_neighbor_ref(
+                                            &ref_idx_store_l1, mb_idx,
+                                            mb_width as usize, sy, sx,
+                                        );
+                                        sub_ref_l1[smb] = cr.decode_ref_idx(st, left_ref, top_ref);
+                                    } else {
+                                        sub_ref_l1[smb] = 0;
+                                    }
+                                }
+                            }
+
+                            // Store ref_idx into cache for MV prediction
+                            for smb in 0..4 {
+                                let (sy, sx) = sub_mb_origins[smb];
+                                for r in (0..8).step_by(4) {
+                                    for c in (0..8).step_by(4) {
+                                        let lr = (sy + r) / 4;
+                                        let lc = (sx + c) / 4;
+                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET.iter()
+                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                        {
+                                            ref_idx_store_l0[mb_idx * 16 + blk] = sub_ref_l0[smb];
+                                            ref_idx_store_l1[mb_idx * 16 + blk] = sub_ref_l1[smb];
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Derive B_Direct_8x8 MVs BEFORE MVD parsing
+                            for smb in 0..4 {
+                                if sub_mb_types[smb] != 0 { continue; }
+                                let (sy, sx) = sub_mb_origins[smb];
+                                let (d_mv_l0, d_mv_l1, d_ri_l0, d_ri_l1, _, _) =
+                                    if header.direct_spatial_mv_pred_flag {
+                                        derive_spatial_direct(
+                                            &mv_store_l0, &ref_idx_store_l0,
+                                            &mv_store_l1, &ref_idx_store_l1,
+                                            mb_idx, mb_width as usize,
+                                            _ref_pic_list_l1.first().map(|p| p.as_ref()),
+                                        )
+                                    } else {
+                                        let col_pic = &_ref_pic_list_l1[0];
+                                        derive_temporal_direct(
+                                            col_pic, &_ref_pic_list_l0,
+                                            current_poc, col_pic.pic_order_cnt, mb_idx,
+                                        )
+                                    };
+                                for r in (0..8).step_by(4) {
+                                    for c in (0..8).step_by(4) {
+                                        let lr = (sy + r) / 4;
+                                        let lc = (sx + c) / 4;
+                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET.iter()
+                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                        {
+                                            mv_store_l0[mb_idx * 16 + blk] = d_mv_l0;
+                                            ref_idx_store_l0[mb_idx * 16 + blk] = d_ri_l0;
+                                            mv_store_l1[mb_idx * 16 + blk] = d_mv_l1;
+                                            ref_idx_store_l1[mb_idx * 16 + blk] = d_ri_l1;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Collect sub-partition layouts
+                            struct BSubLayout {
+                                smb: usize,
+                                sub_w: usize,
+                                sub_h: usize,
+                                pl0: bool,
+                                pl1: bool,
+                                offsets: Vec<(usize, usize)>,
+                            }
+                            let mut layouts: Vec<BSubLayout> = Vec::new();
+                            for (smb, &smt_val) in sub_mb_types.iter().enumerate() {
+                                let smt = smt_val as usize;
+                                if smt == 0 {
+                                    layouts.push(BSubLayout {
+                                        smb, sub_w: 8, sub_h: 8,
+                                        pl0: false, pl1: false,
+                                        offsets: vec![(0, 0)],
+                                    });
+                                    continue;
+                                }
+                                let (sub_w, sub_h, pl0, pl1) = B_SUB_TABLE[smt];
+                                let offsets = match (sub_w, sub_h) {
+                                    (8, 8) => vec![(0, 0)],
+                                    (8, 4) => vec![(0, 0), (0, 4)],
+                                    (4, 8) => vec![(0, 0), (4, 0)],
+                                    (4, 4) => vec![(0, 0), (4, 0), (0, 4), (4, 4)],
+                                    _ => unreachable!(),
+                                };
+                                layouts.push(BSubLayout { smb, sub_w, sub_h, pl0, pl1, offsets });
+                            }
+
+                            // Parse L0 MVDs
+                            for layout in &layouts {
+                                if sub_mb_types[layout.smb] == 0 { continue; }
+                                if !layout.pl0 { continue; }
+                                let (sy, sx) = sub_mb_origins[layout.smb];
+                                for &(dx, dy) in &layout.offsets {
+                                    let px = sx + dx;
+                                    let py = sy + dy;
+                                    let amvd_x = cabac_amvd(
+                                        &mvd_store, mb_idx, mb_width as usize, py, px, 0,
+                                    );
+                                    let amvd_y = cabac_amvd(
+                                        &mvd_store, mb_idx, mb_width as usize, py, px, 1,
+                                    );
+                                    let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
+                                    let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
+                                    let (mvp_x, mvp_y) = predict_mv_sub(
+                                        &mv_store_l0, &ref_idx_store_l0, mb_idx,
+                                        mb_width as usize, px, py,
+                                        layout.sub_w, layout.sub_h,
+                                        sub_ref_l0[layout.smb],
+                                    );
+                                    let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
+                                    for r in (0..layout.sub_h).step_by(4) {
+                                        for c in (0..layout.sub_w).step_by(4) {
+                                            let lr = (py + r) / 4;
+                                            let lc = (px + c) / 4;
+                                            if let Some(blk) = BLOCK_INDEX_TO_OFFSET.iter()
+                                                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                            {
+                                                mv_store_l0[mb_idx * 16 + blk] = mv;
+                                                mvd_store[mb_idx * 16 + blk] = [mvd_x, mvd_y];
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Parse L1 MVDs
+                            for layout in &layouts {
+                                if sub_mb_types[layout.smb] == 0 { continue; }
+                                if !layout.pl1 { continue; }
+                                let (sy, sx) = sub_mb_origins[layout.smb];
+                                for &(dx, dy) in &layout.offsets {
+                                    let px = sx + dx;
+                                    let py = sy + dy;
+                                    let amvd_x = cabac_amvd(
+                                        &mvd_store_l1, mb_idx, mb_width as usize, py, px, 0,
+                                    );
+                                    let amvd_y = cabac_amvd(
+                                        &mvd_store_l1, mb_idx, mb_width as usize, py, px, 1,
+                                    );
+                                    let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
+                                    let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
+                                    let (mvp_x, mvp_y) = predict_mv_sub(
+                                        &mv_store_l1, &ref_idx_store_l1, mb_idx,
+                                        mb_width as usize, px, py,
+                                        layout.sub_w, layout.sub_h,
+                                        sub_ref_l1[layout.smb],
+                                    );
+                                    let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
+                                    for r in (0..layout.sub_h).step_by(4) {
+                                        for c in (0..layout.sub_w).step_by(4) {
+                                            let lr = (py + r) / 4;
+                                            let lc = (px + c) / 4;
+                                            if let Some(blk) = BLOCK_INDEX_TO_OFFSET.iter()
+                                                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                            {
+                                                mv_store_l1[mb_idx * 16 + blk] = mv;
+                                                mvd_store_l1[mb_idx * 16 + blk] = [mvd_x, mvd_y];
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Build sub_parts from stored MVs
+                            for layout in &layouts {
+                                let (sy, sx) = sub_mb_origins[layout.smb];
+                                if sub_mb_types[layout.smb] == 0 {
+                                    // B_Direct_8x8
+                                    let blk0 = BLOCK_INDEX_TO_OFFSET.iter()
+                                        .position(|&(br, bc)| br / 4 == sy / 4 && bc / 4 == sx / 4)
+                                        .unwrap_or(0);
+                                    let base = mb_idx * 16;
+                                    b_sub_parts.push(BSubPart {
+                                        x: sx, y: sy, w: 8, h: 8,
+                                        ref_idx_l0: ref_idx_store_l0[base + blk0],
+                                        ref_idx_l1: ref_idx_store_l1[base + blk0],
+                                        mv_l0: mv_store_l0[base + blk0],
+                                        mv_l1: mv_store_l1[base + blk0],
+                                        pred_l0: ref_idx_store_l0[base + blk0] >= 0,
+                                        pred_l1: ref_idx_store_l1[base + blk0] >= 0,
+                                    });
+                                } else {
+                                    let smt = sub_mb_types[layout.smb] as usize;
+                                    let (_, _, pl0, pl1) = B_SUB_TABLE[smt];
+                                    for &(dx, dy) in &layout.offsets {
+                                        let px = sx + dx;
+                                        let py = sy + dy;
+                                        let blk0 = BLOCK_INDEX_TO_OFFSET.iter()
+                                            .position(|&(br, bc)| br / 4 == py / 4 && bc / 4 == px / 4)
+                                            .unwrap_or(0);
+                                        let base = mb_idx * 16;
+                                        b_sub_parts.push(BSubPart {
+                                            x: px, y: py, w: layout.sub_w, h: layout.sub_h,
+                                            ref_idx_l0: sub_ref_l0[layout.smb],
+                                            ref_idx_l1: sub_ref_l1[layout.smb],
+                                            mv_l0: mv_store_l0[base + blk0],
+                                            mv_l1: mv_store_l1[base + blk0],
+                                            pred_l0: pl0, pred_l1: pl1,
+                                        });
+                                    }
+                                }
+                            }
+                        } else {
+                            return Err(DecodeError::InvalidSyntax("invalid CABAC B-slice mb_type"));
+                        }
+
+                        // Motion compensation for all sub-parts
+                        for sp in &b_sub_parts {
+                            let abs_x = mb_x + sp.x;
+                            let abs_y = mb_y + sp.y;
+                            let mut luma_pred = vec![0u8; sp.w * sp.h];
+
+                            if sp.pred_l0 && sp.pred_l1 {
+                                let mut p0 = vec![0u8; sp.w * sp.h];
+                                let mut p1 = vec![0u8; sp.w * sp.h];
+                                inter_pred::luma_mc(
+                                    &_ref_pic_list_l0[sp.ref_idx_l0 as usize],
+                                    abs_x as i32, abs_y as i32,
+                                    sp.mv_l0[0] as i32, sp.mv_l0[1] as i32,
+                                    sp.w, sp.h, &mut p0,
+                                );
+                                inter_pred::luma_mc(
+                                    &_ref_pic_list_l1[sp.ref_idx_l1 as usize],
+                                    abs_x as i32, abs_y as i32,
+                                    sp.mv_l1[0] as i32, sp.mv_l1[1] as i32,
+                                    sp.w, sp.h, &mut p1,
+                                );
+                                inter_pred::bi_pred_avg(&p0, &p1, &mut luma_pred);
+                            } else if sp.pred_l0 {
+                                inter_pred::luma_mc(
+                                    &_ref_pic_list_l0[sp.ref_idx_l0 as usize],
+                                    abs_x as i32, abs_y as i32,
+                                    sp.mv_l0[0] as i32, sp.mv_l0[1] as i32,
+                                    sp.w, sp.h, &mut luma_pred,
+                                );
+                            } else if sp.pred_l1 {
+                                inter_pred::luma_mc(
+                                    &_ref_pic_list_l1[sp.ref_idx_l1 as usize],
+                                    abs_x as i32, abs_y as i32,
+                                    sp.mv_l1[0] as i32, sp.mv_l1[1] as i32,
+                                    sp.w, sp.h, &mut luma_pred,
+                                );
+                            }
+
+                            for r in 0..sp.h {
+                                for c in 0..sp.w {
+                                    frame.y[(abs_y + r) * stride + abs_x + c] =
+                                        luma_pred[r * sp.w + c];
+                                }
+                            }
+
+                            // Chroma MC
+                            let cw = (width / 2) as usize;
+                            let chroma_h = (height / 2) as usize;
+                            let cx = abs_x / 2;
+                            let cy = abs_y / 2;
+                            let chw = sp.w.max(2) / 2;
+                            let chh = sp.h.max(2) / 2;
+
+                            for plane_idx in 0..2 {
+                                let mut chroma_pred = vec![0u8; chw * chh];
+                                if sp.pred_l0 && sp.pred_l1 {
+                                    let ref_l0 = &_ref_pic_list_l0[sp.ref_idx_l0 as usize];
+                                    let ref_l1 = &_ref_pic_list_l1[sp.ref_idx_l1 as usize];
+                                    let cr0 = if plane_idx == 0 { &ref_l0.u } else { &ref_l0.v };
+                                    let cr1 = if plane_idx == 0 { &ref_l1.u } else { &ref_l1.v };
+                                    let mut c0 = vec![0u8; chw * chh];
+                                    let mut c1 = vec![0u8; chw * chh];
+                                    inter_pred::chroma_mc(
+                                        cr0, cw, chroma_h, cx as i32, cy as i32,
+                                        sp.mv_l0[0] as i32, sp.mv_l0[1] as i32,
+                                        chw, chh, &mut c0,
+                                    );
+                                    inter_pred::chroma_mc(
+                                        cr1, cw, chroma_h, cx as i32, cy as i32,
+                                        sp.mv_l1[0] as i32, sp.mv_l1[1] as i32,
+                                        chw, chh, &mut c1,
+                                    );
+                                    inter_pred::bi_pred_avg(&c0, &c1, &mut chroma_pred);
+                                } else if sp.pred_l0 {
+                                    let ref_pic = &_ref_pic_list_l0[sp.ref_idx_l0 as usize];
+                                    let plane = if plane_idx == 0 { &ref_pic.u } else { &ref_pic.v };
+                                    inter_pred::chroma_mc(
+                                        plane, cw, chroma_h, cx as i32, cy as i32,
+                                        sp.mv_l0[0] as i32, sp.mv_l0[1] as i32,
+                                        chw, chh, &mut chroma_pred,
+                                    );
+                                } else if sp.pred_l1 {
+                                    let ref_pic = &_ref_pic_list_l1[sp.ref_idx_l1 as usize];
+                                    let plane = if plane_idx == 0 { &ref_pic.u } else { &ref_pic.v };
+                                    inter_pred::chroma_mc(
+                                        plane, cw, chroma_h, cx as i32, cy as i32,
+                                        sp.mv_l1[0] as i32, sp.mv_l1[1] as i32,
+                                        chw, chh, &mut chroma_pred,
+                                    );
+                                }
+
+                                let fp = if plane_idx == 0 { &mut frame.u } else { &mut frame.v };
+                                for r in 0..chh {
+                                    for c in 0..chw {
+                                        fp[(cy + r) * cw + cx + c] = chroma_pred[r * chw + c];
+                                    }
+                                }
+                            }
+                        }
+
+                        // Residual: CABAC CBP + coefficients
+                        let left_cbp_raw = if !mb_idx.is_multiple_of(mb_width as usize) {
+                            mb_cbp[mb_idx - 1]
+                        } else {
+                            0x00Fu16
+                        };
+                        let top_cbp_raw = if mb_idx >= mb_width as usize {
+                            mb_cbp[mb_idx - mb_width as usize]
+                        } else {
+                            0x00Fu16
+                        };
+                        let left_cbp = ((left_cbp_raw & 0x7F0)
+                            | (left_cbp_raw & 2)
+                            | (((left_cbp_raw >> 2) & 2) << 2)) as u8;
+                        let top_cbp = top_cbp_raw as u8;
+                        let cbp_luma = cr.decode_cbp_luma(st, left_cbp, top_cbp);
+                        let left_cbp_c = ((left_cbp_raw >> 4) & 3) as u8;
+                        let top_cbp_c = ((top_cbp_raw >> 4) & 3) as u8;
+                        let cbp_chroma = cr.decode_cbp_chroma(st, left_cbp_c, top_cbp_c);
+                        mb_cbp[mb_idx] = (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
+
+                        let qp_y = if cbp_luma != 0 || cbp_chroma != 0 {
+                            let delta = cr.decode_mb_qp_delta(st, last_qp_delta_nonzero);
+                            last_qp_delta_nonzero = delta != 0;
+                            ((prev_mb_qp + delta + 52) % 52 + 52) % 52
+                        } else {
+                            last_qp_delta_nonzero = false;
+                            prev_mb_qp
+                        };
+                        prev_mb_qp = qp_y;
+
+                        // Luma residual
+                        if cbp_luma != 0 {
+                            let mut luma_residual = [0i32; 256];
+                            for blk in 0..16 {
+                                if cbp_luma & (1 << (blk / 4)) != 0 {
+                                    let left_nz = cabac_neighbor_nz_luma(
+                                        &nc_luma, mb_idx, mb_width as usize, blk, true, false,
+                                    );
+                                    let top_nz = cabac_neighbor_nz_luma(
+                                        &nc_luma, mb_idx, mb_width as usize, blk, false, false,
+                                    );
+                                    if cr.decode_coded_block_flag(st, 2, left_nz, top_nz) {
+                                        let (coeffs, tc) = cr.decode_residual_cabac(st, 2, 16);
+                                        nc_luma[mb_idx * 16 + blk] = tc;
+                                        let mut block_coeffs = [0i32; 16];
+                                        for (pos, val) in &coeffs {
+                                            let (r, c) = ZIGZAG_4X4[*pos];
+                                            block_coeffs[r * 4 + c] = *val;
+                                        }
+                                        dequant_4x4_full(&mut block_coeffs, qp_y, &pps.scaling_list_4x4[3]);
+                                        inverse_dct_4x4(&mut block_coeffs);
+                                        let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
+                                        for r in 0..4 {
+                                            for c in 0..4 {
+                                                luma_residual[(blk_row + r) * 16 + blk_col + c] =
+                                                    block_coeffs[r * 4 + c];
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            for r in 0..16 {
+                                for c in 0..16 {
+                                    let val = (frame.y[(mb_y + r) * stride + mb_x + c] as i32
+                                        + luma_residual[r * 16 + c])
+                                        .clamp(0, 255) as u8;
+                                    frame.y[(mb_y + r) * stride + mb_x + c] = val;
+                                }
+                            }
+                        }
+
+                        // Chroma residual
+                        let qp_c = chroma_qp(qp_y, pps.chroma_qp_index_offset);
+                        if cbp_chroma >= 1 {
+                            let mut chroma_dc_cb = [0i32; 4];
+                            let mut chroma_dc_cr = [0i32; 4];
+                            let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize) {
+                                (mb_cbp[mb_idx - 1] >> 6) & 1 != 0
+                            } else {
+                                false
+                            };
+                            let top_dc_nz = if mb_idx >= mb_width as usize {
+                                (mb_cbp[mb_idx - mb_width as usize] >> 6) & 1 != 0
+                            } else {
+                                false
+                            };
+                            if cr.decode_coded_block_flag(st, 3, left_dc_nz, top_dc_nz) {
+                                let (coeffs, _) = cr.decode_residual_cabac(st, 3, 4);
+                                for (pos, val) in coeffs {
+                                    chroma_dc_cb[pos] = val;
+                                }
+                                mb_cbp[mb_idx] |= 0x40;
+                            }
+                            let left_dc_cr = if !mb_idx.is_multiple_of(mb_width as usize) {
+                                (mb_cbp[mb_idx - 1] >> 7) & 1 != 0
+                            } else {
+                                false
+                            };
+                            let top_dc_cr = if mb_idx >= mb_width as usize {
+                                (mb_cbp[mb_idx - mb_width as usize] >> 7) & 1 != 0
+                            } else {
+                                false
+                            };
+                            if cr.decode_coded_block_flag(st, 3, left_dc_cr, top_dc_cr) {
+                                let (coeffs, _) = cr.decode_residual_cabac(st, 3, 4);
+                                for (pos, val) in coeffs {
+                                    chroma_dc_cr[pos] = val;
+                                }
+                                mb_cbp[mb_idx] |= 0x80;
+                            }
+
+                            let chroma_width = (width / 2) as usize;
+                            let chroma_mb_x = mb_x / 2;
+                            let chroma_mb_y = mb_y / 2;
+                            for (plane_dc, frame_plane, scale_idx) in [
+                                (&mut chroma_dc_cb, &mut frame.u, 4usize),
+                                (&mut chroma_dc_cr, &mut frame.v, 5usize),
+                            ] {
+                                let chroma_scale = &pps.scaling_list_4x4[scale_idx];
+                                inverse_hadamard_2x2(plane_dc);
+                                dequant_chroma_dc(plane_dc, qp_c, chroma_scale[0]);
+                                let mut chroma_residual = [0i32; 64];
+                                for blk in 0..4 {
+                                    let blk_row = (blk / 2) * 4;
+                                    let blk_col = (blk % 2) * 4;
+                                    let mut block_raster = [0i32; 16];
+                                    block_raster[0] = plane_dc[blk];
+                                    if cbp_chroma >= 2 {
+                                        let nc_arr = if scale_idx == 4 { &nc_cb } else { &nc_cr };
+                                        let left_nz = cabac_neighbor_nz_chroma(
+                                            nc_arr, mb_idx, mb_width as usize, blk, true, false,
+                                        );
+                                        let top_nz = cabac_neighbor_nz_chroma(
+                                            nc_arr, mb_idx, mb_width as usize, blk, false, false,
+                                        );
+                                        if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
+                                            let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
+                                            if scale_idx == 4 {
+                                                nc_cb[mb_idx * 4 + blk] = tc;
+                                            } else {
+                                                nc_cr[mb_idx * 4 + blk] = tc;
+                                            }
+                                            for (pos, val) in coeffs {
+                                                let (r, c) = ZIGZAG_4X4[pos + 1];
+                                                block_raster[r * 4 + c] = val;
+                                            }
+                                            dequant_4x4_ac_raster(&mut block_raster, qp_c, chroma_scale);
+                                        }
+                                    }
+                                    inverse_dct_4x4(&mut block_raster);
+                                    for r in 0..4 {
+                                        for c in 0..4 {
+                                            chroma_residual[(blk_row + r) * 8 + blk_col + c] =
+                                                block_raster[r * 4 + c];
+                                        }
+                                    }
+                                }
+                                for y in 0..8 {
+                                    for x in 0..8 {
+                                        let val = (frame_plane[(chroma_mb_y + y) * chroma_width
+                                            + chroma_mb_x + x] as i32
+                                            + chroma_residual[y * 8 + x])
+                                            .clamp(0, 255) as u8;
+                                        frame_plane[(chroma_mb_y + y) * chroma_width
+                                            + chroma_mb_x + x] = val;
+                                    }
+                                }
+                            }
+                        }
+
+                        mb_info[mb_idx] = MbInfo { mb_type: MbType::Inter, qp_y };
+                        mb_idx += 1;
+                        continue;
                     }
                 }
 
@@ -5100,5 +5994,11 @@ mod tests {
     fn test_cabac_intra_in_p() {
         // 64x64, 3 frames: CABAC IDR + 2 P-frames with 59% I16x16-in-P + 41% P_L0_16x16
         decode_multiframe_and_compare("cabac_intra_p_test", 3, 64, 64);
+    }
+
+    #[test]
+    fn test_cabac_b_slice() {
+        // 32x32, 15 frames: CABAC IDR + B-frames + P-frames (spatial direct, B_Skip, B_L1)
+        decode_multiframe_and_compare("cabac_b_test", 15, 32, 32);
     }
 }

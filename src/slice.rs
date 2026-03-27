@@ -237,9 +237,8 @@ pub fn parse_slice_header(
         }
     }
 
-    let slice_qp_delta = r.read_se()?;
-
     // cabac_init_idc: parsed when entropy_coding_mode_flag=1 and slice is not I/SI
+    // (spec 7.3.3: comes before slice_qp_delta)
     let cabac_init_idc = if pps.entropy_coding_mode_flag
         && slice_type != SliceType::I
         && slice_type != SliceType::Si
@@ -248,6 +247,8 @@ pub fn parse_slice_header(
     } else {
         0
     };
+
+    let slice_qp_delta = r.read_se()?;
 
     let mut disable_deblocking_filter_idc = 0;
     let mut slice_alpha_c0_offset_div2 = 0;

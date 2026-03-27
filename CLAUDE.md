@@ -31,7 +31,7 @@ This is a Rust project using Cargo:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with CAVLC. CABAC I-frame decoding implemented and byte-exact for I4x4 and I16x16. CABAC P/B-slice decoding not yet integrated.
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. CABAC I-frame byte-exact for I4x4 and I16x16. CABAC P-slice inter decoded (P_Skip, P_L0_16x16/16x8/8x16, P_8x8, intra-in-P). CABAC B-slice decoded (B_Skip, B_Direct_16x16, B_L0/L1/Bi_16x16, B 16x8/8x16, B_8x8 with all sub_mb_types).
 
 ### Completed
 
@@ -95,6 +95,11 @@ I-frame, P-frame, and B-frame decoding fully functional with CAVLC. CABAC I-fram
 - I4x4 and I16x16 integration: byte-exact output for single-MB, ±1 IDCT tolerance for multi-MB
 - Per-MB neighbor tracking: CBF (luma LEFT[16]/TOP[16] + chroma), CBP (u16 with DC coded flags),
   chroma pred mode, I16x16 flag — all with proper unavailable-intra defaults (0x7CF)
+- P-slice CABAC: P_Skip, P_L0_16x16/16x8/8x16, P_8x8 (all sub-partition types), intra-in-P
+- B-slice CABAC: B_Skip (spatial/temporal direct), B_Direct_16x16, B_L0/L1/Bi_16x16,
+  B 16x8/8x16 (18 partition variants), B_8x8 (13 sub_mb_types including B_Direct_8x8),
+  intra-in-B (I4x4 and I16x16)
+- Dual MVD stores (L0 + L1) for B-slice CABAC amvd context
 
 **NAL Unit Parsing** (`src/nal.rs`)
 - Annex B start code detection (3-byte and 4-byte)
@@ -126,7 +131,7 @@ I-frame, P-frame, and B-frame decoding fully functional with CAVLC. CABAC I-fram
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (70 tests)
+**Test Coverage** (72 tests)
 - Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
   mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
   noise_16x16, scaling_test
@@ -135,11 +140,13 @@ I-frame, P-frame, and B-frame decoding fully functional with CAVLC. CABAC I-fram
   b_temporal_test, b_parts_test (16x8/8x16/8x8), b_multi_test, b_hier_test
   (hierarchical B-frames with ref_pic_list_modification)
 - CABAC: cabac_i4x4_test (byte-exact), cabac_i16x16_test (byte-exact),
-  cabac_mixed_test (multi-MB mixed I4x4/I16x16, ±1 IDCT tolerance)
+  cabac_mixed_test (multi-MB mixed I4x4/I16x16, ±1 IDCT tolerance),
+  cabac_p_test (P_Skip), cabac_intra_p_test (intra-in-P),
+  cabac_b_test (B_Skip with spatial direct, byte-exact)
 
 ### Not Yet Implemented
 
-- CABAC P/B-slice decoding
 - MBAFF/interlaced mode
 - Weighted prediction
 - Long-term reference support (MMCO ops 2-6)
+- Full deblocking bS derivation (inter-aware per-4x4-block checks)
