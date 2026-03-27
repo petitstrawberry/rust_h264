@@ -265,18 +265,32 @@ impl Decoder {
                                     ref_pic, mb_x as i32, mb_y as i32,
                                     mvp_x as i32, mvp_y as i32, 16, 16, &mut luma_pred,
                                 );
-                                for r in 0..16 { for c in 0..16 {
-                                    frame.y[(mb_y + r) * stride + mb_x + c] = luma_pred[r * 16 + c];
-                                }}
+                                for r in 0..16 {
+                                    for c in 0..16 {
+                                        frame.y[(mb_y + r) * stride + mb_x + c] = luma_pred[r * 16 + c];
+                                    }
+                                }
                                 let cw = (width / 2) as usize;
-                                let cx = mb_x / 2; let cy = mb_y / 2;
-                                let mut cb_pred = [0u8; 64]; let mut cr_pred_buf = [0u8; 64];
-                                inter_pred::chroma_mc(&ref_pic.u, cw, (height/2) as usize, cx as i32, cy as i32, mvp_x as i32, mvp_y as i32, 8, 8, &mut cb_pred);
-                                inter_pred::chroma_mc(&ref_pic.v, cw, (height/2) as usize, cx as i32, cy as i32, mvp_x as i32, mvp_y as i32, 8, 8, &mut cr_pred_buf);
-                                for r in 0..8 { for c in 0..8 {
-                                    frame.u[(cy + r) * cw + cx + c] = cb_pred[r * 8 + c];
-                                    frame.v[(cy + r) * cw + cx + c] = cr_pred_buf[r * 8 + c];
-                                }}
+                                let cx = mb_x / 2;
+                                let cy = mb_y / 2;
+                                let mut cb_pred = [0u8; 64];
+                                let mut cr_pred_buf = [0u8; 64];
+                                inter_pred::chroma_mc(
+                                    &ref_pic.u, cw, (height / 2) as usize,
+                                    cx as i32, cy as i32, mvp_x as i32, mvp_y as i32,
+                                    8, 8, &mut cb_pred,
+                                );
+                                inter_pred::chroma_mc(
+                                    &ref_pic.v, cw, (height / 2) as usize,
+                                    cx as i32, cy as i32, mvp_x as i32, mvp_y as i32,
+                                    8, 8, &mut cr_pred_buf,
+                                );
+                                for r in 0..8 {
+                                    for c in 0..8 {
+                                        frame.u[(cy + r) * cw + cx + c] = cb_pred[r * 8 + c];
+                                        frame.v[(cy + r) * cw + cx + c] = cr_pred_buf[r * 8 + c];
+                                    }
+                                }
                             }
                             for blk in 0..16 {
                                 mv_store_l0[mb_idx * 16 + blk] = [mvp_x, mvp_y];
@@ -308,20 +322,36 @@ impl Decoder {
                             // MC
                             let mut luma_pred = [0u8; 256];
                             if pl0 && pl1 {
-                                let mut p0 = [0u8; 256]; let mut p1 = [0u8; 256];
-                                inter_pred::luma_mc(&_ref_pic_list_l0[ri_l0 as usize], mb_x as i32, mb_y as i32, mv_l0[0] as i32, mv_l0[1] as i32, 16, 16, &mut p0);
-                                inter_pred::luma_mc(&_ref_pic_list_l1[ri_l1 as usize], mb_x as i32, mb_y as i32, mv_l1[0] as i32, mv_l1[1] as i32, 16, 16, &mut p1);
+                                let mut p0 = [0u8; 256];
+                                let mut p1 = [0u8; 256];
+                                inter_pred::luma_mc(
+                                    &_ref_pic_list_l0[ri_l0 as usize], mb_x as i32, mb_y as i32,
+                                    mv_l0[0] as i32, mv_l0[1] as i32, 16, 16, &mut p0,
+                                );
+                                inter_pred::luma_mc(
+                                    &_ref_pic_list_l1[ri_l1 as usize], mb_x as i32, mb_y as i32,
+                                    mv_l1[0] as i32, mv_l1[1] as i32, 16, 16, &mut p1,
+                                );
                                 inter_pred::bi_pred_avg(&p0, &p1, &mut luma_pred);
                             } else if pl0 {
-                                inter_pred::luma_mc(&_ref_pic_list_l0[ri_l0 as usize], mb_x as i32, mb_y as i32, mv_l0[0] as i32, mv_l0[1] as i32, 16, 16, &mut luma_pred);
+                                inter_pred::luma_mc(
+                                    &_ref_pic_list_l0[ri_l0 as usize], mb_x as i32, mb_y as i32,
+                                    mv_l0[0] as i32, mv_l0[1] as i32, 16, 16, &mut luma_pred,
+                                );
                             } else if pl1 {
-                                inter_pred::luma_mc(&_ref_pic_list_l1[ri_l1 as usize], mb_x as i32, mb_y as i32, mv_l1[0] as i32, mv_l1[1] as i32, 16, 16, &mut luma_pred);
+                                inter_pred::luma_mc(
+                                    &_ref_pic_list_l1[ri_l1 as usize], mb_x as i32, mb_y as i32,
+                                    mv_l1[0] as i32, mv_l1[1] as i32, 16, 16, &mut luma_pred,
+                                );
                             }
-                            for r in 0..16 { for c in 0..16 {
-                                frame.y[(mb_y + r) * stride + mb_x + c] = luma_pred[r * 16 + c];
-                            }}
+                            for r in 0..16 {
+                                for c in 0..16 {
+                                    frame.y[(mb_y + r) * stride + mb_x + c] = luma_pred[r * 16 + c];
+                                }
+                            }
                             let cw = (width / 2) as usize;
-                            let cx = mb_x / 2; let cy = mb_y / 2;
+                            let cx = mb_x / 2;
+                            let cy = mb_y / 2;
                             let chroma_h = (height / 2) as usize;
                             for plane_idx in 0..2 {
                                 let mut chroma_pred = [0u8; 64];
@@ -330,18 +360,36 @@ impl Decoder {
                                     let ref_l1 = &_ref_pic_list_l1[ri_l1 as usize];
                                     let cr0 = if plane_idx == 0 { &ref_l0.u } else { &ref_l0.v };
                                     let cr1 = if plane_idx == 0 { &ref_l1.u } else { &ref_l1.v };
-                                    let mut c0 = [0u8; 64]; let mut c1 = [0u8; 64];
-                                    inter_pred::chroma_mc(cr0, cw, chroma_h, cx as i32, cy as i32, mv_l0[0] as i32, mv_l0[1] as i32, 8, 8, &mut c0);
-                                    inter_pred::chroma_mc(cr1, cw, chroma_h, cx as i32, cy as i32, mv_l1[0] as i32, mv_l1[1] as i32, 8, 8, &mut c1);
+                                    let mut c0 = [0u8; 64];
+                                    let mut c1 = [0u8; 64];
+                                    inter_pred::chroma_mc(
+                                        cr0, cw, chroma_h, cx as i32, cy as i32,
+                                        mv_l0[0] as i32, mv_l0[1] as i32, 8, 8, &mut c0,
+                                    );
+                                    inter_pred::chroma_mc(
+                                        cr1, cw, chroma_h, cx as i32, cy as i32,
+                                        mv_l1[0] as i32, mv_l1[1] as i32, 8, 8, &mut c1,
+                                    );
                                     inter_pred::bi_pred_avg(&c0, &c1, &mut chroma_pred);
                                 } else {
-                                    let (ref_list, ri, mv) = if pl0 { (&_ref_pic_list_l0, ri_l0, mv_l0) } else { (&_ref_pic_list_l1, ri_l1, mv_l1) };
+                                    let (ref_list, ri, mv) = if pl0 {
+                                        (&_ref_pic_list_l0, ri_l0, mv_l0)
+                                    } else {
+                                        (&_ref_pic_list_l1, ri_l1, mv_l1)
+                                    };
                                     let ref_pic = &ref_list[ri as usize];
                                     let plane_ref = if plane_idx == 0 { &ref_pic.u } else { &ref_pic.v };
-                                    inter_pred::chroma_mc(plane_ref, cw, chroma_h, cx as i32, cy as i32, mv[0] as i32, mv[1] as i32, 8, 8, &mut chroma_pred);
+                                    inter_pred::chroma_mc(
+                                        plane_ref, cw, chroma_h, cx as i32, cy as i32,
+                                        mv[0] as i32, mv[1] as i32, 8, 8, &mut chroma_pred,
+                                    );
                                 }
                                 let fp = if plane_idx == 0 { &mut frame.u } else { &mut frame.v };
-                                for r in 0..8 { for c in 0..8 { fp[(cy + r) * cw + cx + c] = chroma_pred[r * 8 + c]; }}
+                                for r in 0..8 {
+                                    for c in 0..8 {
+                                        fp[(cy + r) * cw + cx + c] = chroma_pred[r * 8 + c];
+                                    }
+                                }
                             }
                             mb_is_direct[mb_idx] = true;
                         }
@@ -354,23 +402,688 @@ impl Decoder {
                     let raw_mb_type = if is_p_slice {
                         cr.decode_p_mb_type(st)
                     } else {
-                        cr.decode_b_mb_type(st,
-                            if !mb_idx.is_multiple_of(mb_width as usize) { !mb_is_direct[mb_idx - 1] } else { false },
-                            if mb_idx >= mb_width as usize { !mb_is_direct[mb_idx - mb_width as usize] } else { false },
-                        )
+                        let left_not_direct = if !mb_idx.is_multiple_of(mb_width as usize) {
+                            !mb_is_direct[mb_idx - 1]
+                        } else {
+                            false
+                        };
+                        let top_not_direct = if mb_idx >= mb_width as usize {
+                            !mb_is_direct[mb_idx - mb_width as usize]
+                        } else {
+                            false
+                        };
+                        cr.decode_b_mb_type(st, left_not_direct, top_not_direct)
                     };
 
                     // Check if it's intra-in-P/B
                     let intra_limit = if is_p_slice { 5 } else { 23 };
                     if raw_mb_type >= intra_limit {
-                        // Intra in P/B: reuse CAVLC intra path but with CABAC
-                        // The mb_type maps to I-slice mb_type
-                        let _i_mb_type = raw_mb_type - intra_limit;
-                        return Err(DecodeError::Unsupported("CABAC intra-in-P/B not yet integrated"));
+                        // Intra in P/B slice — decode as I-slice mb_type
+                        // The mb_type already includes the intra type from decode_intra_mb_type
+                        let i_mb_type = raw_mb_type - intra_limit;
+
+                        // Set ref_idx to -1 for all blocks (intra MB)
+                        for blk in 0..16 {
+                            ref_idx_store_l0[mb_idx * 16 + blk] = -1;
+                            ref_idx_store_l1[mb_idx * 16 + blk] = -1;
+                        }
+
+                        if i_mb_type == 0 {
+                            // I4x4 in P/B
+                            if pps.transform_8x8_mode_flag {
+                                let _t8x8 = cr.get_cabac(&mut st[399]);
+                            }
+                            let mut pred_modes = [2u8; 16];
+                            for blk in 0..16 {
+                                let predicted = predict_i4x4_mode(&i4x4_modes, mb_idx, mb_width as usize, blk);
+                                pred_modes[blk] = cr.decode_intra4x4_pred_mode(st, predicted);
+                                i4x4_modes[mb_idx * 16 + blk] = pred_modes[blk];
+                            }
+                            let left_cm = if !mb_idx.is_multiple_of(mb_width as usize) {
+                                mb_chroma_pred[mb_idx - 1]
+                            } else {
+                                0
+                            };
+                            let top_cm = if mb_idx >= mb_width as usize {
+                                mb_chroma_pred[mb_idx - mb_width as usize]
+                            } else {
+                                0
+                            };
+                            let intra_chroma_pred_mode = cr.decode_chroma_pred_mode(st, left_cm, top_cm);
+                            mb_chroma_pred[mb_idx] = intra_chroma_pred_mode;
+
+                            let unavail_cbp: u16 = 0x00F; // inter unavailable default
+                            let left_cbp_raw = if !mb_idx.is_multiple_of(mb_width as usize) {
+                                mb_cbp[mb_idx - 1]
+                            } else {
+                                unavail_cbp
+                            };
+                            let top_cbp_raw = if mb_idx >= mb_width as usize {
+                                mb_cbp[mb_idx - mb_width as usize]
+                            } else {
+                                unavail_cbp
+                            };
+                            let left_cbp = ((left_cbp_raw & 0x7F0) | (left_cbp_raw & 2) | (((left_cbp_raw >> 2) & 2) << 2)) as u8;
+                            let top_cbp = top_cbp_raw as u8;
+                            let cbp_luma = cr.decode_cbp_luma(st, left_cbp, top_cbp);
+                            let left_cbp_c = ((left_cbp_raw >> 4) & 3) as u8;
+                            let top_cbp_c = ((top_cbp_raw >> 4) & 3) as u8;
+                            let cbp_chroma = cr.decode_cbp_chroma(st, left_cbp_c, top_cbp_c);
+                            mb_cbp[mb_idx] = (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
+
+                            let qp_y = if cbp_luma != 0 || cbp_chroma != 0 {
+                                let delta = cr.decode_mb_qp_delta(st, last_qp_delta_nonzero);
+                                last_qp_delta_nonzero = delta != 0;
+                                ((prev_mb_qp + delta + 52) % 52 + 52) % 52
+                            } else {
+                                last_qp_delta_nonzero = false;
+                                prev_mb_qp
+                            };
+                            prev_mb_qp = qp_y;
+                            let _qp_c = chroma_qp(qp_y, pps.chroma_qp_index_offset);
+
+                            // Decode luma residual + I4x4 prediction + chroma (same as I-slice path)
+                            for blk in 0..16 {
+                                let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
+                                let px = mb_x + blk_col;
+                                let py = mb_y + blk_row;
+                                let mut block_coeffs = [0i32; 16];
+                                if cbp_luma & (1 << (blk / 4)) != 0 {
+                                    let left_nz = cabac_neighbor_nz_luma(
+                                        &nc_luma, mb_idx, mb_width as usize, blk, true, true,
+                                    );
+                                    let top_nz = cabac_neighbor_nz_luma(
+                                        &nc_luma, mb_idx, mb_width as usize, blk, false, true,
+                                    );
+                                    if cr.decode_coded_block_flag(st, 2, left_nz, top_nz) {
+                                        let (coeffs, tc) = cr.decode_residual_cabac(st, 2, 16);
+                                        nc_luma[mb_idx * 16 + blk] = tc;
+                                        for (pos, val) in &coeffs {
+                                            let (r, c) = ZIGZAG_4X4[*pos];
+                                            block_coeffs[r * 4 + c] = *val;
+                                        }
+                                        dequant_4x4_full(&mut block_coeffs, qp_y, &pps.scaling_list_4x4[0]);
+                                    }
+                                }
+                                inverse_dct_4x4(&mut block_coeffs);
+
+                                let above_buf: Option<[u8; 8]> = if py > 0 {
+                                    let mut buf = [0u8; 8];
+                                    for (i, b) in buf.iter_mut().enumerate().take(4) {
+                                        *b = frame.y[(py - 1) * stride + px + i];
+                                    }
+                                    let local_row = py - mb_y;
+                                    let topright_avail = if local_row == 0 {
+                                        px + 4 < stride
+                                    } else {
+                                        !matches!(blk, 3 | 7 | 11 | 13 | 15)
+                                    };
+                                    if topright_avail {
+                                        for (i, b) in buf.iter_mut().enumerate().skip(4) {
+                                            let col = (px + i).min(stride - 1);
+                                            *b = frame.y[(py - 1) * stride + col];
+                                        }
+                                    } else {
+                                        let last = buf[3];
+                                        buf[4..8].fill(last);
+                                    }
+                                    Some(buf)
+                                } else {
+                                    None
+                                };
+                                let left_buf: Option<[u8; 4]> = if px > 0 {
+                                    let mut buf = [0u8; 4];
+                                    for (i, b) in buf.iter_mut().enumerate() {
+                                        *b = frame.y[(py + i) * stride + px - 1];
+                                    }
+                                    Some(buf)
+                                } else {
+                                    None
+                                };
+                                let above_left_val = if px > 0 && py > 0 {
+                                    Some(frame.y[(py - 1) * stride + px - 1])
+                                } else {
+                                    None
+                                };
+                                let mut pred = [0u8; 16];
+                                predict_intra_4x4(
+                                    pred_modes[blk],
+                                    above_buf.as_ref().map(|b| &b[..]),
+                                    left_buf.as_ref().map(|b| &b[..]),
+                                    above_left_val,
+                                    &mut pred,
+                                );
+                                for r in 0..4 {
+                                    for c in 0..4 {
+                                        let val = (pred[r * 4 + c] as i32
+                                            + block_coeffs[r * 4 + c])
+                                            .clamp(0, 255) as u8;
+                                        frame.y[(py + r) * stride + px + c] = val;
+                                    }
+                                }
+                            }
+
+                            // Chroma prediction
+                            let chroma_width = (width / 2) as usize;
+                            let chroma_mb_x = mb_x / 2;
+                            let chroma_mb_y = mb_y / 2;
+
+                            let above_cu = if mb_y > 0 {
+                                let mut buf = [0u8; 8];
+                                buf.copy_from_slice(
+                                    &frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
+                                        ..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8],
+                                );
+                                Some(buf)
+                            } else {
+                                None
+                            };
+                            let left_cu = if mb_x > 0 {
+                                let mut buf = [0u8; 8];
+                                for (i, b) in buf.iter_mut().enumerate() {
+                                    *b = frame.u[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
+                                }
+                                Some(buf)
+                            } else {
+                                None
+                            };
+                            let above_left_u = if mb_x > 0 && mb_y > 0 {
+                                Some(frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
+                            } else {
+                                None
+                            };
+
+                            let above_cv = if mb_y > 0 {
+                                let mut buf = [0u8; 8];
+                                buf.copy_from_slice(
+                                    &frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
+                                        ..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8],
+                                );
+                                Some(buf)
+                            } else {
+                                None
+                            };
+                            let left_cv = if mb_x > 0 {
+                                let mut buf = [0u8; 8];
+                                for (i, b) in buf.iter_mut().enumerate() {
+                                    *b = frame.v[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
+                                }
+                                Some(buf)
+                            } else {
+                                None
+                            };
+                            let above_left_v = if mb_x > 0 && mb_y > 0 {
+                                Some(frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
+                            } else {
+                                None
+                            };
+
+                            let mut pred_u = [0u8; 64];
+                            let mut pred_v = [0u8; 64];
+                            predict_chroma_8x8(
+                                intra_chroma_pred_mode,
+                                above_cu.as_ref().map(|b| &b[..]),
+                                left_cu.as_ref().map(|b| &b[..]),
+                                above_left_u,
+                                &mut pred_u,
+                            );
+                            predict_chroma_8x8(
+                                intra_chroma_pred_mode,
+                                above_cv.as_ref().map(|b| &b[..]),
+                                left_cv.as_ref().map(|b| &b[..]),
+                                above_left_v,
+                                &mut pred_v,
+                            );
+
+                            // Chroma DC residual
+                            let mut chroma_dc_cb = [0i32; 4];
+                            let mut chroma_dc_cr = [0i32; 4];
+                            if cbp_chroma >= 1 {
+                                let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize) {
+                                    (mb_cbp[mb_idx - 1] >> 6) & 1 != 0
+                                } else {
+                                    true
+                                };
+                                let top_dc_nz = if mb_idx >= mb_width as usize {
+                                    (mb_cbp[mb_idx - mb_width as usize] >> 6) & 1 != 0
+                                } else {
+                                    true
+                                };
+                                if cr.decode_coded_block_flag(st, 3, left_dc_nz, top_dc_nz) {
+                                    let (coeffs, _) = cr.decode_residual_cabac(st, 3, 4);
+                                    for (p, v) in coeffs {
+                                        chroma_dc_cb[p] = v;
+                                    }
+                                    mb_cbp[mb_idx] |= 0x40;
+                                }
+
+                                let left_dc_nz_cr = if !mb_idx.is_multiple_of(mb_width as usize) {
+                                    (mb_cbp[mb_idx - 1] >> 7) & 1 != 0
+                                } else {
+                                    true
+                                };
+                                let top_dc_nz_cr = if mb_idx >= mb_width as usize {
+                                    (mb_cbp[mb_idx - mb_width as usize] >> 7) & 1 != 0
+                                } else {
+                                    true
+                                };
+                                if cr.decode_coded_block_flag(st, 3, left_dc_nz_cr, top_dc_nz_cr) {
+                                    let (coeffs, _) = cr.decode_residual_cabac(st, 3, 4);
+                                    for (p, v) in coeffs {
+                                        chroma_dc_cr[p] = v;
+                                    }
+                                    mb_cbp[mb_idx] |= 0x80;
+                                }
+                            }
+
+                            // Chroma AC residual
+                            let mut chroma_ac_cb = [[0i32; 15]; 4];
+                            let mut chroma_ac_cr = [[0i32; 15]; 4];
+                            if cbp_chroma >= 2 {
+                                for blk in 0..4 {
+                                    let left_nz = cabac_neighbor_nz_chroma(
+                                        &nc_cb, mb_idx, mb_width as usize, blk, true, true,
+                                    );
+                                    let top_nz = cabac_neighbor_nz_chroma(
+                                        &nc_cb, mb_idx, mb_width as usize, blk, false, true,
+                                    );
+                                    if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
+                                        let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
+                                        nc_cb[mb_idx * 4 + blk] = tc;
+                                        for (p, v) in coeffs {
+                                            chroma_ac_cb[blk][p] = v;
+                                        }
+                                    }
+                                }
+                                for blk in 0..4 {
+                                    let left_nz = cabac_neighbor_nz_chroma(
+                                        &nc_cr, mb_idx, mb_width as usize, blk, true, true,
+                                    );
+                                    let top_nz = cabac_neighbor_nz_chroma(
+                                        &nc_cr, mb_idx, mb_width as usize, blk, false, true,
+                                    );
+                                    if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
+                                        let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
+                                        nc_cr[mb_idx * 4 + blk] = tc;
+                                        for (p, v) in coeffs {
+                                            chroma_ac_cr[blk][p] = v;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Chroma reconstruction
+                            for (plane_dc, plane_ac, pred_plane, frame_plane, scale_idx) in [
+                                (&mut chroma_dc_cb, &chroma_ac_cb, &pred_u, &mut frame.u, 1usize),
+                                (&mut chroma_dc_cr, &chroma_ac_cr, &pred_v, &mut frame.v, 2usize),
+                            ] {
+                                let chroma_scale = &pps.scaling_list_4x4[scale_idx];
+                                if cbp_chroma >= 1 {
+                                    inverse_hadamard_2x2(plane_dc);
+                                    dequant_chroma_dc(plane_dc, _qp_c, chroma_scale[0]);
+                                }
+                                let mut chroma_residual = [0i32; 64];
+                                for blk in 0..4 {
+                                    let blk_row = (blk / 2) * 4;
+                                    let blk_col = (blk % 2) * 4;
+                                    let mut block_raster = [0i32; 16];
+                                    block_raster[0] = plane_dc[blk];
+                                    if cbp_chroma >= 2 {
+                                        for scan_idx in 0..15 {
+                                            let (r, c) = ZIGZAG_4X4[scan_idx + 1];
+                                            block_raster[r * 4 + c] = plane_ac[blk][scan_idx];
+                                        }
+                                        dequant_4x4_ac_raster(&mut block_raster, _qp_c, chroma_scale);
+                                    }
+                                    inverse_dct_4x4(&mut block_raster);
+                                    for r in 0..4 {
+                                        for c in 0..4 {
+                                            chroma_residual[(blk_row + r) * 8 + blk_col + c] =
+                                                block_raster[r * 4 + c];
+                                        }
+                                    }
+                                }
+                                for y in 0..8 {
+                                    for x in 0..8 {
+                                        let val = (pred_plane[y * 8 + x] as i32
+                                            + chroma_residual[y * 8 + x])
+                                            .clamp(0, 255) as u8;
+                                        frame_plane[(chroma_mb_y + y) * chroma_width + chroma_mb_x + x] = val;
+                                    }
+                                }
+                            }
+                            mb_info[mb_idx] = MbInfo { mb_type: MbType::Intra, qp_y };
+                        } else if i_mb_type <= 24 {
+                            // I16x16 in P/B
+                            is_i16x16[mb_idx] = true;
+                            let mt = i_mb_type - 1;
+                            let i16_pred = (mt % 4) as u8;
+                            let cbp_chroma = ((mt / 4) % 3) as u8;
+                            let cbp_luma = if mt >= 12 { 15u8 } else { 0u8 };
+
+                            let left_cm = if !mb_idx.is_multiple_of(mb_width as usize) {
+                                mb_chroma_pred[mb_idx - 1]
+                            } else {
+                                0
+                            };
+                            let top_cm = if mb_idx >= mb_width as usize {
+                                mb_chroma_pred[mb_idx - mb_width as usize]
+                            } else {
+                                0
+                            };
+                            let intra_chroma_pred_mode = cr.decode_chroma_pred_mode(st, left_cm, top_cm);
+                            mb_chroma_pred[mb_idx] = intra_chroma_pred_mode;
+
+                            let delta = cr.decode_mb_qp_delta(st, last_qp_delta_nonzero);
+                            last_qp_delta_nonzero = delta != 0;
+                            let qp_y = ((prev_mb_qp + delta + 52) % 52 + 52) % 52;
+                            prev_mb_qp = qp_y;
+                            let qp_c = chroma_qp(qp_y, pps.chroma_qp_index_offset);
+
+                            // Luma DC (cat=0, 16 coefficients)
+                            let mut luma_dc = [0i32; 16];
+                            let dc_left_nz = if !mb_idx.is_multiple_of(mb_width as usize) {
+                                (mb_cbp[mb_idx - 1] >> 8) & 1 != 0
+                            } else {
+                                true
+                            };
+                            let dc_top_nz = if mb_idx >= mb_width as usize {
+                                (mb_cbp[mb_idx - mb_width as usize] >> 8) & 1 != 0
+                            } else {
+                                true
+                            };
+                            if cr.decode_coded_block_flag(st, 0, dc_left_nz, dc_top_nz) {
+                                let (coeffs, _) = cr.decode_residual_cabac(st, 0, 16);
+                                for (p, v) in coeffs {
+                                    luma_dc[p] = v;
+                                }
+                                mb_cbp[mb_idx] |= 0x100;
+                            }
+
+                            // Luma AC (cat=1, 15 coefficients per block)
+                            let mut luma_ac = [[0i32; 15]; 16];
+                            if cbp_luma != 0 {
+                                for blk in 0..16 {
+                                    let left_nz = cabac_neighbor_nz_luma(
+                                        &nc_luma, mb_idx, mb_width as usize, blk, true, true,
+                                    );
+                                    let top_nz = cabac_neighbor_nz_luma(
+                                        &nc_luma, mb_idx, mb_width as usize, blk, false, true,
+                                    );
+                                    if cr.decode_coded_block_flag(st, 1, left_nz, top_nz) {
+                                        let (coeffs, tc) = cr.decode_residual_cabac(st, 1, 15);
+                                        nc_luma[mb_idx * 16 + blk] = tc;
+                                        for (p, v) in coeffs {
+                                            luma_ac[blk][p] = v;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Reconstruct luma: unzigzag DC, Hadamard, dequant
+                            let mut luma_dc_raster = [0i32; 16];
+                            for i in 0..16 {
+                                let (r, c) = ZIGZAG_4X4[i];
+                                luma_dc_raster[r * 4 + c] = luma_dc[i];
+                            }
+                            inverse_hadamard_4x4(&mut luma_dc_raster);
+                            dequant_luma_dc_i16x16(&mut luma_dc_raster, qp_y, pps.scaling_list_4x4[0][0]);
+
+                            const DC_RASTER_TO_BLOCK_P: [usize; 16] = [
+                                0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15,
+                            ];
+                            let mut luma_residual = [0i32; 256];
+                            for blk in 0..16 {
+                                let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
+                                let mut block_raster = [0i32; 16];
+                                let dc_idx = DC_RASTER_TO_BLOCK_P.iter().position(|&b| b == blk).unwrap();
+                                block_raster[0] = luma_dc_raster[dc_idx];
+
+                                if cbp_luma != 0 {
+                                    for scan_idx in 0..15 {
+                                        let (r, c) = ZIGZAG_4X4[scan_idx + 1];
+                                        block_raster[r * 4 + c] = luma_ac[blk][scan_idx];
+                                    }
+                                    dequant_4x4_ac_raster(&mut block_raster, qp_y, &pps.scaling_list_4x4[0]);
+                                }
+                                inverse_dct_4x4(&mut block_raster);
+
+                                for r in 0..4 {
+                                    for c in 0..4 {
+                                        luma_residual[(blk_row + r) * 16 + blk_col + c] =
+                                            block_raster[r * 4 + c];
+                                    }
+                                }
+                            }
+
+                            // I16x16 prediction
+                            let mut luma_pred = [0u8; 256];
+                            let above: Option<Vec<u8>> = if mb_y > 0 {
+                                Some((0..16).map(|x| frame.y[(mb_y - 1) * stride + mb_x + x]).collect())
+                            } else {
+                                None
+                            };
+                            let left: Option<Vec<u8>> = if mb_x > 0 {
+                                Some((0..16).map(|y| frame.y[(mb_y + y) * stride + mb_x - 1]).collect())
+                            } else {
+                                None
+                            };
+                            let above_left = if mb_x > 0 && mb_y > 0 {
+                                Some(frame.y[(mb_y - 1) * stride + mb_x - 1])
+                            } else {
+                                None
+                            };
+                            predict_intra_16x16(
+                                i16_pred, above.as_deref(), left.as_deref(),
+                                above_left, &mut luma_pred,
+                            );
+                            for r in 0..16 {
+                                for c in 0..16 {
+                                    let val = (luma_pred[r * 16 + c] as i32
+                                        + luma_residual[r * 16 + c])
+                                        .clamp(0, 255) as u8;
+                                    frame.y[(mb_y + r) * stride + mb_x + c] = val;
+                                }
+                            }
+
+                            // Chroma prediction
+                            let chroma_width = (width / 2) as usize;
+                            let chroma_mb_x = mb_x / 2;
+                            let chroma_mb_y = mb_y / 2;
+
+                            let above_chroma_u = if mb_y > 0 {
+                                let mut buf = [0u8; 8];
+                                buf.copy_from_slice(
+                                    &frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
+                                        ..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8],
+                                );
+                                Some(buf)
+                            } else {
+                                None
+                            };
+                            let left_chroma_u = if mb_x > 0 {
+                                let mut buf = [0u8; 8];
+                                for (i, b) in buf.iter_mut().enumerate() {
+                                    *b = frame.u[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
+                                }
+                                Some(buf)
+                            } else {
+                                None
+                            };
+                            let above_left_u = if mb_x > 0 && mb_y > 0 {
+                                Some(frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
+                            } else {
+                                None
+                            };
+                            let above_chroma_v = if mb_y > 0 {
+                                let mut buf = [0u8; 8];
+                                buf.copy_from_slice(
+                                    &frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
+                                        ..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8],
+                                );
+                                Some(buf)
+                            } else {
+                                None
+                            };
+                            let left_chroma_v = if mb_x > 0 {
+                                let mut buf = [0u8; 8];
+                                for (i, b) in buf.iter_mut().enumerate() {
+                                    *b = frame.v[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
+                                }
+                                Some(buf)
+                            } else {
+                                None
+                            };
+                            let above_left_v = if mb_x > 0 && mb_y > 0 {
+                                Some(frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
+                            } else {
+                                None
+                            };
+
+                            let mut pred_u = [0u8; 64];
+                            let mut pred_v = [0u8; 64];
+                            predict_chroma_8x8(
+                                intra_chroma_pred_mode,
+                                above_chroma_u.as_ref().map(|b| &b[..]),
+                                left_chroma_u.as_ref().map(|b| &b[..]),
+                                above_left_u,
+                                &mut pred_u,
+                            );
+                            predict_chroma_8x8(
+                                intra_chroma_pred_mode,
+                                above_chroma_v.as_ref().map(|b| &b[..]),
+                                left_chroma_v.as_ref().map(|b| &b[..]),
+                                above_left_v,
+                                &mut pred_v,
+                            );
+
+                            // Chroma DC residual
+                            let mut chroma_dc_cb = [0i32; 4];
+                            let mut chroma_dc_cr = [0i32; 4];
+                            if cbp_chroma >= 1 {
+                                let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize) {
+                                    (mb_cbp[mb_idx - 1] >> 6) & 1 != 0
+                                } else {
+                                    true
+                                };
+                                let top_dc_nz = if mb_idx >= mb_width as usize {
+                                    (mb_cbp[mb_idx - mb_width as usize] >> 6) & 1 != 0
+                                } else {
+                                    true
+                                };
+                                if cr.decode_coded_block_flag(st, 3, left_dc_nz, top_dc_nz) {
+                                    let (coeffs, _) = cr.decode_residual_cabac(st, 3, 4);
+                                    for (p, v) in coeffs {
+                                        chroma_dc_cb[p] = v;
+                                    }
+                                    mb_cbp[mb_idx] |= 0x40;
+                                }
+                                let left_dc_nz_cr = if !mb_idx.is_multiple_of(mb_width as usize) {
+                                    (mb_cbp[mb_idx - 1] >> 7) & 1 != 0
+                                } else {
+                                    true
+                                };
+                                let top_dc_nz_cr = if mb_idx >= mb_width as usize {
+                                    (mb_cbp[mb_idx - mb_width as usize] >> 7) & 1 != 0
+                                } else {
+                                    true
+                                };
+                                if cr.decode_coded_block_flag(st, 3, left_dc_nz_cr, top_dc_nz_cr) {
+                                    let (coeffs, _) = cr.decode_residual_cabac(st, 3, 4);
+                                    for (p, v) in coeffs {
+                                        chroma_dc_cr[p] = v;
+                                    }
+                                    mb_cbp[mb_idx] |= 0x80;
+                                }
+                            }
+
+                            // Chroma AC residual
+                            let mut chroma_ac_cb = [[0i32; 15]; 4];
+                            let mut chroma_ac_cr = [[0i32; 15]; 4];
+                            if cbp_chroma >= 2 {
+                                for blk in 0..4 {
+                                    let left_nz = cabac_neighbor_nz_chroma(
+                                        &nc_cb, mb_idx, mb_width as usize, blk, true, true,
+                                    );
+                                    let top_nz = cabac_neighbor_nz_chroma(
+                                        &nc_cb, mb_idx, mb_width as usize, blk, false, true,
+                                    );
+                                    if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
+                                        let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
+                                        nc_cb[mb_idx * 4 + blk] = tc;
+                                        for (p, v) in coeffs {
+                                            chroma_ac_cb[blk][p] = v;
+                                        }
+                                    }
+                                }
+                                for blk in 0..4 {
+                                    let left_nz = cabac_neighbor_nz_chroma(
+                                        &nc_cr, mb_idx, mb_width as usize, blk, true, true,
+                                    );
+                                    let top_nz = cabac_neighbor_nz_chroma(
+                                        &nc_cr, mb_idx, mb_width as usize, blk, false, true,
+                                    );
+                                    if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
+                                        let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
+                                        nc_cr[mb_idx * 4 + blk] = tc;
+                                        for (p, v) in coeffs {
+                                            chroma_ac_cr[blk][p] = v;
+                                        }
+                                    }
+                                }
+                            }
+                            mb_cbp[mb_idx] |= (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
+
+                            // Chroma reconstruction
+                            for (plane_dc, plane_ac, pred_plane, frame_plane, scale_idx) in [
+                                (&mut chroma_dc_cb, &chroma_ac_cb, &pred_u, &mut frame.u, 1usize),
+                                (&mut chroma_dc_cr, &chroma_ac_cr, &pred_v, &mut frame.v, 2usize),
+                            ] {
+                                let chroma_scale = &pps.scaling_list_4x4[scale_idx];
+                                if cbp_chroma >= 1 {
+                                    inverse_hadamard_2x2(plane_dc);
+                                    dequant_chroma_dc(plane_dc, qp_c, chroma_scale[0]);
+                                }
+                                let mut chroma_residual = [0i32; 64];
+                                for blk in 0..4 {
+                                    let blk_row = (blk / 2) * 4;
+                                    let blk_col = (blk % 2) * 4;
+                                    let mut block_raster = [0i32; 16];
+                                    block_raster[0] = plane_dc[blk];
+                                    if cbp_chroma >= 2 {
+                                        for scan_idx in 0..15 {
+                                            let (r, c) = ZIGZAG_4X4[scan_idx + 1];
+                                            block_raster[r * 4 + c] = plane_ac[blk][scan_idx];
+                                        }
+                                        dequant_4x4_ac_raster(&mut block_raster, qp_c, chroma_scale);
+                                    }
+                                    inverse_dct_4x4(&mut block_raster);
+                                    for r in 0..4 {
+                                        for c in 0..4 {
+                                            chroma_residual[(blk_row + r) * 8 + blk_col + c] =
+                                                block_raster[r * 4 + c];
+                                        }
+                                    }
+                                }
+                                for y in 0..8 {
+                                    for x in 0..8 {
+                                        let val = (pred_plane[y * 8 + x] as i32
+                                            + chroma_residual[y * 8 + x])
+                                            .clamp(0, 255) as u8;
+                                        frame_plane[(chroma_mb_y + y) * chroma_width + chroma_mb_x + x] = val;
+                                    }
+                                }
+                            }
+
+                            mb_info[mb_idx] = MbInfo { mb_type: MbType::Intra, qp_y };
+                        } else {
+                            return Err(DecodeError::Unsupported("CABAC I_PCM in P/B not supported"));
+                        }
+                        mb_idx += 1;
+                        continue;
                     }
 
-                    // Inter MB: decode using CAVLC-equivalent reconstruction
-                    // but with CABAC for syntax elements
+                    // Inter MB: decode using CABAC syntax elements
                     if is_p_slice {
                         // P-slice inter: types 0-4
                         let is_p8x8 = raw_mb_type == 3 || raw_mb_type == 4;
@@ -409,13 +1122,18 @@ impl Decoder {
                                     0 => vec![(0, 0, 8, 8)],
                                     1 => vec![(0, 0, 8, 4), (0, 4, 8, 4)],
                                     2 => vec![(0, 0, 4, 8), (4, 0, 4, 8)],
-                                    3 => vec![(0,0,4,4),(4,0,4,4),(0,4,4,4),(4,4,4,4)],
+                                    3 => vec![(0, 0, 4, 4), (4, 0, 4, 4), (0, 4, 4, 4), (4, 4, 4, 4)],
                                     _ => return Err(DecodeError::from("invalid sub_mb_type")),
                                 };
                                 for &(dx, dy, spw, sph) in &sub_parts_layout {
-                                    let px = sx + dx; let py = sy + dy;
-                                    let amvd_x = cabac_amvd(&mvd_store, mb_idx, mb_width as usize, py, px, 0);
-                                    let amvd_y = cabac_amvd(&mvd_store, mb_idx, mb_width as usize, py, px, 1);
+                                    let px = sx + dx;
+                                    let py = sy + dy;
+                                    let amvd_x = cabac_amvd(
+                                        &mvd_store, mb_idx, mb_width as usize, py, px, 0,
+                                    );
+                                    let amvd_y = cabac_amvd(
+                                        &mvd_store, mb_idx, mb_width as usize, py, px, 1,
+                                    );
                                     let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                                     let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
                                     let (mvp_x, mvp_y) = predict_mv_sub(
@@ -423,38 +1141,67 @@ impl Decoder {
                                         mb_width as usize, px, py, spw, sph, ref_idx,
                                     );
                                     let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
-                                    for r in (0..sph).step_by(4) { for c in (0..spw).step_by(4) {
-                                        let lr = (py + r) / 4; let lc = (px + c) / 4;
-                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET.iter().position(|&(br, bc)| br / 4 == lr && bc / 4 == lc) {
-                                            mv_store_l0[mb_idx * 16 + blk] = mv;
-                                            ref_idx_store_l0[mb_idx * 16 + blk] = ref_idx;
-                                            mvd_store[mb_idx * 16 + blk] = [mvd_x, mvd_y];
+                                    for r in (0..sph).step_by(4) {
+                                        for c in (0..spw).step_by(4) {
+                                            let lr = (py + r) / 4;
+                                            let lc = (px + c) / 4;
+                                            if let Some(blk) = BLOCK_INDEX_TO_OFFSET.iter()
+                                                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                            {
+                                                mv_store_l0[mb_idx * 16 + blk] = mv;
+                                                ref_idx_store_l0[mb_idx * 16 + blk] = ref_idx;
+                                                mvd_store[mb_idx * 16 + blk] = [mvd_x, mvd_y];
+                                            }
                                         }
-                                    }}
+                                    }
                                     // MC
                                     let ref_pic = &ref_pic_list[ref_idx as usize];
                                     let mut luma_pred = vec![0u8; spw * sph];
-                                    inter_pred::luma_mc(ref_pic, (mb_x + px) as i32, (mb_y + py) as i32, mv[0] as i32, mv[1] as i32, spw, sph, &mut luma_pred);
-                                    for r in 0..sph { for c in 0..spw {
-                                        frame.y[(mb_y + py + r) * stride + mb_x + px + c] = luma_pred[r * spw + c];
-                                    }}
+                                    inter_pred::luma_mc(
+                                        ref_pic, (mb_x + px) as i32, (mb_y + py) as i32,
+                                        mv[0] as i32, mv[1] as i32, spw, sph, &mut luma_pred,
+                                    );
+                                    for r in 0..sph {
+                                        for c in 0..spw {
+                                            frame.y[(mb_y + py + r) * stride + mb_x + px + c] =
+                                                luma_pred[r * spw + c];
+                                        }
+                                    }
                                 }
                             }
-                            // Chroma MC for P_8x8 (simplified: use partition 0's MV for whole chroma)
+                            // Chroma MC for P_8x8
                             let cw = (width / 2) as usize;
-                            let cx = mb_x / 2; let cy = mb_y / 2;
+                            let cx = mb_x / 2;
+                            let cy = mb_y / 2;
                             for smb in 0..4 {
                                 let (sy, sx) = sub_mb_origins[smb];
                                 let ref_pic = &ref_pic_list[sub_ref[smb] as usize];
-                                let mv = mv_store_l0[mb_idx * 16 + BLOCK_INDEX_TO_OFFSET.iter().position(|&(br, bc)| br == sy && bc == sx).unwrap_or(0)];
-                                let cx_off = sx / 2; let cy_off = sy / 2;
-                                let mut cb_pred = [0u8; 16]; let mut cr_pred_buf = [0u8; 16];
-                                inter_pred::chroma_mc(&ref_pic.u, cw, (height/2) as usize, (cx + cx_off) as i32, (cy + cy_off) as i32, mv[0] as i32, mv[1] as i32, 4, 4, &mut cb_pred);
-                                inter_pred::chroma_mc(&ref_pic.v, cw, (height/2) as usize, (cx + cx_off) as i32, (cy + cy_off) as i32, mv[0] as i32, mv[1] as i32, 4, 4, &mut cr_pred_buf);
-                                for r in 0..4 { for c in 0..4 {
-                                    frame.u[(cy + cy_off + r) * cw + cx + cx_off + c] = cb_pred[r * 4 + c];
-                                    frame.v[(cy + cy_off + r) * cw + cx + cx_off + c] = cr_pred_buf[r * 4 + c];
-                                }}
+                                let blk_idx = BLOCK_INDEX_TO_OFFSET.iter()
+                                    .position(|&(br, bc)| br == sy && bc == sx)
+                                    .unwrap_or(0);
+                                let mv = mv_store_l0[mb_idx * 16 + blk_idx];
+                                let cx_off = sx / 2;
+                                let cy_off = sy / 2;
+                                let mut cb_pred = [0u8; 16];
+                                let mut cr_pred_buf = [0u8; 16];
+                                inter_pred::chroma_mc(
+                                    &ref_pic.u, cw, (height / 2) as usize,
+                                    (cx + cx_off) as i32, (cy + cy_off) as i32,
+                                    mv[0] as i32, mv[1] as i32, 4, 4, &mut cb_pred,
+                                );
+                                inter_pred::chroma_mc(
+                                    &ref_pic.v, cw, (height / 2) as usize,
+                                    (cx + cx_off) as i32, (cy + cy_off) as i32,
+                                    mv[0] as i32, mv[1] as i32, 4, 4, &mut cr_pred_buf,
+                                );
+                                for r in 0..4 {
+                                    for c in 0..4 {
+                                        frame.u[(cy + cy_off + r) * cw + cx + cx_off + c] =
+                                            cb_pred[r * 4 + c];
+                                        frame.v[(cy + cy_off + r) * cw + cx + cx_off + c] =
+                                            cr_pred_buf[r * 4 + c];
+                                    }
+                                }
                             }
                         } else {
                             // P_L0_16x16, P16x8, P8x16
@@ -471,10 +1218,16 @@ impl Decoder {
                             }
                             for p in 0..num_parts {
                                 let (py_off, px_off) = match raw_mb_type {
-                                    1 => (p * 8, 0), 2 => (0, p * 8), _ => (0, 0),
+                                    1 => (p * 8, 0),
+                                    2 => (0, p * 8),
+                                    _ => (0, 0),
                                 };
-                                let amvd_x = cabac_amvd(&mvd_store, mb_idx, mb_width as usize, py_off, px_off, 0);
-                                let amvd_y = cabac_amvd(&mvd_store, mb_idx, mb_width as usize, py_off, px_off, 1);
+                                let amvd_x = cabac_amvd(
+                                    &mvd_store, mb_idx, mb_width as usize, py_off, px_off, 0,
+                                );
+                                let amvd_y = cabac_amvd(
+                                    &mvd_store, mb_idx, mb_width as usize, py_off, px_off, 1,
+                                );
                                 let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                                 let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
                                 let (mvp_x, mvp_y) = predict_mv(
@@ -482,41 +1235,81 @@ impl Decoder {
                                     p, part_w, part_h, part_ref[p],
                                 );
                                 let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
+
                                 // Store MV, ref, and MVD
-                                for r in (0..part_h).step_by(4) { for c in (0..part_w).step_by(4) {
-                                    let lr = (py_off + r) / 4; let lc = (px_off + c) / 4;
-                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET.iter().position(|&(br, bc)| br / 4 == lr && bc / 4 == lc) {
-                                        mv_store_l0[mb_idx * 16 + blk] = mv;
-                                        ref_idx_store_l0[mb_idx * 16 + blk] = part_ref[p];
-                                        mvd_store[mb_idx * 16 + blk] = [mvd_x, mvd_y];
+                                for r in (0..part_h).step_by(4) {
+                                    for c in (0..part_w).step_by(4) {
+                                        let lr = (py_off + r) / 4;
+                                        let lc = (px_off + c) / 4;
+                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET.iter()
+                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                        {
+                                            mv_store_l0[mb_idx * 16 + blk] = mv;
+                                            ref_idx_store_l0[mb_idx * 16 + blk] = part_ref[p];
+                                            mvd_store[mb_idx * 16 + blk] = [mvd_x, mvd_y];
+                                        }
                                     }
-                                }}
+                                }
+
                                 // MC
                                 let ref_pic = &ref_pic_list[part_ref[p] as usize];
                                 let mut luma_pred = vec![0u8; part_w * part_h];
-                                inter_pred::luma_mc(ref_pic, (mb_x + px_off) as i32, (mb_y + py_off) as i32, mv[0] as i32, mv[1] as i32, part_w, part_h, &mut luma_pred);
-                                for r in 0..part_h { for c in 0..part_w {
-                                    frame.y[(mb_y + py_off + r) * stride + mb_x + px_off + c] = luma_pred[r * part_w + c];
-                                }}
+                                inter_pred::luma_mc(
+                                    ref_pic, (mb_x + px_off) as i32, (mb_y + py_off) as i32,
+                                    mv[0] as i32, mv[1] as i32, part_w, part_h, &mut luma_pred,
+                                );
+                                for r in 0..part_h {
+                                    for c in 0..part_w {
+                                        frame.y[(mb_y + py_off + r) * stride + mb_x + px_off + c] =
+                                            luma_pred[r * part_w + c];
+                                    }
+                                }
+
                                 // Chroma
                                 let cw = (width / 2) as usize;
-                                let cx_off = px_off / 2; let cy_off = py_off / 2;
-                                let chroma_mb_x = mb_x / 2; let chroma_mb_y = mb_y / 2;
-                                let chw = part_w.max(2) / 2; let chh = part_h.max(2) / 2;
-                                let mut cb_pred = vec![0u8; chw * chh]; let mut cr_pred_buf = vec![0u8; chw * chh];
-                                inter_pred::chroma_mc(&ref_pic.u, cw, (height/2) as usize, (chroma_mb_x + cx_off) as i32, (chroma_mb_y + cy_off) as i32, mv[0] as i32, mv[1] as i32, chw, chh, &mut cb_pred);
-                                inter_pred::chroma_mc(&ref_pic.v, cw, (height/2) as usize, (chroma_mb_x + cx_off) as i32, (chroma_mb_y + cy_off) as i32, mv[0] as i32, mv[1] as i32, chw, chh, &mut cr_pred_buf);
-                                for r in 0..chh { for c in 0..chw {
-                                    frame.u[(chroma_mb_y + cy_off + r) * cw + chroma_mb_x + cx_off + c] = cb_pred[r * chw + c];
-                                    frame.v[(chroma_mb_y + cy_off + r) * cw + chroma_mb_x + cx_off + c] = cr_pred_buf[r * chw + c];
-                                }}
+                                let cx_off = px_off / 2;
+                                let cy_off = py_off / 2;
+                                let chroma_mb_x = mb_x / 2;
+                                let chroma_mb_y = mb_y / 2;
+                                let chw = part_w.max(2) / 2;
+                                let chh = part_h.max(2) / 2;
+                                let mut cb_pred = vec![0u8; chw * chh];
+                                let mut cr_pred_buf = vec![0u8; chw * chh];
+                                inter_pred::chroma_mc(
+                                    &ref_pic.u, cw, (height / 2) as usize,
+                                    (chroma_mb_x + cx_off) as i32, (chroma_mb_y + cy_off) as i32,
+                                    mv[0] as i32, mv[1] as i32, chw, chh, &mut cb_pred,
+                                );
+                                inter_pred::chroma_mc(
+                                    &ref_pic.v, cw, (height / 2) as usize,
+                                    (chroma_mb_x + cx_off) as i32, (chroma_mb_y + cy_off) as i32,
+                                    mv[0] as i32, mv[1] as i32, chw, chh, &mut cr_pred_buf,
+                                );
+                                for r in 0..chh {
+                                    for c in 0..chw {
+                                        frame.u[(chroma_mb_y + cy_off + r) * cw + chroma_mb_x + cx_off + c] =
+                                            cb_pred[r * chw + c];
+                                        frame.v[(chroma_mb_y + cy_off + r) * cw + chroma_mb_x + cx_off + c] =
+                                            cr_pred_buf[r * chw + c];
+                                    }
+                                }
                             }
                         }
 
                         // Residual (inter uses CBP_INTER_TABLE equivalent from CABAC)
-                        let left_cbp_raw = if !mb_idx.is_multiple_of(mb_width as usize) { mb_cbp[mb_idx - 1] } else { 0x00Fu16 };
-                        let top_cbp_raw = if mb_idx >= mb_width as usize { mb_cbp[mb_idx - mb_width as usize] } else { 0x00Fu16 };
-                        let left_cbp = ((left_cbp_raw & 0x7F0) | (left_cbp_raw & 2) | (((left_cbp_raw >> 2) & 2) << 2)) as u8;
+                        let left_cbp_raw = if !mb_idx.is_multiple_of(mb_width as usize) {
+                            mb_cbp[mb_idx - 1]
+                        } else {
+                            0x00Fu16
+                        };
+                        let top_cbp_raw = if mb_idx >= mb_width as usize {
+                            mb_cbp[mb_idx - mb_width as usize]
+                        } else {
+                            0x00Fu16
+                        };
+                        let left_cbp = ((left_cbp_raw & 0x7F0)
+                            | (left_cbp_raw & 2)
+                            | (((left_cbp_raw >> 2) & 2) << 2)) as u8;
                         let top_cbp = top_cbp_raw as u8;
                         let cbp_luma = cr.decode_cbp_luma(st, left_cbp, top_cbp);
                         let left_cbp_c = ((left_cbp_raw >> 4) & 3) as u8;
@@ -552,40 +1345,69 @@ impl Decoder {
                                         dequant_4x4_full(&mut block_coeffs, qp_y, &pps.scaling_list_4x4[3]);
                                         inverse_dct_4x4(&mut block_coeffs);
                                         let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
-                                        for r in 0..4 { for c in 0..4 {
-                                            luma_residual[(blk_row + r) * 16 + blk_col + c] = block_coeffs[r * 4 + c];
-                                        }}
+                                        for r in 0..4 {
+                                            for c in 0..4 {
+                                                luma_residual[(blk_row + r) * 16 + blk_col + c] =
+                                                    block_coeffs[r * 4 + c];
+                                            }
+                                        }
                                     }
                                 }
                             }
                             // Add residual to prediction
-                            for r in 0..16 { for c in 0..16 {
-                                let val = (frame.y[(mb_y + r) * stride + mb_x + c] as i32 + luma_residual[r * 16 + c]).clamp(0, 255) as u8;
-                                frame.y[(mb_y + r) * stride + mb_x + c] = val;
-                            }}
+                            for r in 0..16 {
+                                for c in 0..16 {
+                                    let val = (frame.y[(mb_y + r) * stride + mb_x + c] as i32
+                                        + luma_residual[r * 16 + c])
+                                        .clamp(0, 255) as u8;
+                                    frame.y[(mb_y + r) * stride + mb_x + c] = val;
+                                }
+                            }
                         }
 
                         // Chroma residual
                         let qp_c = chroma_qp(qp_y, pps.chroma_qp_index_offset);
                         if cbp_chroma >= 1 {
-                            let mut chroma_dc_cb = [0i32; 4]; let mut chroma_dc_cr = [0i32; 4];
-                            let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize) { (mb_cbp[mb_idx - 1] >> 6) & 1 != 0 } else { false };
-                            let top_dc_nz = if mb_idx >= mb_width as usize { (mb_cbp[mb_idx - mb_width as usize] >> 6) & 1 != 0 } else { false };
+                            let mut chroma_dc_cb = [0i32; 4];
+                            let mut chroma_dc_cr = [0i32; 4];
+                            let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize) {
+                                (mb_cbp[mb_idx - 1] >> 6) & 1 != 0
+                            } else {
+                                false
+                            };
+                            let top_dc_nz = if mb_idx >= mb_width as usize {
+                                (mb_cbp[mb_idx - mb_width as usize] >> 6) & 1 != 0
+                            } else {
+                                false
+                            };
                             if cr.decode_coded_block_flag(st, 3, left_dc_nz, top_dc_nz) {
                                 let (coeffs, _) = cr.decode_residual_cabac(st, 3, 4);
-                                for (pos, val) in coeffs { chroma_dc_cb[pos] = val; }
+                                for (pos, val) in coeffs {
+                                    chroma_dc_cb[pos] = val;
+                                }
                                 mb_cbp[mb_idx] |= 0x40;
                             }
-                            let left_dc_cr = if !mb_idx.is_multiple_of(mb_width as usize) { (mb_cbp[mb_idx - 1] >> 7) & 1 != 0 } else { false };
-                            let top_dc_cr = if mb_idx >= mb_width as usize { (mb_cbp[mb_idx - mb_width as usize] >> 7) & 1 != 0 } else { false };
+                            let left_dc_cr = if !mb_idx.is_multiple_of(mb_width as usize) {
+                                (mb_cbp[mb_idx - 1] >> 7) & 1 != 0
+                            } else {
+                                false
+                            };
+                            let top_dc_cr = if mb_idx >= mb_width as usize {
+                                (mb_cbp[mb_idx - mb_width as usize] >> 7) & 1 != 0
+                            } else {
+                                false
+                            };
                             if cr.decode_coded_block_flag(st, 3, left_dc_cr, top_dc_cr) {
                                 let (coeffs, _) = cr.decode_residual_cabac(st, 3, 4);
-                                for (pos, val) in coeffs { chroma_dc_cr[pos] = val; }
+                                for (pos, val) in coeffs {
+                                    chroma_dc_cr[pos] = val;
+                                }
                                 mb_cbp[mb_idx] |= 0x80;
                             }
 
                             let chroma_width = (width / 2) as usize;
-                            let chroma_mb_x = mb_x / 2; let chroma_mb_y = mb_y / 2;
+                            let chroma_mb_x = mb_x / 2;
+                            let chroma_mb_y = mb_y / 2;
                             for (plane_dc, frame_plane, scale_idx) in [
                                 (&mut chroma_dc_cb, &mut frame.u, 4usize),
                                 (&mut chroma_dc_cr, &mut frame.v, 5usize),
@@ -595,16 +1417,25 @@ impl Decoder {
                                 dequant_chroma_dc(plane_dc, qp_c, chroma_scale[0]);
                                 let mut chroma_residual = [0i32; 64];
                                 for blk in 0..4 {
-                                    let blk_row = (blk / 2) * 4; let blk_col = (blk % 2) * 4;
+                                    let blk_row = (blk / 2) * 4;
+                                    let blk_col = (blk % 2) * 4;
                                     let mut block_raster = [0i32; 16];
                                     block_raster[0] = plane_dc[blk];
                                     if cbp_chroma >= 2 {
                                         let nc_arr = if scale_idx == 4 { &nc_cb } else { &nc_cr };
-                                        let left_nz = cabac_neighbor_nz_chroma(nc_arr, mb_idx, mb_width as usize, blk, true, false);
-                                        let top_nz = cabac_neighbor_nz_chroma(nc_arr, mb_idx, mb_width as usize, blk, false, false);
+                                        let left_nz = cabac_neighbor_nz_chroma(
+                                            nc_arr, mb_idx, mb_width as usize, blk, true, false,
+                                        );
+                                        let top_nz = cabac_neighbor_nz_chroma(
+                                            nc_arr, mb_idx, mb_width as usize, blk, false, false,
+                                        );
                                         if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                             let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
-                                            if scale_idx == 4 { nc_cb[mb_idx * 4 + blk] = tc; } else { nc_cr[mb_idx * 4 + blk] = tc; }
+                                            if scale_idx == 4 {
+                                                nc_cb[mb_idx * 4 + blk] = tc;
+                                            } else {
+                                                nc_cr[mb_idx * 4 + blk] = tc;
+                                            }
                                             for (pos, val) in coeffs {
                                                 let (r, c) = ZIGZAG_4X4[pos + 1];
                                                 block_raster[r * 4 + c] = val;
@@ -613,14 +1444,23 @@ impl Decoder {
                                         }
                                     }
                                     inverse_dct_4x4(&mut block_raster);
-                                    for r in 0..4 { for c in 0..4 {
-                                        chroma_residual[(blk_row + r) * 8 + blk_col + c] = block_raster[r * 4 + c];
-                                    }}
+                                    for r in 0..4 {
+                                        for c in 0..4 {
+                                            chroma_residual[(blk_row + r) * 8 + blk_col + c] =
+                                                block_raster[r * 4 + c];
+                                        }
+                                    }
                                 }
-                                for y in 0..8 { for x in 0..8 {
-                                    let val = (frame_plane[(chroma_mb_y + y) * chroma_width + chroma_mb_x + x] as i32 + chroma_residual[y * 8 + x]).clamp(0, 255) as u8;
-                                    frame_plane[(chroma_mb_y + y) * chroma_width + chroma_mb_x + x] = val;
-                                }}
+                                for y in 0..8 {
+                                    for x in 0..8 {
+                                        let val = (frame_plane[(chroma_mb_y + y) * chroma_width
+                                            + chroma_mb_x + x] as i32
+                                            + chroma_residual[y * 8 + x])
+                                            .clamp(0, 255) as u8;
+                                        frame_plane[(chroma_mb_y + y) * chroma_width
+                                            + chroma_mb_x + x] = val;
+                                    }
+                                }
                             }
                         }
 
@@ -792,38 +1632,70 @@ impl Decoder {
                     // Chroma prediction
                     let above_chroma_u = if mb_y > 0 {
                         let mut buf = [0u8; 8];
-                        buf.copy_from_slice(&frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8]);
+                        buf.copy_from_slice(
+                            &frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
+                                ..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8],
+                        );
                         Some(buf)
-                    } else { None };
+                    } else {
+                        None
+                    };
                     let left_chroma_u = if mb_x > 0 {
                         let mut buf = [0u8; 8];
-                        for (i, b) in buf.iter_mut().enumerate() { *b = frame.u[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1]; }
+                        for (i, b) in buf.iter_mut().enumerate() {
+                            *b = frame.u[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
+                        }
                         Some(buf)
-                    } else { None };
-                    let al_u = if mb_x > 0 && mb_y > 0 {
+                    } else {
+                        None
+                    };
+                    let above_left_u = if mb_x > 0 && mb_y > 0 {
                         Some(frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
-                    } else { None };
+                    } else {
+                        None
+                    };
 
                     let above_chroma_v = if mb_y > 0 {
                         let mut buf = [0u8; 8];
-                        buf.copy_from_slice(&frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8]);
+                        buf.copy_from_slice(
+                            &frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
+                                ..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8],
+                        );
                         Some(buf)
-                    } else { None };
+                    } else {
+                        None
+                    };
                     let left_chroma_v = if mb_x > 0 {
                         let mut buf = [0u8; 8];
-                        for (i, b) in buf.iter_mut().enumerate() { *b = frame.v[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1]; }
+                        for (i, b) in buf.iter_mut().enumerate() {
+                            *b = frame.v[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
+                        }
                         Some(buf)
-                    } else { None };
-                    let al_v = if mb_x > 0 && mb_y > 0 {
+                    } else {
+                        None
+                    };
+                    let above_left_v = if mb_x > 0 && mb_y > 0 {
                         Some(frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
-                    } else { None };
+                    } else {
+                        None
+                    };
 
                     let mut pred_u = [0u8; 64];
                     let mut pred_v = [0u8; 64];
-                    predict_chroma_8x8(intra_chroma_pred_mode, above_chroma_u.as_ref().map(|b| &b[..]),
-                        left_chroma_u.as_ref().map(|b| &b[..]), al_u, &mut pred_u);
-                    predict_chroma_8x8(intra_chroma_pred_mode, above_chroma_v.as_ref().map(|b| &b[..]),
-                        left_chroma_v.as_ref().map(|b| &b[..]), al_v, &mut pred_v);
+                    predict_chroma_8x8(
+                        intra_chroma_pred_mode,
+                        above_chroma_u.as_ref().map(|b| &b[..]),
+                        left_chroma_u.as_ref().map(|b| &b[..]),
+                        above_left_u,
+                        &mut pred_u,
+                    );
+                    predict_chroma_8x8(
+                        intra_chroma_pred_mode,
+                        above_chroma_v.as_ref().map(|b| &b[..]),
+                        left_chroma_v.as_ref().map(|b| &b[..]),
+                        above_left_v,
+                        &mut pred_v,
+                    );
 
                     // Chroma residual: DC + AC via CABAC
                     let mut chroma_dc_cb = [0i32; 4];
@@ -1056,33 +1928,69 @@ impl Decoder {
 
                     let above_chroma_u = if mb_y > 0 {
                         let mut buf = [0u8; 8];
-                        buf.copy_from_slice(&frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8]);
+                        buf.copy_from_slice(
+                            &frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
+                                ..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8],
+                        );
                         Some(buf)
-                    } else { None };
+                    } else {
+                        None
+                    };
                     let left_chroma_u = if mb_x > 0 {
                         let mut buf = [0u8; 8];
-                        for (i, b) in buf.iter_mut().enumerate() { *b = frame.u[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1]; }
+                        for (i, b) in buf.iter_mut().enumerate() {
+                            *b = frame.u[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
+                        }
                         Some(buf)
-                    } else { None };
-                    let al_u = if mb_x > 0 && mb_y > 0 { Some(frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1]) } else { None };
+                    } else {
+                        None
+                    };
+                    let above_left_u = if mb_x > 0 && mb_y > 0 {
+                        Some(frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
+                    } else {
+                        None
+                    };
                     let above_chroma_v = if mb_y > 0 {
                         let mut buf = [0u8; 8];
-                        buf.copy_from_slice(&frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8]);
+                        buf.copy_from_slice(
+                            &frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
+                                ..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8],
+                        );
                         Some(buf)
-                    } else { None };
+                    } else {
+                        None
+                    };
                     let left_chroma_v = if mb_x > 0 {
                         let mut buf = [0u8; 8];
-                        for (i, b) in buf.iter_mut().enumerate() { *b = frame.v[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1]; }
+                        for (i, b) in buf.iter_mut().enumerate() {
+                            *b = frame.v[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
+                        }
                         Some(buf)
-                    } else { None };
-                    let al_v = if mb_x > 0 && mb_y > 0 { Some(frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1]) } else { None };
+                    } else {
+                        None
+                    };
+                    let above_left_v = if mb_x > 0 && mb_y > 0 {
+                        Some(frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
+                    } else {
+                        None
+                    };
 
                     let mut pred_u = [0u8; 64];
                     let mut pred_v = [0u8; 64];
-                    predict_chroma_8x8(intra_chroma_pred_mode, above_chroma_u.as_ref().map(|b| &b[..]),
-                        left_chroma_u.as_ref().map(|b| &b[..]), al_u, &mut pred_u);
-                    predict_chroma_8x8(intra_chroma_pred_mode, above_chroma_v.as_ref().map(|b| &b[..]),
-                        left_chroma_v.as_ref().map(|b| &b[..]), al_v, &mut pred_v);
+                    predict_chroma_8x8(
+                        intra_chroma_pred_mode,
+                        above_chroma_u.as_ref().map(|b| &b[..]),
+                        left_chroma_u.as_ref().map(|b| &b[..]),
+                        above_left_u,
+                        &mut pred_u,
+                    );
+                    predict_chroma_8x8(
+                        intra_chroma_pred_mode,
+                        above_chroma_v.as_ref().map(|b| &b[..]),
+                        left_chroma_v.as_ref().map(|b| &b[..]),
+                        above_left_v,
+                        &mut pred_v,
+                    );
 
                     // Chroma residual
                     let mut chroma_dc_cb = [0i32; 4];
@@ -4186,5 +5094,11 @@ mod tests {
     fn test_cabac_p_slice() {
         // 32x32, 3 frames: CABAC IDR + 2 P-frames (100% P_L0_16x16)
         decode_multiframe_and_compare("cabac_p_test", 3, 32, 32);
+    }
+
+    #[test]
+    fn test_cabac_intra_in_p() {
+        // 64x64, 3 frames: CABAC IDR + 2 P-frames with 59% I16x16-in-P + 41% P_L0_16x16
+        decode_multiframe_and_compare("cabac_intra_p_test", 3, 64, 64);
     }
 }
