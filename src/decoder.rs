@@ -222,6 +222,8 @@ impl Decoder {
         let mut mb_skip = vec![false; total_mbs];
         // Track per-MB direct mode for B-slice CABAC mb_type context
         let mut mb_is_direct = vec![false; total_mbs];
+        // Track per-4x4-block MVD for CABAC amvd context (absolute MVD values)
+        let mut mvd_store = vec![[0i16; 2]; total_mbs * 16];
 
         let mut mb_idx = header.first_mb_in_slice as usize;
         while mb_idx < total_mbs {
@@ -380,6 +382,7 @@ impl Decoder {
                             _ => unreachable!(),
                         };
 
+                        let sub_mb_origins = [(0usize, 0usize), (0, 8), (8, 0), (8, 8)];
                         if is_p8x8 {
                             // Sub-MB types
                             let mut sub_mb_types = [0u32; 4];
@@ -389,15 +392,16 @@ impl Decoder {
                             // Parse ref_idx
                             let mut sub_ref = [0i8; 4];
                             if raw_mb_type == 3 {
-                                for sr in &mut sub_ref {
+                                for (smb, sr) in sub_ref.iter_mut().enumerate() {
                                     if header.num_ref_idx_l0_active > 1 {
-                                        let left_ref = -1i8; let top_ref = -1i8; // simplified
+                                        let (sy, sx) = sub_mb_origins[smb];
+                                        let (left_ref, top_ref) = cabac_neighbor_ref(
+                                            &ref_idx_store_l0, mb_idx, mb_width as usize, sy, sx);
                                         *sr = cr.decode_ref_idx(st, left_ref, top_ref);
                                     }
                                 }
                             }
-                            // Parse MVDs and reconstruct (reuse CAVLC P_8x8 logic)
-                            let sub_mb_origins = [(0usize, 0usize), (0, 8), (8, 0), (8, 8)];
+                            // Parse MVDs and reconstruct
                             for smb in 0..4 {
                                 let (sy, sx) = sub_mb_origins[smb];
                                 let ref_idx = sub_ref[smb];
@@ -410,7 +414,8 @@ impl Decoder {
                                 };
                                 for &(dx, dy, spw, sph) in &sub_parts_layout {
                                     let px = sx + dx; let py = sy + dy;
-                                    let amvd_x = 0u32; let amvd_y = 0u32; // simplified
+                                    let amvd_x = cabac_amvd(&mvd_store, mb_idx, mb_width as usize, py, px, 0);
+                                    let amvd_y = cabac_amvd(&mvd_store, mb_idx, mb_width as usize, py, px, 1);
                                     let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                                     let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
                                     let (mvp_x, mvp_y) = predict_mv_sub(
@@ -423,6 +428,7 @@ impl Decoder {
                                         if let Some(blk) = BLOCK_INDEX_TO_OFFSET.iter().position(|&(br, bc)| br / 4 == lr && bc / 4 == lc) {
                                             mv_store_l0[mb_idx * 16 + blk] = mv;
                                             ref_idx_store_l0[mb_idx * 16 + blk] = ref_idx;
+                                            mvd_store[mb_idx * 16 + blk] = [mvd_x, mvd_y];
                                         }
                                     }}
                                     // MC
@@ -453,14 +459,22 @@ impl Decoder {
                         } else {
                             // P_L0_16x16, P16x8, P8x16
                             let mut part_ref = [0i8; 2];
-                            for ref_entry in part_ref.iter_mut().take(num_parts) {
+                            for (p, ref_entry) in part_ref.iter_mut().enumerate().take(num_parts) {
                                 if header.num_ref_idx_l0_active > 1 {
-                                    let left_ref = -1i8; let top_ref = -1i8;
+                                    let (py_off, px_off) = match raw_mb_type {
+                                        1 => (p * 8, 0), 2 => (0, p * 8), _ => (0, 0),
+                                    };
+                                    let (left_ref, top_ref) = cabac_neighbor_ref(
+                                        &ref_idx_store_l0, mb_idx, mb_width as usize, py_off, px_off);
                                     *ref_entry = cr.decode_ref_idx(st, left_ref, top_ref);
                                 }
                             }
                             for p in 0..num_parts {
-                                let amvd_x = 0u32; let amvd_y = 0u32;
+                                let (py_off, px_off) = match raw_mb_type {
+                                    1 => (p * 8, 0), 2 => (0, p * 8), _ => (0, 0),
+                                };
+                                let amvd_x = cabac_amvd(&mvd_store, mb_idx, mb_width as usize, py_off, px_off, 0);
+                                let amvd_y = cabac_amvd(&mvd_store, mb_idx, mb_width as usize, py_off, px_off, 1);
                                 let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                                 let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
                                 let (mvp_x, mvp_y) = predict_mv(
@@ -468,14 +482,13 @@ impl Decoder {
                                     p, part_w, part_h, part_ref[p],
                                 );
                                 let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
-                                let (py_off, px_off) = match raw_mb_type {
-                                    1 => (p * 8, 0), 2 => (0, p * 8), _ => (0, 0),
-                                };
+                                // Store MV, ref, and MVD
                                 for r in (0..part_h).step_by(4) { for c in (0..part_w).step_by(4) {
                                     let lr = (py_off + r) / 4; let lc = (px_off + c) / 4;
                                     if let Some(blk) = BLOCK_INDEX_TO_OFFSET.iter().position(|&(br, bc)| br / 4 == lr && bc / 4 == lc) {
                                         mv_store_l0[mb_idx * 16 + blk] = mv;
                                         ref_idx_store_l0[mb_idx * 16 + blk] = part_ref[p];
+                                        mvd_store[mb_idx * 16 + blk] = [mvd_x, mvd_y];
                                     }
                                 }}
                                 // MC
@@ -3362,6 +3375,100 @@ fn get_mv_neighbor_above_left(
 /// CABAC coded_block_flag neighbor lookup for luma 4x4 blocks.
 /// Returns whether the left (is_left=true) or top (is_left=false) neighbor has non-zero coeffs.
 /// For unavailable neighbors with intra MBs, returns true (CABAC uses NZ=64 for unavailable intra).
+/// CABAC amvd (absolute MVD sum) for MVD context selection.
+/// Returns sum of absolute MVD values from left and top neighbors for a partition.
+fn cabac_amvd(
+    mvd_store: &[[i16; 2]], mb_idx: usize, mb_width: usize,
+    py: usize, px: usize, comp: usize, // comp: 0=x, 1=y
+) -> u32 {
+    // Left neighbor
+    let left_mvd = if px > 0 {
+        // Within MB: block to the left at (py, px-4)
+        let lr = py / 4;
+        let lc = (px - 4) / 4;
+        BLOCK_INDEX_TO_OFFSET.iter()
+            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+            .map(|blk| mvd_store[mb_idx * 16 + blk][comp].unsigned_abs() as u32)
+            .unwrap_or(0)
+    } else if !mb_idx.is_multiple_of(mb_width) {
+        // Left MB: rightmost column, same row
+        let lr = py / 4;
+        let lc = 3; // col 12-15
+        BLOCK_INDEX_TO_OFFSET.iter()
+            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+            .map(|blk| mvd_store[(mb_idx - 1) * 16 + blk][comp].unsigned_abs() as u32)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    // Top neighbor
+    let top_mvd = if py > 0 {
+        let lr = (py - 4) / 4;
+        let lc = px / 4;
+        BLOCK_INDEX_TO_OFFSET.iter()
+            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+            .map(|blk| mvd_store[mb_idx * 16 + blk][comp].unsigned_abs() as u32)
+            .unwrap_or(0)
+    } else if mb_idx >= mb_width {
+        let lr = 3;
+        let lc = px / 4;
+        BLOCK_INDEX_TO_OFFSET.iter()
+            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+            .map(|blk| mvd_store[(mb_idx - mb_width) * 16 + blk][comp].unsigned_abs() as u32)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    left_mvd + top_mvd
+}
+
+/// CABAC ref_idx neighbor context for a partition.
+/// Returns (left_ref, top_ref) from neighbor blocks.
+fn cabac_neighbor_ref(
+    ref_idx_store: &[i8], mb_idx: usize, mb_width: usize,
+    py: usize, px: usize,
+) -> (i8, i8) {
+    let left_ref = if px > 0 {
+        let lr = py / 4;
+        let lc = (px - 4) / 4;
+        BLOCK_INDEX_TO_OFFSET.iter()
+            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+            .map(|blk| ref_idx_store[mb_idx * 16 + blk])
+            .unwrap_or(-1)
+    } else if !mb_idx.is_multiple_of(mb_width) {
+        let lr = py / 4;
+        let lc = 3;
+        BLOCK_INDEX_TO_OFFSET.iter()
+            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+            .map(|blk| ref_idx_store[(mb_idx - 1) * 16 + blk])
+            .unwrap_or(-1)
+    } else {
+        -1
+    };
+
+    let top_ref = if py > 0 {
+        let lr = (py - 4) / 4;
+        let lc = px / 4;
+        BLOCK_INDEX_TO_OFFSET.iter()
+            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+            .map(|blk| ref_idx_store[mb_idx * 16 + blk])
+            .unwrap_or(-1)
+    } else if mb_idx >= mb_width {
+        let lr = 3;
+        let lc = px / 4;
+        BLOCK_INDEX_TO_OFFSET.iter()
+            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+            .map(|blk| ref_idx_store[(mb_idx - mb_width) * 16 + blk])
+            .unwrap_or(-1)
+    } else {
+        -1
+    };
+
+    (left_ref, top_ref)
+}
+
 fn cabac_neighbor_nz_luma(
     nc_luma: &[u8], mb_idx: usize, mb_width: usize, blk: usize, is_left: bool,
     is_intra: bool,
