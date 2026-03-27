@@ -813,7 +813,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_init_path_equivalence() {
         // Test that both CABAC init paths produce the same decoded bits.
         // Use actual stream data from the test file.

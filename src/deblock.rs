@@ -479,7 +479,7 @@ mod tests {
     #[test]
     fn test_strong_filter_step_edge() {
         // Sharp step: p-side=0, q-side=255
-        let (p0, p1, p2, q0, q1, q2) =
+        let (p0, _p1, _p2, q0, _q1, _q2) =
             strong_filter(0, 0, 0, 0, 255, 255, 255, 255, 255, 18);
         // small_gap = |0-255| < (255/4 + 2) = 65 → false
         // ap = |0 - 0| = 0 < 18 → true, but small_gap is false
@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn test_normal_filter() {
         // Small step across edge with bS=3, moderate QP
-        let (p0, p1, q0, q1) = normal_filter(120, 120, 120, 130, 130, 130, 1, 18);
+        let (p0, _p1, q0, _q1) = normal_filter(120, 120, 120, 130, 130, 130, 1, 18);
         // ap = 0 < 18, aq = 0 < 18 → tc = 1 + 1 + 1 = 3
         // delta = ((10*4 + 120-130 + 4) >> 3) clamped to [-3,3]
         //       = (40 - 10 + 4) >> 3 = 34 >> 3 = 4, clamped to 3

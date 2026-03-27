@@ -1,5 +1,4 @@
 use rust_h264::nal::{parse_annex_b, NalUnitType};
-use rust_h264::bitstream::BitstreamReader;
 use rust_h264::sps::parse_sps;
 use rust_h264::pps::parse_pps;
 use rust_h264::slice::parse_slice_header;
@@ -17,7 +16,7 @@ fn main() {
     println!("IDR RBSP length: {}", idr.rbsp.len());
     
     // Parse slice header
-    let (header, mut reader) = parse_slice_header(&idr.rbsp, &sps, &pps, NalUnitType::SliceIdr, 3).unwrap();
+    let (_header, mut reader) = parse_slice_header(&idr.rbsp, &sps, &pps, NalUnitType::SliceIdr, 3).unwrap();
     let pos = reader.position();
     println!("After slice header: pos=({}, {})", pos.0, pos.1);
     
@@ -27,7 +26,7 @@ fn main() {
     println!("After mb_type={}: pos=({}, {})", mb_type, pos.0, pos.1);
     
     // Read 16 prediction modes
-    for blk in 0..16 {
+    for _blk in 0..16 {
         let prev_flag = reader.read_bit().unwrap();
         if prev_flag == 0 {
             let _rem = reader.read_bits(3).unwrap();
