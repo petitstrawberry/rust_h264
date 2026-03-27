@@ -399,12 +399,85 @@ impl Decoder {
                     predict_chroma_8x8(intra_chroma_pred_mode, above_chroma_v.as_ref().map(|b| &b[..]),
                         left_chroma_v.as_ref().map(|b| &b[..]), al_v, &mut pred_v);
 
-                    // Chroma residual: DC + AC (simplified — skip CABAC chroma residual for now)
-                    // TODO: decode chroma DC and AC with CABAC
-                    for y in 0..8 {
-                        for x in 0..8 {
-                            frame.u[(chroma_mb_y + y) * chroma_width + chroma_mb_x + x] = pred_u[y * 8 + x];
-                            frame.v[(chroma_mb_y + y) * chroma_width + chroma_mb_x + x] = pred_v[y * 8 + x];
+                    // Chroma residual: DC + AC via CABAC
+                    let mut chroma_dc_cb = [0i32; 4];
+                    let mut chroma_dc_cr = [0i32; 4];
+                    if cbp_chroma >= 1 {
+                        // Chroma DC: cat=3, max_coeff=4
+                        // coded_block_flag for chroma DC
+                        if cr.decode_coded_block_flag(st, 3, false, false) {
+                            let (coeffs, _tc) = cr.decode_residual_cabac(st, 3, 4);
+                            for (pos, val) in coeffs { chroma_dc_cb[pos] = val; }
+                        }
+                        if cr.decode_coded_block_flag(st, 3, false, false) {
+                            let (coeffs, _tc) = cr.decode_residual_cabac(st, 3, 4);
+                            for (pos, val) in coeffs { chroma_dc_cr[pos] = val; }
+                        }
+                    }
+                    let mut chroma_ac_cb = [[0i32; 15]; 4];
+                    let mut chroma_ac_cr = [[0i32; 15]; 4];
+                    if cbp_chroma >= 2 {
+                        // Chroma AC: cat=4, max_coeff=15
+                        for blk in 0..4 {
+                            if cr.decode_coded_block_flag(st, 4, false, false) {
+                                let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
+                                nc_cb[mb_idx * 4 + blk] = tc;
+                                for (pos, val) in coeffs {
+                                    chroma_ac_cb[blk][pos] = val;
+                                }
+                            }
+                        }
+                        for blk in 0..4 {
+                            if cr.decode_coded_block_flag(st, 4, false, false) {
+                                let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
+                                nc_cr[mb_idx * 4 + blk] = tc;
+                                for (pos, val) in coeffs {
+                                    chroma_ac_cr[blk][pos] = val;
+                                }
+                            }
+                        }
+                    }
+
+                    // Reconstruct chroma for each plane
+                    for (plane_dc, plane_ac, pred_plane, frame_plane, scale_idx) in [
+                        (&mut chroma_dc_cb, &chroma_ac_cb, &pred_u, &mut frame.u, 1usize),
+                        (&mut chroma_dc_cr, &chroma_ac_cr, &pred_v, &mut frame.v, 2usize),
+                    ] {
+                        let chroma_scale = &pps.scaling_list_4x4[scale_idx];
+                        if cbp_chroma >= 1 {
+                            inverse_hadamard_2x2(plane_dc);
+                            dequant_chroma_dc(plane_dc, _qp_c, chroma_scale[0]);
+                        }
+
+                        let mut chroma_residual = [0i32; 64];
+                        for blk in 0..4 {
+                            let blk_row = (blk / 2) * 4;
+                            let blk_col = (blk % 2) * 4;
+                            let mut block_raster = [0i32; 16];
+                            block_raster[0] = plane_dc[blk];
+                            if cbp_chroma >= 2 {
+                                for scan_idx in 0..15 {
+                                    let (r, c) = ZIGZAG_4X4[scan_idx + 1];
+                                    block_raster[r * 4 + c] = plane_ac[blk][scan_idx];
+                                }
+                                dequant_4x4_ac_raster(&mut block_raster, _qp_c, chroma_scale);
+                            }
+                            inverse_dct_4x4(&mut block_raster);
+                            for r in 0..4 {
+                                for c in 0..4 {
+                                    chroma_residual[(blk_row + r) * 8 + blk_col + c] =
+                                        block_raster[r * 4 + c];
+                                }
+                            }
+                        }
+
+                        for y in 0..8 {
+                            for x in 0..8 {
+                                let val = (pred_plane[y * 8 + x] as i32
+                                    + chroma_residual[y * 8 + x])
+                                    .clamp(0, 255) as u8;
+                                frame_plane[(chroma_mb_y + y) * chroma_width + chroma_mb_x + x] = val;
+                            }
                         }
                     }
 
