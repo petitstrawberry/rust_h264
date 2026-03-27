@@ -31,7 +31,7 @@ This is a Rust project using Cargo:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding functional. B_Skip, B_Direct_16x16, B_L0_16x16, B_L1_16x16, and B_Bi_16x16 implemented with both spatial and temporal direct modes. B-slice 16x8/8x16/8x8 sub-partitions not yet implemented.
+I-frame, P-frame, and B-frame decoding fully functional with CAVLC. CABAC I-frame decoding implemented and byte-exact for I4x4 and I16x16. CABAC P/B-slice decoding not yet integrated.
 
 ### Completed
 
@@ -87,6 +87,15 @@ I-frame, P-frame, and B-frame decoding functional. B_Skip, B_Direct_16x16, B_L0_
 - Total zeros and run-before VLC tables
 - O(1) VLC decode via flat peek-indexed lookup tables (built once via `OnceLock`)
 
+**CABAC Entropy Decoding** (`src/cabac.rs`, `src/cabac_tables.rs`)
+- Binary arithmetic decoder: `get_cabac`, `get_cabac_bypass`, `get_cabac_terminate`
+- Context state initialization from QP with 1024 contexts (I-slice + 3 P/B variants)
+- Syntax element decoders: mb_type, skip, CBP, pred modes, ref_idx, MVD, sub_mb_type, QP delta
+- Residual coefficient decoder: significance map + coefficient levels with 8-node state machine
+- I4x4 and I16x16 integration: byte-exact output for single-MB, ±1 IDCT tolerance for multi-MB
+- Per-MB neighbor tracking: CBF (luma LEFT[16]/TOP[16] + chroma), CBP (u16 with DC coded flags),
+  chroma pred mode, I16x16 flag — all with proper unavailable-intra defaults (0x7CF)
+
 **NAL Unit Parsing** (`src/nal.rs`)
 - Annex B start code detection (3-byte and 4-byte)
 - Emulation prevention byte removal with zero-copy fast path (`Cow::Borrowed`)
@@ -117,19 +126,20 @@ I-frame, P-frame, and B-frame decoding functional. B_Skip, B_Direct_16x16, B_L0_
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (57 tests)
-- Intra: single_frame, multi_mb_frame, i4x4_frame, deblock_frame, mixed_i4x4_frame,
-  gradient_48x32, edges (QP=10/35), smooth_80x48, noise_16x16, scaling_test
-- P-slice: p_frame_test (IDR+P), p_skip_heavy (50% skip), p_multi_frame (IDR+3P
-  with P16x16/P16x8/8x16/intra-in-P), p_8x8_test (82.8% P_8x8 + sub-8x4),
-  p_multiref (IDR+3P with ref=3, multi-reference P8x16)
-- B-slice: b_l0_l1_test (100% B_L0_16x16), b_bi_test (33% B_Bi + 67% B_L1 +
-  intra-in-B), b_skip_test (100% B_Skip, spatial direct), b_temporal_test
-  (100% B_Skip, temporal direct)
+**Test Coverage** (70 tests)
+- Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
+  mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
+  noise_16x16, scaling_test
+- P-slice: p_frame_test, p_skip_heavy, p_multi_frame, p_8x8_test, p_multiref
+- B-slice: b_l0_l1_test, b_bi_test, b_skip_test (spatial direct),
+  b_temporal_test, b_parts_test (16x8/8x16/8x8), b_multi_test, b_hier_test
+  (hierarchical B-frames with ref_pic_list_modification)
+- CABAC: cabac_i4x4_test (byte-exact), cabac_i16x16_test (byte-exact),
+  cabac_mixed_test (multi-MB mixed I4x4/I16x16, ±1 IDCT tolerance)
 
 ### Not Yet Implemented
 
-- B-slice 16x8, 8x16, B_8x8 partitions
-- Multi-B-frame sequences (consecutive B-frames)
+- CABAC P/B-slice decoding
 - MBAFF/interlaced mode
-- CABAC entropy decoding
+- Weighted prediction
+- Long-term reference support (MMCO ops 2-6)

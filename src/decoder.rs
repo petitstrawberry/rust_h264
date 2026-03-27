@@ -211,8 +211,11 @@ impl Decoder {
         let mut last_qp_delta_nonzero = false; // for CABAC QP delta context
         // Track whether each MB is I16x16 (for CABAC mb_type context selection)
         let mut is_i16x16 = vec![false; total_mbs];
-        // Track per-MB CBP for CABAC neighbor context (luma 4 bits + chroma 2 bits)
-        let mut mb_cbp = vec![0u8; total_mbs];
+        // Track per-MB CBP for CABAC neighbor context.
+        // Layout matches H.264 cbp_table: bits 0-3 = luma 8x8 blocks,
+        // bits 4-5 = chroma CBP, bits 6-7 = chroma DC coded,
+        // bits 8+ = luma DC coded. Unavailable intra default = 0x7CF.
+        let mut mb_cbp = vec![0u16; total_mbs];
         // Track per-MB chroma prediction mode for CABAC neighbor context
         let mut mb_chroma_pred = vec![0u8; total_mbs];
 
@@ -279,20 +282,24 @@ impl Decoder {
                     mb_chroma_pred[mb_idx] = intra_chroma_pred_mode;
 
                     // CBP with proper neighbor context
-                    // Unavailable intra neighbors use 0x7CF:
-                    // luma bits: 0x0F (all set), chroma bits: (0x7CF>>4)&3 = 0
                     let unavail_cbp: u16 = 0x7CF;
-                    let left_cbp_full = if !mb_idx.is_multiple_of(mb_width as usize) {
-                        mb_cbp[mb_idx - 1] as u16
+                    let left_cbp_raw = if !mb_idx.is_multiple_of(mb_width as usize) {
+                        mb_cbp[mb_idx - 1]
                     } else { unavail_cbp };
-                    let top_cbp_full = if mb_idx >= mb_width as usize {
-                        mb_cbp[mb_idx - mb_width as usize] as u16
+                    let top_cbp_raw = if mb_idx >= mb_width as usize {
+                        mb_cbp[mb_idx - mb_width as usize]
                     } else { unavail_cbp };
-                    let cbp_luma = cr.decode_cbp_luma(st, left_cbp_full as u8, top_cbp_full as u8);
-                    let left_cbp_c = ((left_cbp_full >> 4) & 3) as u8;
-                    let top_cbp_c = ((top_cbp_full >> 4) & 3) as u8;
+                    // For left: extract right-side 8x8 block bits (bits 1,3 of luma)
+                    // plus upper bits (chroma + DC flags)
+                    let left_cbp = ((left_cbp_raw & 0x7F0)
+                        | (left_cbp_raw & 2)
+                        | (((left_cbp_raw >> 2) & 2) << 2)) as u8;
+                    let top_cbp = top_cbp_raw as u8;
+                    let cbp_luma = cr.decode_cbp_luma(st, left_cbp, top_cbp);
+                    let left_cbp_c = ((left_cbp_raw >> 4) & 3) as u8;
+                    let top_cbp_c = ((top_cbp_raw >> 4) & 3) as u8;
                     let cbp_chroma = cr.decode_cbp_chroma(st, left_cbp_c, top_cbp_c);
-                    mb_cbp[mb_idx] = cbp_luma | (cbp_chroma << 4);
+                    mb_cbp[mb_idx] = (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
 
                     let qp_y = if cbp_luma != 0 || cbp_chroma != 0 {
                         let delta = cr.decode_mb_qp_delta(st, last_qp_delta_nonzero);
@@ -429,17 +436,28 @@ impl Decoder {
                     let mut chroma_dc_cb = [0i32; 4];
                     let mut chroma_dc_cr = [0i32; 4];
                     if cbp_chroma >= 1 {
-                        // Chroma DC: cat=3, max_coeff=4
-                        // For unavailable intra neighbors, CBF context uses nz=true
-                        let dc_left_nz = mb_idx.checked_rem(mb_width as usize) == Some(0);
-                        let dc_top_nz = mb_idx < mb_width as usize;
-                        if cr.decode_coded_block_flag(st, 3, dc_left_nz, dc_top_nz) {
+                        // Chroma DC CBF context: uses bits 6-7 of neighbor cbp_table
+                        let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize) {
+                            (mb_cbp[mb_idx - 1] >> 6) & 1 != 0
+                        } else { true }; // unavailable intra: 0x7CF bit 6 = 1
+                        let top_dc_nz = if mb_idx >= mb_width as usize {
+                            (mb_cbp[mb_idx - mb_width as usize] >> 6) & 1 != 0
+                        } else { true };
+                        if cr.decode_coded_block_flag(st, 3, left_dc_nz, top_dc_nz) {
                             let (coeffs, _tc) = cr.decode_residual_cabac(st, 3, 4);
                             for (pos, val) in coeffs { chroma_dc_cb[pos] = val; }
+                            mb_cbp[mb_idx] |= 0x40; // set Cb DC coded flag
                         }
-                        if cr.decode_coded_block_flag(st, 3, dc_left_nz, dc_top_nz) {
+                        let left_dc_nz_cr = if !mb_idx.is_multiple_of(mb_width as usize) {
+                            (mb_cbp[mb_idx - 1] >> 7) & 1 != 0
+                        } else { true };
+                        let top_dc_nz_cr = if mb_idx >= mb_width as usize {
+                            (mb_cbp[mb_idx - mb_width as usize] >> 7) & 1 != 0
+                        } else { true };
+                        if cr.decode_coded_block_flag(st, 3, left_dc_nz_cr, top_dc_nz_cr) {
                             let (coeffs, _tc) = cr.decode_residual_cabac(st, 3, 4);
                             for (pos, val) in coeffs { chroma_dc_cr[pos] = val; }
+                            mb_cbp[mb_idx] |= 0x80; // set Cr DC coded flag
                         }
                     }
                     let mut chroma_ac_cb = [[0i32; 15]; 4];
@@ -543,12 +561,18 @@ impl Decoder {
                     let qp_c = chroma_qp(qp_y, pps.chroma_qp_index_offset);
 
                     // Luma DC: cat=0, 16 coefficients
+                    // CBF context uses bit 8 of neighbor cbp_table (luma DC coded flag)
                     let mut luma_dc = [0i32; 16];
-                    let dc_left_nz = mb_idx.checked_rem(mb_width as usize) == Some(0);
-                    let dc_top_nz = mb_idx < mb_width as usize;
+                    let dc_left_nz = if !mb_idx.is_multiple_of(mb_width as usize) {
+                        (mb_cbp[mb_idx - 1] >> 8) & 1 != 0
+                    } else { true }; // unavailable intra: 0x7CF bit 8 = 1 (0x7CF = 0b0111_1100_1111)
+                    let dc_top_nz = if mb_idx >= mb_width as usize {
+                        (mb_cbp[mb_idx - mb_width as usize] >> 8) & 1 != 0
+                    } else { true };
                     if cr.decode_coded_block_flag(st, 0, dc_left_nz, dc_top_nz) {
                         let (coeffs, _tc) = cr.decode_residual_cabac(st, 0, 16);
                         for (pos, val) in coeffs { luma_dc[pos] = val; }
+                        mb_cbp[mb_idx] |= 0x100; // set luma DC coded flag
                     }
 
                     // Luma AC: cat=1, 15 coefficients per block
@@ -671,15 +695,27 @@ impl Decoder {
                     let mut chroma_dc_cb = [0i32; 4];
                     let mut chroma_dc_cr = [0i32; 4];
                     if cbp_chroma >= 1 {
-                        let dc_left = mb_idx.checked_rem(mb_width as usize) == Some(0);
-                        let dc_top = mb_idx < mb_width as usize;
-                        if cr.decode_coded_block_flag(st, 3, dc_left, dc_top) {
+                        let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize) {
+                            (mb_cbp[mb_idx - 1] >> 6) & 1 != 0
+                        } else { true };
+                        let top_dc_nz = if mb_idx >= mb_width as usize {
+                            (mb_cbp[mb_idx - mb_width as usize] >> 6) & 1 != 0
+                        } else { true };
+                        if cr.decode_coded_block_flag(st, 3, left_dc_nz, top_dc_nz) {
                             let (coeffs, _tc) = cr.decode_residual_cabac(st, 3, 4);
                             for (pos, val) in coeffs { chroma_dc_cb[pos] = val; }
+                            mb_cbp[mb_idx] |= 0x40;
                         }
-                        if cr.decode_coded_block_flag(st, 3, dc_left, dc_top) {
+                        let left_dc_nz_cr = if !mb_idx.is_multiple_of(mb_width as usize) {
+                            (mb_cbp[mb_idx - 1] >> 7) & 1 != 0
+                        } else { true };
+                        let top_dc_nz_cr = if mb_idx >= mb_width as usize {
+                            (mb_cbp[mb_idx - mb_width as usize] >> 7) & 1 != 0
+                        } else { true };
+                        if cr.decode_coded_block_flag(st, 3, left_dc_nz_cr, top_dc_nz_cr) {
                             let (coeffs, _tc) = cr.decode_residual_cabac(st, 3, 4);
                             for (pos, val) in coeffs { chroma_dc_cr[pos] = val; }
+                            mb_cbp[mb_idx] |= 0x80;
                         }
                     }
                     let mut chroma_ac_cb = [[0i32; 15]; 4];
@@ -743,7 +779,8 @@ impl Decoder {
                     }
 
                     mb_info[mb_idx] = MbInfo { mb_type: MbType::Intra, qp_y };
-                    mb_cbp[mb_idx] = cbp_luma | (cbp_chroma << 4);
+                    // CBP already partially set during DC/AC decode (bits 6-7)
+                    mb_cbp[mb_idx] |= (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
                 } else {
                     // I_PCM via CABAC
                     return Err(DecodeError::Unsupported("CABAC I_PCM not yet integrated"));
@@ -3650,5 +3687,11 @@ mod tests {
     fn test_cabac_i16x16() {
         // 16x16 single-MB CABAC I16x16 DC frame (Main profile)
         decode_and_compare("cabac_i16x16_test", 16, 16);
+    }
+
+    #[test]
+    fn test_cabac_mixed() {
+        // 32x32 multi-MB CABAC I-frame with mixed I4x4/I16x16 (Main profile)
+        decode_multiframe_and_compare("cabac_mixed_test", 1, 32, 32);
     }
 }
