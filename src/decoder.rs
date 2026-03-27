@@ -264,7 +264,7 @@ impl Decoder {
                     // TODO: track neighbor chroma pred modes for proper context
                     let intra_chroma_pred_mode = cr.decode_chroma_pred_mode(st, 0, 0);
 
-                    // CBP — TODO: track neighbor CBP for proper context
+                    // CBP
                     let cbp_luma = cr.decode_cbp_luma(st, 0x0F, 0x0F);
                     let cbp_chroma = cr.decode_cbp_chroma(st, 0, 0);
 
@@ -289,15 +289,14 @@ impl Decoder {
                         if cbp_luma & (1 << (blk / 4)) != 0 {
                             // CBF neighbor lookup for CABAC context
                             let left_nz_blk = cabac_neighbor_nz_luma(
-                                &nc_luma, mb_idx, mb_width as usize, blk, true);
+                                &nc_luma, mb_idx, mb_width as usize, blk, true, true);
                             let top_nz_blk = cabac_neighbor_nz_luma(
-                                &nc_luma, mb_idx, mb_width as usize, blk, false);
+                                &nc_luma, mb_idx, mb_width as usize, blk, false, true);
 
                             let cbf = cr.decode_coded_block_flag(st, 2, left_nz_blk, top_nz_blk);
                             if cbf {
                                 let (coeffs, tc) = cr.decode_residual_cabac(st, 2, 16);
                                 nc_luma[mb_idx * 16 + blk] = tc;
-                                // Place coefficients in scan order
                                 for (pos, val) in &coeffs {
                                     let (r, c) = ZIGZAG_4X4[*pos];
                                     block_coeffs[r * 4 + c] = *val;
@@ -405,12 +404,14 @@ impl Decoder {
                     let mut chroma_dc_cr = [0i32; 4];
                     if cbp_chroma >= 1 {
                         // Chroma DC: cat=3, max_coeff=4
-                        // coded_block_flag for chroma DC
-                        if cr.decode_coded_block_flag(st, 3, false, false) {
+                        // For unavailable intra neighbors, CBF context uses nz=true
+                        let dc_left_nz = mb_idx.checked_rem(mb_width as usize) == Some(0);
+                        let dc_top_nz = mb_idx < mb_width as usize;
+                        if cr.decode_coded_block_flag(st, 3, dc_left_nz, dc_top_nz) {
                             let (coeffs, _tc) = cr.decode_residual_cabac(st, 3, 4);
                             for (pos, val) in coeffs { chroma_dc_cb[pos] = val; }
                         }
-                        if cr.decode_coded_block_flag(st, 3, false, false) {
+                        if cr.decode_coded_block_flag(st, 3, dc_left_nz, dc_top_nz) {
                             let (coeffs, _tc) = cr.decode_residual_cabac(st, 3, 4);
                             for (pos, val) in coeffs { chroma_dc_cr[pos] = val; }
                         }
@@ -421,9 +422,9 @@ impl Decoder {
                         // Chroma AC: cat=4, max_coeff=15
                         for blk in 0..4 {
                             let left_nz = cabac_neighbor_nz_chroma(
-                                &nc_cb, mb_idx, mb_width as usize, blk, true);
+                                &nc_cb, mb_idx, mb_width as usize, blk, true, true);
                             let top_nz = cabac_neighbor_nz_chroma(
-                                &nc_cb, mb_idx, mb_width as usize, blk, false);
+                                &nc_cb, mb_idx, mb_width as usize, blk, false, true);
                             if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                 let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
                                 nc_cb[mb_idx * 4 + blk] = tc;
@@ -434,9 +435,9 @@ impl Decoder {
                         }
                         for blk in 0..4 {
                             let left_nz = cabac_neighbor_nz_chroma(
-                                &nc_cr, mb_idx, mb_width as usize, blk, true);
+                                &nc_cr, mb_idx, mb_width as usize, blk, true, true);
                             let top_nz = cabac_neighbor_nz_chroma(
-                                &nc_cr, mb_idx, mb_width as usize, blk, false);
+                                &nc_cr, mb_idx, mb_width as usize, blk, false, true);
                             if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                 let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
                                 nc_cr[mb_idx * 4 + blk] = tc;
@@ -2691,8 +2692,10 @@ fn get_mv_neighbor_above_left(
 /// If either neighbor is unavailable, predicted mode is DC (2).
 /// CABAC coded_block_flag neighbor lookup for luma 4x4 blocks.
 /// Returns whether the left (is_left=true) or top (is_left=false) neighbor has non-zero coeffs.
+/// For unavailable neighbors with intra MBs, returns true (CABAC uses NZ=64 for unavailable intra).
 fn cabac_neighbor_nz_luma(
     nc_luma: &[u8], mb_idx: usize, mb_width: usize, blk: usize, is_left: bool,
+    is_intra: bool,
 ) -> bool {
     // Neighbor block indices: within-MB (>=0) or cross-MB (negative, encoded as -(blk+1))
     #[rustfmt::skip]
@@ -2709,10 +2712,10 @@ fn cabac_neighbor_nz_luma(
         // Cross-MB: decode the encoded block index
         let neighbor_blk = (-(neighbor + 1)) as usize;
         let neighbor_mb = if is_left {
-            if mb_idx.checked_rem(mb_width) == Some(0) { return false; }
+            if mb_idx.checked_rem(mb_width) == Some(0) { return is_intra; }
             mb_idx - 1
         } else {
-            if mb_idx < mb_width { return false; }
+            if mb_idx < mb_width { return is_intra; }
             mb_idx - mb_width
         };
         nc_luma[neighbor_mb * 16 + neighbor_blk] > 0
@@ -2722,6 +2725,7 @@ fn cabac_neighbor_nz_luma(
 /// CABAC coded_block_flag neighbor lookup for chroma 4x4 blocks (4 blocks per MB).
 fn cabac_neighbor_nz_chroma(
     nc_chroma: &[u8], mb_idx: usize, mb_width: usize, blk: usize, is_left: bool,
+    is_intra: bool,
 ) -> bool {
     // Chroma block layout: 0=(0,0), 1=(0,4), 2=(4,0), 3=(4,4)
     // Left neighbors: blk0→left_mb blk1, blk1→blk0, blk2→left_mb blk3, blk3→blk2
@@ -2748,10 +2752,10 @@ fn cabac_neighbor_nz_chroma(
         nc_chroma[mb_idx * 4 + nb] > 0
     } else if let Some(nb) = cross_mb_blk {
         let neighbor_mb = if is_left {
-            if mb_idx.checked_rem(mb_width) == Some(0) { return false; }
+            if mb_idx.checked_rem(mb_width) == Some(0) { return is_intra; }
             mb_idx - 1
         } else {
-            if mb_idx < mb_width { return false; }
+            if mb_idx < mb_width { return is_intra; }
             mb_idx - mb_width
         };
         nc_chroma[neighbor_mb * 4 + nb] > 0

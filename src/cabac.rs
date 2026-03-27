@@ -178,21 +178,15 @@ pub struct CabacReader<'a> {
 
 impl<'a> CabacReader<'a> {
     /// Initialize the CABAC decoder from RBSP data at a given byte position.
-    /// Spec 9.3.1.2: codIRange = 510, codIOffset = read_bits(9).
-    /// Internal representation matches common implementations: low stores
-    /// codIOffset shifted left by (CABAC_BITS + 1) bits with buffered data.
+    /// Matches the standard CABAC initialization with 16-bit buffering.
     pub fn new(data: &'a [u8], byte_offset: usize) -> Self {
-        // Read first two bytes to get codIOffset (9 bits) plus buffer
-        let b0 = data[byte_offset] as u32;
-        let b1 = data[byte_offset + 1] as u32;
-        // low = (b0 << 8 | b1) << 10, but split as b0 << 18 + b1 << 10
-        let mut low = (b0 << 18) | (b1 << 10);
-        let mut pos = byte_offset + 2;
-        // Pre-fill additional buffer bits from byte 2
-        // The +2 is the initial offset for the renormalization counter
-        low = low.wrapping_add((data[pos] as u32) << 2);
-        low = low.wrapping_add(2);
-        pos += 1;
+        let mut low: u32 = (data[byte_offset] as u32) << 18;
+        low = low.wrapping_add((data[byte_offset + 1] as u32) << 10);
+        let pos = byte_offset + 2;
+        // Use the 2-byte aligned initialization: add fixed offset (1 << 9)
+        // instead of reading a third byte. The first refill fetches actual
+        // data, producing correct decoded results.
+        low = low.wrapping_add(1 << 9);
         CabacReader {
             low,
             range: 0x1FE,
@@ -407,7 +401,6 @@ impl CabacReader<'_> {
                 let last = self.get_cabac(&mut state[last_base + pos]);
                 if last != 0 {
                     found_last = true;
-                    eprintln!();
                     break;
                 }
             }
@@ -817,6 +810,52 @@ mod tests {
         // MPS transition from state 126 should go to state 126
         assert_eq!(MLPS_STATE[128 + 126], 126);
         assert_eq!(MLPS_STATE[128 + 127], 127);
+    }
+
+    #[test]
+    #[test]
+    fn test_init_path_equivalence() {
+        // Test that both CABAC init paths produce the same decoded bits.
+        // Use actual stream data from the test file.
+        let h264_data = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/b_skip_test.h264"
+        ));
+        if h264_data.is_err() { return; } // Skip if test file not found
+        let h264_data = h264_data.unwrap();
+        let nals = crate::nal::parse_annex_b(&h264_data);
+        // Find first slice NAL with enough data
+        for nal in &nals {
+            if nal.rbsp.len() < 20 { continue; }
+            // Try both init paths starting at byte 3
+            let offset = 3.min(nal.rbsp.len() - 10);
+
+            let mut low1: u32 = (nal.rbsp[offset] as u32) << 18;
+            low1 = low1.wrapping_add((nal.rbsp[offset + 1] as u32) << 10);
+            low1 = low1.wrapping_add(1 << 9);
+            let mut r1 = CabacReader { low: low1, range: 0x1FE, data: &nal.rbsp, pos: offset + 2 };
+
+            let mut low2: u32 = (nal.rbsp[offset] as u32) << 18;
+            low2 = low2.wrapping_add((nal.rbsp[offset + 1] as u32) << 10);
+            low2 = low2.wrapping_add((nal.rbsp[offset + 2] as u32) << 2);
+            low2 = low2.wrapping_add(2);
+            let mut r2 = CabacReader { low: low2, range: 0x1FE, data: &nal.rbsp, pos: offset + 3 };
+
+            let states = super::init_cabac_states(20, true, 0);
+            let mut s1 = states;
+            let mut s2 = states;
+
+            let mut match_count = 0;
+            for i in 0..100 {
+                let ctx = 3 + (i % 10); // Use various context indices
+                let b1 = r1.get_cabac(&mut s1[ctx]);
+                let b2 = r2.get_cabac(&mut s2[ctx]);
+                if b1 == b2 { match_count += 1; }
+            }
+            // Both paths should produce identical bits
+            assert_eq!(match_count, 100, "Init paths diverged: {}/100 bits matched", match_count);
+            return;
+        }
     }
 
     #[test]
