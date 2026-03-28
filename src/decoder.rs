@@ -5064,14 +5064,33 @@ impl WeightContext<'_> {
     }
 }
 
-/// Motion vector prediction for P_Skip macroblocks.
-/// Uses the standard median predictor (same as P_L0_16x16 with ref_idx=0).
+/// Motion vector prediction for P_Skip macroblocks (spec 8.4.1.1).
+///
+/// Returns (0, 0) if either neighbor A (left) or B (above) is unavailable
+/// or has ref_idx=0 with zero MV. Otherwise uses the standard median predictor.
 fn predict_mv_skip(
     mv_store_l0: &[[i16; 2]],
     ref_idx_store_l0: &[i8],
     mb_idx: usize,
     mb_width: usize,
 ) -> (i16, i16) {
+    let a = get_mv_neighbor_left(mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, 0, 0);
+    let b = get_mv_neighbor_above(mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, 0, 0);
+
+    // Spec 8.4.1.1: if A is unavailable or (refA==0 && mvA==(0,0)), OR
+    // if B is unavailable or (refB==0 && mvB==(0,0)), then skip MV = (0,0).
+    let a_zero = match a {
+        None => true,
+        Some((mv, ri)) => ri == 0 && mv[0] == 0 && mv[1] == 0,
+    };
+    let b_zero = match b {
+        None => true,
+        Some((mv, ri)) => ri == 0 && mv[0] == 0 && mv[1] == 0,
+    };
+    if a_zero || b_zero {
+        return (0, 0);
+    }
+
     predict_mv(mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, 0, 16, 16, 0)
 }
 
