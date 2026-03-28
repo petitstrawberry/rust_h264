@@ -536,10 +536,10 @@ impl CabacReader<'_> {
     /// Decode B-slice mb_type.
     /// Returns: 0=B_Direct_16x16, 1-22=B inter types, 23+=intra.
     pub fn decode_b_mb_type(&mut self, state: &mut [u8; 1024],
-                             left_is_direct: bool, top_is_direct: bool) -> u32 {
+                             left_not_direct: bool, top_not_direct: bool) -> u32 {
         let mut ctx = 27usize;
-        if !left_is_direct { ctx += 1; }
-        if !top_is_direct { ctx += 1; }
+        if left_not_direct { ctx += 1; }
+        if top_not_direct { ctx += 1; }
 
         if self.get_cabac(&mut state[ctx]) == 0 {
             return 0; // B_Direct_16x16

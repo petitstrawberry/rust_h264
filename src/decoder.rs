@@ -5998,7 +5998,8 @@ mod tests {
 
     #[test]
     fn test_cabac_b_slice() {
-        // 32x32, 15 frames: CABAC IDR + B-frames + P-frames (spatial direct, B_Skip, B_L1)
+        // 32x32, 15 frames: CABAC B-frames with B_L0_16x16, B_L1_16x16, B_Skip
+        // (--no-deblock, spatial direct), byte-exact against FFmpeg
         decode_multiframe_and_compare("cabac_b_test", 15, 32, 32);
     }
 }

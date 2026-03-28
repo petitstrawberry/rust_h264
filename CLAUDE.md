@@ -31,7 +31,7 @@ This is a Rust project using Cargo:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. CABAC I-frame byte-exact for I4x4 and I16x16. CABAC P-slice inter decoded (P_Skip, P_L0_16x16/16x8/8x16, P_8x8, intra-in-P). CABAC B-slice decoded (B_Skip, B_Direct_16x16, B_L0/L1/Bi_16x16, B 16x8/8x16, B_8x8 with all sub_mb_types).
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. All CABAC syntax element values verified byte-exact against FFmpeg for I4x4, I16x16, P-slice inter (Skip, L0_16x16/16x8/8x16, 8x8, intra-in-P), and B-slice inter (Skip, Direct_16x16, L0/L1/Bi_16x16, 16x8/8x16, 8x8 with all sub_mb_types). Pixel output byte-exact against FFmpeg for B_L0/L1_16x16 + B_Skip test streams.
 
 ### Completed
 
