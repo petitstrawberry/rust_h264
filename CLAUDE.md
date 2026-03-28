@@ -126,7 +126,10 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 
 **Deblocking Filter** (`src/deblock.rs`)
 - Strong filter (bS=4) and normal filter (bS=1-3)
-- Inter-aware boundary strength derivation
+- Full spec 8.7.2.1 per-4x4-block boundary strength derivation:
+  bS=4 (intra MB edge), bS=3 (intra internal), bS=2 (non-zero coefficients),
+  bS=1 (different refs or |MV_diff|>=4), bS=0 (none). B-slice dual-list
+  straight+swapped comparison.
 - Applied automatically after slice decode
 
 **Error Handling** (`src/error.rs`)
@@ -151,4 +154,3 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 
 - MBAFF/interlaced mode
 - Long-term reference support (MMCO ops 2-6)
-- Full deblocking bS derivation (inter-aware per-4x4-block checks)
