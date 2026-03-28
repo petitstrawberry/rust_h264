@@ -54,7 +54,19 @@ fn main() {
 
     // Sort by (idr_period, poc) for display order within each IDR period.
     // Decode order is used as a stable tiebreaker for equal POCs.
+    // Note: for POC type 2, POC wraps without IDR, so decode_order is
+    // essential to keep frames from different wrap cycles in order.
     frames.sort_by_key(|&(idr, poc, order, _)| (idr, poc, order));
+
+    // Detect POC wrap: if sorting moved non-adjacent decode orders together,
+    // fall back to decode order within each IDR period to avoid interleaving.
+    let has_poc_wrap = frames.windows(2).any(|w| {
+        w[0].0 == w[1].0 && w[0].1 == w[1].1 && w[0].2 + 1 != w[1].2
+    });
+    if has_poc_wrap {
+        // POC wraps detected — sort by decode order within each IDR period
+        frames.sort_by_key(|&(idr, _poc, order, _)| (idr, order));
+    }
 
     let mut output = Vec::new();
     for (_, _, _, frame) in &frames {
