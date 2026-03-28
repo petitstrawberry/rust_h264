@@ -104,17 +104,37 @@ impl Decoder {
         // Build reference picture lists
         let max_pic_num = 1u32 << (sps.log2_max_frame_num_minus4 + 4);
         let mut ref_pic_list = if is_p_slice {
-            self.dpb.short_term_ref_list()
+            let mut refs = self.dpb.short_term_ref_list();
+            // Pad ref list if shorter than num_ref_idx_l0_active (spec 8.2.4.2.1:
+            // if the list is shorter, duplicate the last entry to fill)
+            if !refs.is_empty() {
+                while refs.len() < header.num_ref_idx_l0_active as usize {
+                    refs.push(refs.last().unwrap().clone());
+                }
+            }
+            refs
         } else {
             vec![]
         };
         let mut _ref_pic_list_l0 = if is_b_slice {
-            self.dpb.ref_list_l0_b(current_poc)
+            let mut refs = self.dpb.ref_list_l0_b(current_poc);
+            if !refs.is_empty() {
+                while refs.len() < header.num_ref_idx_l0_active as usize {
+                    refs.push(refs.last().unwrap().clone());
+                }
+            }
+            refs
         } else {
             vec![]
         };
         let mut _ref_pic_list_l1 = if is_b_slice {
-            self.dpb.ref_list_l1_b(current_poc)
+            let mut refs = self.dpb.ref_list_l1_b(current_poc);
+            if !refs.is_empty() {
+                while refs.len() < header.num_ref_idx_l1_active as usize {
+                    refs.push(refs.last().unwrap().clone());
+                }
+            }
+            refs
         } else {
             vec![]
         };
@@ -385,11 +405,11 @@ impl Decoder {
                                 let mut p0 = [0u8; 256];
                                 let mut p1 = [0u8; 256];
                                 inter_pred::luma_mc(
-                                    &_ref_pic_list_l0[ri_l0 as usize], mb_x as i32, mb_y as i32,
+                                    ref_pic_safe(&_ref_pic_list_l0, ri_l0), mb_x as i32, mb_y as i32,
                                     mv_l0[0] as i32, mv_l0[1] as i32, 16, 16, &mut p0,
                                 );
                                 inter_pred::luma_mc(
-                                    &_ref_pic_list_l1[ri_l1 as usize], mb_x as i32, mb_y as i32,
+                                    ref_pic_safe(&_ref_pic_list_l1, ri_l1), mb_x as i32, mb_y as i32,
                                     mv_l1[0] as i32, mv_l1[1] as i32, 16, 16, &mut p1,
                                 );
                                 wctx.apply_bi(&p0, &p1, &mut luma_pred,
@@ -397,7 +417,7 @@ impl Decoder {
                                 );
                             } else if pl0 {
                                 inter_pred::luma_mc(
-                                    &_ref_pic_list_l0[ri_l0 as usize], mb_x as i32, mb_y as i32,
+                                    ref_pic_safe(&_ref_pic_list_l0, ri_l0), mb_x as i32, mb_y as i32,
                                     mv_l0[0] as i32, mv_l0[1] as i32, 16, 16, &mut luma_pred,
                                 );
                                 if use_weight == 1 {
@@ -405,7 +425,7 @@ impl Decoder {
                                 }
                             } else if pl1 {
                                 inter_pred::luma_mc(
-                                    &_ref_pic_list_l1[ri_l1 as usize], mb_x as i32, mb_y as i32,
+                                    ref_pic_safe(&_ref_pic_list_l1, ri_l1), mb_x as i32, mb_y as i32,
                                     mv_l1[0] as i32, mv_l1[1] as i32, 16, 16, &mut luma_pred,
                                 );
                                 if use_weight == 1 {
@@ -424,8 +444,8 @@ impl Decoder {
                             for plane_idx in 0..2 {
                                 let mut chroma_pred = [0u8; 64];
                                 if pl0 && pl1 {
-                                    let ref_l0 = &_ref_pic_list_l0[ri_l0 as usize];
-                                    let ref_l1 = &_ref_pic_list_l1[ri_l1 as usize];
+                                    let ref_l0 = ref_pic_safe(&_ref_pic_list_l0, ri_l0);
+                                    let ref_l1 = ref_pic_safe(&_ref_pic_list_l1, ri_l1);
                                     let cr0 = if plane_idx == 0 { &ref_l0.u } else { &ref_l0.v };
                                     let cr1 = if plane_idx == 0 { &ref_l1.u } else { &ref_l1.v };
                                     let mut c0 = [0u8; 64];
@@ -1229,7 +1249,7 @@ impl Decoder {
                                         }
                                     }
                                     // MC
-                                    let ref_pic = &ref_pic_list[ref_idx as usize];
+                                    let ref_pic = &ref_pic_list[(ref_idx as usize).min(ref_pic_list.len() - 1)];
                                     let mut luma_pred = vec![0u8; spw * sph];
                                     inter_pred::luma_mc(
                                         ref_pic, (mb_x + px) as i32, (mb_y + py) as i32,
@@ -1252,7 +1272,7 @@ impl Decoder {
                             let cy = mb_y / 2;
                             for smb in 0..4 {
                                 let (sy, sx) = sub_mb_origins[smb];
-                                let ref_pic = &ref_pic_list[sub_ref[smb] as usize];
+                                let ref_pic = &ref_pic_list[(sub_ref[smb] as usize).min(ref_pic_list.len() - 1)];
                                 let blk_idx = BLOCK_INDEX_TO_OFFSET.iter()
                                     .position(|&(br, bc)| br == sy && bc == sx)
                                     .unwrap_or(0);
@@ -1333,7 +1353,7 @@ impl Decoder {
                                 }
 
                                 // MC
-                                let ref_pic = &ref_pic_list[part_ref[p] as usize];
+                                                let ref_pic = &ref_pic_list[(part_ref[p] as usize).min(ref_pic_list.len() - 1)];
                                 let mut luma_pred = vec![0u8; part_w * part_h];
                                 inter_pred::luma_mc(
                                     ref_pic, (mb_x + px_off) as i32, (mb_y + py_off) as i32,
@@ -2182,13 +2202,13 @@ impl Decoder {
                                 let mut p0 = vec![0u8; sp.w * sp.h];
                                 let mut p1 = vec![0u8; sp.w * sp.h];
                                 inter_pred::luma_mc(
-                                    &_ref_pic_list_l0[sp.ref_idx_l0 as usize],
+                                    ref_pic_safe(&_ref_pic_list_l0, sp.ref_idx_l0),
                                     abs_x as i32, abs_y as i32,
                                     sp.mv_l0[0] as i32, sp.mv_l0[1] as i32,
                                     sp.w, sp.h, &mut p0,
                                 );
                                 inter_pred::luma_mc(
-                                    &_ref_pic_list_l1[sp.ref_idx_l1 as usize],
+                                    ref_pic_safe(&_ref_pic_list_l1, sp.ref_idx_l1),
                                     abs_x as i32, abs_y as i32,
                                     sp.mv_l1[0] as i32, sp.mv_l1[1] as i32,
                                     sp.w, sp.h, &mut p1,
@@ -2200,7 +2220,7 @@ impl Decoder {
                                 );
                             } else if sp.pred_l0 {
                                 inter_pred::luma_mc(
-                                    &_ref_pic_list_l0[sp.ref_idx_l0 as usize],
+                                    ref_pic_safe(&_ref_pic_list_l0, sp.ref_idx_l0),
                                     abs_x as i32, abs_y as i32,
                                     sp.mv_l0[0] as i32, sp.mv_l0[1] as i32,
                                     sp.w, sp.h, &mut luma_pred,
@@ -2210,7 +2230,7 @@ impl Decoder {
                                 }
                             } else if sp.pred_l1 {
                                 inter_pred::luma_mc(
-                                    &_ref_pic_list_l1[sp.ref_idx_l1 as usize],
+                                    ref_pic_safe(&_ref_pic_list_l1, sp.ref_idx_l1),
                                     abs_x as i32, abs_y as i32,
                                     sp.mv_l1[0] as i32, sp.mv_l1[1] as i32,
                                     sp.w, sp.h, &mut luma_pred,
@@ -2238,8 +2258,8 @@ impl Decoder {
                             for plane_idx in 0..2 {
                                 let mut chroma_pred = vec![0u8; chw * chh];
                                 if sp.pred_l0 && sp.pred_l1 {
-                                    let ref_l0 = &_ref_pic_list_l0[sp.ref_idx_l0 as usize];
-                                    let ref_l1 = &_ref_pic_list_l1[sp.ref_idx_l1 as usize];
+                                    let ref_l0 = ref_pic_safe(&_ref_pic_list_l0, sp.ref_idx_l0);
+                                    let ref_l1 = ref_pic_safe(&_ref_pic_list_l1, sp.ref_idx_l1);
                                     let cr0 = if plane_idx == 0 { &ref_l0.u } else { &ref_l0.v };
                                     let cr1 = if plane_idx == 0 { &ref_l1.u } else { &ref_l1.v };
                                     let mut c0 = vec![0u8; chw * chh];
@@ -2260,7 +2280,7 @@ impl Decoder {
                                         true, plane_idx,
                                     );
                                 } else if sp.pred_l0 {
-                                    let ref_pic = &_ref_pic_list_l0[sp.ref_idx_l0 as usize];
+                                    let ref_pic = ref_pic_safe(&_ref_pic_list_l0, sp.ref_idx_l0);
                                     let plane = if plane_idx == 0 { &ref_pic.u } else { &ref_pic.v };
                                     inter_pred::chroma_mc(
                                         plane, cw, chroma_h, cx as i32, cy as i32,
@@ -2271,7 +2291,7 @@ impl Decoder {
                                         wctx.apply_uni(&mut chroma_pred, 0, sp.ref_idx_l0 as usize, true, plane_idx);
                                     }
                                 } else if sp.pred_l1 {
-                                    let ref_pic = &_ref_pic_list_l1[sp.ref_idx_l1 as usize];
+                                    let ref_pic = ref_pic_safe(&_ref_pic_list_l1, sp.ref_idx_l1);
                                     let plane = if plane_idx == 0 { &ref_pic.u } else { &ref_pic.v };
                                     inter_pred::chroma_mc(
                                         plane, cw, chroma_h, cx as i32, cy as i32,
@@ -3170,12 +3190,12 @@ impl Decoder {
                             let mut p0 = [0u8; 256];
                             let mut p1 = [0u8; 256];
                             inter_pred::luma_mc(
-                                &_ref_pic_list_l0[ri_l0 as usize],
+                                ref_pic_safe(&_ref_pic_list_l0, ri_l0),
                                 mb_x as i32, mb_y as i32,
                                 mv_l0[0] as i32, mv_l0[1] as i32, 16, 16, &mut p0,
                             );
                             inter_pred::luma_mc(
-                                &_ref_pic_list_l1[ri_l1 as usize],
+                                ref_pic_safe(&_ref_pic_list_l1, ri_l1),
                                 mb_x as i32, mb_y as i32,
                                 mv_l1[0] as i32, mv_l1[1] as i32, 16, 16, &mut p1,
                             );
@@ -3184,7 +3204,7 @@ impl Decoder {
                                 );
                         } else if pl0 {
                             inter_pred::luma_mc(
-                                &_ref_pic_list_l0[ri_l0 as usize],
+                                ref_pic_safe(&_ref_pic_list_l0, ri_l0),
                                 mb_x as i32, mb_y as i32,
                                 mv_l0[0] as i32, mv_l0[1] as i32, 16, 16, &mut luma_pred,
                             );
@@ -3193,7 +3213,7 @@ impl Decoder {
                             }
                         } else if pl1 {
                             inter_pred::luma_mc(
-                                &_ref_pic_list_l1[ri_l1 as usize],
+                                ref_pic_safe(&_ref_pic_list_l1, ri_l1),
                                 mb_x as i32, mb_y as i32,
                                 mv_l1[0] as i32, mv_l1[1] as i32, 16, 16, &mut luma_pred,
                             );
@@ -3216,8 +3236,8 @@ impl Decoder {
                             if pl0 && pl1 {
                                 let mut c0 = [0u8; 64];
                                 let mut c1 = [0u8; 64];
-                                let ref_l0 = &_ref_pic_list_l0[ri_l0 as usize];
-                                let ref_l1 = &_ref_pic_list_l1[ri_l1 as usize];
+                                let ref_l0 = ref_pic_safe(&_ref_pic_list_l0, ri_l0);
+                                let ref_l1 = ref_pic_safe(&_ref_pic_list_l1, ri_l1);
                                 let cr0 = if plane_idx == 0 { &ref_l0.u } else { &ref_l0.v };
                                 let cr1 = if plane_idx == 0 { &ref_l1.u } else { &ref_l1.v };
                                 inter_pred::chroma_mc(cr0, cw, chroma_h, cx as i32, cy as i32, mv_l0[0] as i32, mv_l0[1] as i32, 8, 8, &mut c0);
@@ -3863,13 +3883,13 @@ impl Decoder {
                         let mut pred_l0 = vec![0u8; sp.w * sp.h];
                         let mut pred_l1 = vec![0u8; sp.w * sp.h];
                         inter_pred::luma_mc(
-                            &_ref_pic_list_l0[sp.ref_idx_l0 as usize],
+                            ref_pic_safe(&_ref_pic_list_l0, sp.ref_idx_l0),
                             (mb_x + sp.x) as i32, (mb_y + sp.y) as i32,
                             sp.mv_l0[0] as i32, sp.mv_l0[1] as i32,
                             sp.w, sp.h, &mut pred_l0,
                         );
                         inter_pred::luma_mc(
-                            &_ref_pic_list_l1[sp.ref_idx_l1 as usize],
+                            ref_pic_safe(&_ref_pic_list_l1, sp.ref_idx_l1),
                             (mb_x + sp.x) as i32, (mb_y + sp.y) as i32,
                             sp.mv_l1[0] as i32, sp.mv_l1[1] as i32,
                             sp.w, sp.h, &mut pred_l1,
@@ -3881,7 +3901,7 @@ impl Decoder {
                         );
                     } else if sp.pred_l0 {
                         inter_pred::luma_mc(
-                            &_ref_pic_list_l0[sp.ref_idx_l0 as usize],
+                            ref_pic_safe(&_ref_pic_list_l0, sp.ref_idx_l0),
                             (mb_x + sp.x) as i32, (mb_y + sp.y) as i32,
                             sp.mv_l0[0] as i32, sp.mv_l0[1] as i32,
                             sp.w, sp.h, &mut luma_pred,
@@ -3891,7 +3911,7 @@ impl Decoder {
                         }
                     } else if sp.pred_l1 {
                         inter_pred::luma_mc(
-                            &_ref_pic_list_l1[sp.ref_idx_l1 as usize],
+                            ref_pic_safe(&_ref_pic_list_l1, sp.ref_idx_l1),
                             (mb_x + sp.x) as i32, (mb_y + sp.y) as i32,
                             sp.mv_l1[0] as i32, sp.mv_l1[1] as i32,
                             sp.w, sp.h, &mut luma_pred,
@@ -3988,8 +4008,8 @@ impl Decoder {
 
                         let mut part_pred = vec![0u8; cw * ch];
                         if sp.pred_l0 && sp.pred_l1 {
-                            let ref_l0 = &_ref_pic_list_l0[sp.ref_idx_l0 as usize];
-                            let ref_l1 = &_ref_pic_list_l1[sp.ref_idx_l1 as usize];
+                            let ref_l0 = ref_pic_safe(&_ref_pic_list_l0, sp.ref_idx_l0);
+                            let ref_l1 = ref_pic_safe(&_ref_pic_list_l1, sp.ref_idx_l1);
                             let cr_l0 = if scale_idx == 4 { &ref_l0.u } else { &ref_l0.v };
                             let cr_l1 = if scale_idx == 4 { &ref_l1.u } else { &ref_l1.v };
                             let mut c_l0 = vec![0u8; cw * ch];
@@ -4245,7 +4265,7 @@ impl Decoder {
 
                 // Motion compensate and add residual for each sub-partition
                 for sp in &sub_parts {
-                    let ref_pic = &ref_pic_list[sp.ref_idx as usize];
+                    let ref_pic = &ref_pic_list[(sp.ref_idx as usize).min(ref_pic_list.len() - 1)];
                     let mut luma_pred = vec![0u8; sp.w * sp.h];
                     inter_pred::luma_mc(
                         ref_pic,
@@ -4340,7 +4360,7 @@ impl Decoder {
                             let cw = sp.w.max(2) / 2; // min chroma block = 1, but MC needs >= 1
                             let ch = sp.h.max(2) / 2;
                             if cw == 0 || ch == 0 { continue; }
-                            let part_ref_pic = &ref_pic_list[sp.ref_idx as usize];
+                            let part_ref_pic = &ref_pic_list[(sp.ref_idx as usize).min(ref_pic_list.len() - 1)];
                             let chroma_ref = if scale_idx == 4 {
                                 &part_ref_pic.u
                             } else {
@@ -4940,6 +4960,12 @@ fn predict_mv_sub(
     xs.sort();
     ys.sort();
     (xs[1], ys[1])
+}
+
+/// Safely index a ref pic list, clamping out-of-range indices to the last entry.
+#[inline]
+fn ref_pic_safe(list: &[Rc<DecodedPicture>], idx: i8) -> &Rc<DecodedPicture> {
+    &list[(idx as usize).min(list.len() - 1)]
 }
 
 /// Bundles weighted prediction parameters for a slice, avoiding long argument lists.
