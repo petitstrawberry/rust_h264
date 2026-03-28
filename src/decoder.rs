@@ -217,13 +217,17 @@ impl Decoder {
         let mut ref_idx_store_l1 = vec![-1i8; total_mbs * 16];
 
         // Per-MB metadata for the deblocking filter
-        let mut mb_info = vec![
-            MbInfo {
-                mb_type: MbType::Intra,
-                qp_y: slice_qp,
-            };
-            total_mbs
-        ];
+        let default_mb_info = MbInfo {
+            mb_type: MbType::Intra,
+            qp_y: slice_qp,
+            mv_l0: [[0; 2]; 16],
+            mv_l1: [[0; 2]; 16],
+            ref_idx_l0: [-1; 16],
+            ref_idx_l1: [-1; 16],
+            nnz: [false; 16],
+            list_count: if is_b_slice { 2 } else if is_p_slice { 1 } else { 0 },
+        };
+        let mut mb_info = vec![default_mb_info; total_mbs];
 
         // CABAC or CAVLC?
         let use_cabac = pps.entropy_coding_mode_flag;
@@ -463,7 +467,7 @@ impl Decoder {
                             }
                             mb_is_direct[mb_idx] = true;
                         }
-                        mb_info[mb_idx] = MbInfo { mb_type: MbType::Inter, qp_y: prev_mb_qp };
+                        mb_info[mb_idx] = MbInfo { mb_type: MbType::Inter, qp_y: prev_mb_qp, ..Default::default() };
                         mb_idx += 1;
                         continue;
                     }
@@ -822,7 +826,7 @@ impl Decoder {
                                     }
                                 }
                             }
-                            mb_info[mb_idx] = MbInfo { mb_type: MbType::Intra, qp_y };
+                            mb_info[mb_idx] = MbInfo { mb_type: MbType::Intra, qp_y, ..Default::default() };
                         } else if i_mb_type <= 24 {
                             // I16x16 in P/B
                             is_i16x16[mb_idx] = true;
@@ -1145,7 +1149,7 @@ impl Decoder {
                                 }
                             }
 
-                            mb_info[mb_idx] = MbInfo { mb_type: MbType::Intra, qp_y };
+                            mb_info[mb_idx] = MbInfo { mb_type: MbType::Intra, qp_y, ..Default::default() };
                         } else {
                             return Err(DecodeError::Unsupported("CABAC I_PCM in P/B not supported"));
                         }
@@ -1548,7 +1552,7 @@ impl Decoder {
                             }
                         }
 
-                        mb_info[mb_idx] = MbInfo { mb_type: MbType::Inter, qp_y };
+                        mb_info[mb_idx] = MbInfo { mb_type: MbType::Inter, qp_y, ..Default::default() };
                         mb_idx += 1;
                         continue;
                     } else {
@@ -2456,7 +2460,7 @@ impl Decoder {
                             }
                         }
 
-                        mb_info[mb_idx] = MbInfo { mb_type: MbType::Inter, qp_y };
+                        mb_info[mb_idx] = MbInfo { mb_type: MbType::Inter, qp_y, ..Default::default() };
                         mb_idx += 1;
                         continue;
                     }
@@ -2789,7 +2793,7 @@ impl Decoder {
                         }
                     }
 
-                    mb_info[mb_idx] = MbInfo { mb_type: MbType::Intra, qp_y };
+                    mb_info[mb_idx] = MbInfo { mb_type: MbType::Intra, qp_y, ..Default::default() };
                     // I4x4 is NOT I16x16 for CABAC context
                 } else if mb_type <= 24 {
                     // I16x16 via CABAC
@@ -3068,7 +3072,7 @@ impl Decoder {
                         }
                     }
 
-                    mb_info[mb_idx] = MbInfo { mb_type: MbType::Intra, qp_y };
+                    mb_info[mb_idx] = MbInfo { mb_type: MbType::Intra, qp_y, ..Default::default() };
                     // CBP already partially set during DC/AC decode (bits 6-7)
                     mb_cbp[mb_idx] |= (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
                 } else {
@@ -3246,6 +3250,7 @@ impl Decoder {
                     mb_info[mb_idx] = MbInfo {
                         mb_type: MbType::Inter,
                         qp_y: prev_mb_qp,
+                        ..Default::default()
                     };
                     mb_idx += 1;
                     continue;
@@ -4044,6 +4049,7 @@ impl Decoder {
                 mb_info[mb_idx] = MbInfo {
                     mb_type: MbType::Inter,
                     qp_y,
+                    ..Default::default()
                 };
                 mb_idx += 1;
                 continue;
@@ -4199,7 +4205,6 @@ impl Decoder {
                 let cbp = CBP_INTER_TABLE[cbp_code];
                 let cbp_luma = cbp & 0x0F;
                 let cbp_chroma = cbp >> 4;
-
                 let qp_y = if cbp_luma != 0 || cbp_chroma != 0 {
                     let mb_qp_delta = reader.read_se()?;
                     ((prev_mb_qp + mb_qp_delta + 52) % 52 + 52) % 52
@@ -4374,6 +4379,7 @@ impl Decoder {
                 mb_info[mb_idx] = MbInfo {
                     mb_type: MbType::Inter,
                     qp_y,
+                    ..Default::default()
                 };
                 mb_idx += 1;
                 continue;
@@ -4668,6 +4674,7 @@ impl Decoder {
                 mb_info[mb_idx] = MbInfo {
                     mb_type: MbType::Ipcm,
                     qp_y: 0,
+                    ..Default::default()
                 };
                 prev_mb_qp = 0;
                 continue;
@@ -4678,6 +4685,7 @@ impl Decoder {
             mb_info[mb_idx] = MbInfo {
                 mb_type: MbType::Intra,
                 qp_y,
+                ..Default::default()
             };
 
             // Intra MBs keep ref_idx=-1 (default) and mv=(0,0) (default).
@@ -4809,6 +4817,20 @@ impl Decoder {
                 }
             }
             mb_idx += 1;
+        }
+
+        // Fill per-4x4-block MV/ref/nnz data into MbInfo for deblocking bS
+        let list_count = if is_b_slice { 2u8 } else if is_p_slice { 1 } else { 0 };
+        for (mi, info) in mb_info.iter_mut().enumerate() {
+            let base = mi * 16;
+            info.list_count = list_count;
+            for blk in 0..16 {
+                info.mv_l0[blk] = mv_store_l0[base + blk];
+                info.ref_idx_l0[blk] = ref_idx_store_l0[base + blk];
+                info.mv_l1[blk] = mv_store_l1[base + blk];
+                info.ref_idx_l1[blk] = ref_idx_store_l1[base + blk];
+                info.nnz[blk] = nc_luma[base + blk] > 0;
+            }
         }
 
         // Apply deblocking filter after all MBs are decoded
