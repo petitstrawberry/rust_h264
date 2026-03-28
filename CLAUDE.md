@@ -45,7 +45,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 **Intra Macroblock Decoding** (`src/decoder.rs`)
 - I4x4 macroblocks with all 9 prediction modes
 - I16x16 macroblocks with all 4 prediction modes (vertical, horizontal, DC, plane)
-- I_PCM macroblocks (raw pixel data)
+- I_PCM macroblocks (raw pixel data, both CAVLC and CABAC with engine reinit)
 - Coded Block Pattern (CBP) handling for luma and chroma
 - Per-macroblock QP delta
 - Intra MBs within P-slices

@@ -1171,7 +1171,40 @@ impl Decoder {
 
                             mb_info[mb_idx] = MbInfo { mb_type: MbType::Intra, qp_y, ..Default::default() };
                         } else {
-                            return Err(DecodeError::Unsupported("CABAC I_PCM in P/B not supported"));
+                            // I_PCM in P/B via CABAC
+                            let pcm_pos = cr.pcm_byte_position();
+                            let pcm_data = &nal.rbsp[pcm_pos..];
+                            let mut off = 0;
+                            for r in 0..16 {
+                                for c in 0..16 {
+                                    frame.y[(mb_y + r) * stride + mb_x + c] = pcm_data[off];
+                                    off += 1;
+                                }
+                            }
+                            let cw = (width / 2) as usize;
+                            let cx = mb_x / 2;
+                            let cy = mb_y / 2;
+                            for r in 0..8 {
+                                for c in 0..8 {
+                                    frame.u[(cy + r) * cw + cx + c] = pcm_data[off];
+                                    off += 1;
+                                }
+                            }
+                            for r in 0..8 {
+                                for c in 0..8 {
+                                    frame.v[(cy + r) * cw + cx + c] = pcm_data[off];
+                                    off += 1;
+                                }
+                            }
+                            for blk in 0..16 { nc_luma[mb_idx * 16 + blk] = 16; }
+                            for blk in 0..4 {
+                                nc_cb[mb_idx * 4 + blk] = 16;
+                                nc_cr[mb_idx * 4 + blk] = 16;
+                            }
+                            cr.reinit(pcm_pos + off);
+                            prev_mb_qp = 0;
+                            last_qp_delta_nonzero = false;
+                            mb_info[mb_idx] = MbInfo { mb_type: MbType::Ipcm, qp_y: 0, ..Default::default() };
                         }
                         mb_idx += 1;
                         continue;
@@ -2496,9 +2529,45 @@ impl Decoder {
                 } else { false };
                 let mb_type = cr.decode_intra_mb_type(st, 3, left_is_i16, top_is_i16);
 
-                // I_PCM
+                // I_PCM via CABAC
                 if mb_type == 25 {
-                    return Err(DecodeError::Unsupported("CABAC I_PCM not yet integrated"));
+                    let pcm_pos = cr.pcm_byte_position();
+                    let pcm_data = &nal.rbsp[pcm_pos..];
+                    let mut off = 0;
+                    for r in 0..16 {
+                        for c in 0..16 {
+                            frame.y[(mb_y + r) * stride + mb_x + c] = pcm_data[off];
+                            off += 1;
+                        }
+                    }
+                    let cw = (width / 2) as usize;
+                    let cx = mb_x / 2;
+                    let cy = mb_y / 2;
+                    for r in 0..8 {
+                        for c in 0..8 {
+                            frame.u[(cy + r) * cw + cx + c] = pcm_data[off];
+                            off += 1;
+                        }
+                    }
+                    for r in 0..8 {
+                        for c in 0..8 {
+                            frame.v[(cy + r) * cw + cx + c] = pcm_data[off];
+                            off += 1;
+                        }
+                    }
+                    for blk in 0..16 { nc_luma[mb_idx * 16 + blk] = 16; }
+                    for blk in 0..4 {
+                        nc_cb[mb_idx * 4 + blk] = 16;
+                        nc_cr[mb_idx * 4 + blk] = 16;
+                    }
+                    cr.reinit(pcm_pos + off);
+                    prev_mb_qp = 0;
+                    last_qp_delta_nonzero = false;
+                    is_i16x16[mb_idx] = false;
+                    mb_cbp[mb_idx] = 0;
+                    mb_info[mb_idx] = MbInfo { mb_type: MbType::Ipcm, qp_y: 0, ..Default::default() };
+                    mb_idx += 1;
+                    continue;
                 }
 
                 if mb_type == 0 {
@@ -3096,8 +3165,42 @@ impl Decoder {
                     // CBP already partially set during DC/AC decode (bits 6-7)
                     mb_cbp[mb_idx] |= (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
                 } else {
-                    // I_PCM via CABAC
-                    return Err(DecodeError::Unsupported("CABAC I_PCM not yet integrated"));
+                    // I_PCM via CABAC (mb_type == 25)
+                    let pcm_pos = cr.pcm_byte_position();
+                    let pcm_data = &nal.rbsp[pcm_pos..];
+                    let mut off = 0;
+                    for r in 0..16 {
+                        for c in 0..16 {
+                            frame.y[(mb_y + r) * stride + mb_x + c] = pcm_data[off];
+                            off += 1;
+                        }
+                    }
+                    let cw = (width / 2) as usize;
+                    let cx = mb_x / 2;
+                    let cy = mb_y / 2;
+                    for r in 0..8 {
+                        for c in 0..8 {
+                            frame.u[(cy + r) * cw + cx + c] = pcm_data[off];
+                            off += 1;
+                        }
+                    }
+                    for r in 0..8 {
+                        for c in 0..8 {
+                            frame.v[(cy + r) * cw + cx + c] = pcm_data[off];
+                            off += 1;
+                        }
+                    }
+                    for blk in 0..16 { nc_luma[mb_idx * 16 + blk] = 16; }
+                    for blk in 0..4 {
+                        nc_cb[mb_idx * 4 + blk] = 16;
+                        nc_cr[mb_idx * 4 + blk] = 16;
+                    }
+                    cr.reinit(pcm_pos + off);
+                    prev_mb_qp = 0;
+                    last_qp_delta_nonzero = false;
+                    is_i16x16[mb_idx] = false;
+                    mb_cbp[mb_idx] = 0;
+                    mb_info[mb_idx] = MbInfo { mb_type: MbType::Ipcm, qp_y: 0, ..Default::default() };
                 }
 
                 mb_idx += 1;

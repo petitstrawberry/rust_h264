@@ -195,6 +195,30 @@ impl<'a> CabacReader<'a> {
         }
     }
 
+    /// Get the current byte position in the RBSP, accounting for buffered bits.
+    /// Used for I_PCM: raw bytes start at this position.
+    pub fn pcm_byte_position(&self) -> usize {
+        let mut ptr = self.pos;
+        if self.low & 0x1 != 0 {
+            ptr -= 1;
+        }
+        // CABAC_BITS == 16: check for second buffered byte
+        if self.low & 0x1FF != 0 {
+            ptr -= 1;
+        }
+        ptr
+    }
+
+    /// Reinitialize the CABAC engine at a new byte position.
+    /// Used after I_PCM raw data to resume CABAC decoding.
+    pub fn reinit(&mut self, byte_offset: usize) {
+        self.low = (self.data[byte_offset] as u32) << 18;
+        self.low = self.low.wrapping_add((self.data[byte_offset + 1] as u32) << 10);
+        self.low = self.low.wrapping_add(1 << 9);
+        self.range = 0x1FE;
+        self.pos = byte_offset + 2;
+    }
+
     /// Refill the low register with 2 bytes from the bitstream.
     #[inline]
     fn refill(&mut self) {
