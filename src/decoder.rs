@@ -6418,4 +6418,20 @@ mod tests {
         // 77.8% chroma weighted), fading content, --no-deblock, byte-exact against FFmpeg
         decode_multiframe_and_compare("weighted_p_test", 10, 32, 32);
     }
+
+    #[test]
+    fn test_realworld() {
+        // 320x240, 6 frames: CAVLC Main profile, P16x16 (16.6%) + P16x8 (7.8%) +
+        // P8x16 (3.1%) + intra-in-P (3.6%) + skip (68.9%), --no-deblock.
+        // Regression test for real-world-sized content with diverse MB types.
+        decode_multiframe_and_compare("realworld_test", 6, 320, 240);
+    }
+
+    #[test]
+    fn test_realworld_b() {
+        // 320x240, 9 frames: CAVLC Main profile with B-frames (bframes=2),
+        // B16x16 L0/L1/Bi (16.2%) + B16x8/8x16 (7.2%) + B_Direct (2.8%) +
+        // B_Skip (73.5%) + P partitions + intra-in-P/B, --no-deblock.
+        decode_multiframe_and_compare("realworld_b_test", 9, 320, 240);
+    }
 }
