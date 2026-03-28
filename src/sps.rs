@@ -44,6 +44,9 @@ pub struct Sps {
     /// 4x4 scaling matrices [0..5]: Intra Y, Intra Cb, Intra Cr, Inter Y, Inter Cb, Inter Cr.
     /// Default is all 16s (flat scaling). Stored in raster scan order within each 4x4 block.
     pub scaling_list_4x4: [[u8; 16]; 6],
+    /// 8x8 scaling matrices [0..1]: Intra Y, Inter Y (for 4:2:0).
+    /// Default is all 16s. Stored in raster scan order within each 8x8 block.
+    pub scaling_list_8x8: [[u8; 64]; 2],
 
     pub log2_max_frame_num_minus4: u32,
     pub pic_order_cnt_type: u32,
@@ -144,6 +147,7 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, &'static str> {
     let mut seq_scaling_matrix_present_flag = false;
     // Default: flat scaling (all 16s) when seq_scaling_matrix_present_flag is false
     let mut scaling_list_4x4 = [FLAT_SCALING_4X4; 6];
+    let mut scaling_list_8x8 = [[16u8; 64]; 2];
 
     if is_high_profile(profile_idc) {
         chroma_format_idc = r.read_ue()?;
@@ -161,6 +165,8 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, &'static str> {
                 if present {
                     if i < 6 {
                         scaling_list_4x4[i] = parse_scaling_list::<16>(&mut r, 16)?;
+                    } else if i < 8 {
+                        scaling_list_8x8[i - 6] = parse_scaling_list::<64>(&mut r, 64)?;
                     } else {
                         let _: [u8; 64] = parse_scaling_list::<64>(&mut r, 64)?;
                     }
@@ -245,6 +251,7 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, &'static str> {
         qpprime_y_zero_transform_bypass_flag,
         seq_scaling_matrix_present_flag,
         scaling_list_4x4,
+        scaling_list_8x8,
         log2_max_frame_num_minus4,
         pic_order_cnt_type,
         log2_max_pic_order_cnt_lsb_minus4,

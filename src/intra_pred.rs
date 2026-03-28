@@ -365,6 +365,235 @@ pub fn predict_chroma_8x8(
     }
 }
 
+/// I8x8 intra prediction (H.264 spec 8.3.2.2).
+/// Same 9 modes as I4x4 but at 8×8 granularity with filtered reference samples.
+///
+/// `above`: 16 pixels above (8 directly above + 8 above-right), None if unavailable.
+/// `left`: 8 pixels to the left, None if unavailable.
+/// `above_left`: pixel diagonally above-left, None if unavailable.
+/// `has_topright`: whether above-right 8 pixels are available.
+/// `output`: 8×8 block in raster order (64 bytes).
+pub fn predict_intra_8x8(
+    mode: u8,
+    above: Option<&[u8]>,
+    left: Option<&[u8]>,
+    above_left: Option<u8>,
+    has_topright: bool,
+    output: &mut [u8; 64],
+) {
+    // Build filtered reference samples (low-pass: (a + 2b + c + 2) >> 2)
+    let def = 128u8;
+    let al = above_left.unwrap_or(def) as i32;
+
+    // Filtered left samples (l0..l7)
+    let mut fl = [128i32; 8];
+    if let Some(l) = left {
+        fl[0] = (if above_left.is_some() { al } else { l[0] as i32 }
+            + 2 * l[0] as i32 + l[1] as i32 + 2) >> 2;
+        for i in 1..7 {
+            fl[i] = (l[i - 1] as i32 + 2 * l[i] as i32 + l[i + 1] as i32 + 2) >> 2;
+        }
+        fl[7] = (l[6] as i32 + 3 * l[7] as i32 + 2) >> 2;
+    }
+
+    // Filtered top samples (t0..t7)
+    let mut ft = [128i32; 8];
+    if let Some(a) = above {
+        ft[0] = (if above_left.is_some() { al } else { a[0] as i32 }
+            + 2 * a[0] as i32 + a[1] as i32 + 2) >> 2;
+        for i in 1..7 {
+            ft[i] = (a[i - 1] as i32 + 2 * a[i] as i32 + a[i + 1] as i32 + 2) >> 2;
+        }
+        ft[7] = if has_topright {
+            (a[6] as i32 + 2 * a[7] as i32 + a[8] as i32 + 2) >> 2
+        } else {
+            (a[6] as i32 + 3 * a[7] as i32 + 2) >> 2
+        };
+    }
+
+    // Filtered top-right samples (t8..t15)
+    let mut ftr = [0i32; 8];
+    if let Some(a) = above {
+        if has_topright {
+            for i in 0..7 {
+                ftr[i] = (a[7 + i] as i32 + 2 * a[8 + i] as i32 + a[9 + i] as i32 + 2) >> 2;
+            }
+            ftr[7] = (a[14] as i32 + 3 * a[15] as i32 + 2) >> 2;
+        } else {
+            ftr.fill(a[7] as i32);
+        }
+    }
+
+    // Filtered top-left
+    let flt = match (above_left, left, above) {
+        (Some(_), Some(l), Some(a)) => {
+            (l[0] as i32 + 2 * al + a[0] as i32 + 2) >> 2
+        }
+        (Some(_), _, _) => al,
+        _ => 128
+    };
+
+    match mode {
+        0 => {
+            // Vertical: replicate filtered top row
+            for y in 0..8 {
+                for x in 0..8 {
+                    output[y * 8 + x] = ft[x] as u8;
+                }
+            }
+        }
+        1 => {
+            // Horizontal: replicate filtered left column
+            for y in 0..8 {
+                for x in 0..8 {
+                    output[y * 8 + x] = fl[y] as u8;
+                }
+            }
+        }
+        2 => {
+            // DC
+            let dc = match (above, left) {
+                (Some(_), Some(_)) => {
+                    let sum: i32 = ft.iter().sum::<i32>() + fl.iter().sum::<i32>();
+                    ((sum + 8) >> 4) as u8
+                }
+                (Some(_), None) => {
+                    let sum: i32 = ft.iter().sum();
+                    ((sum + 4) >> 3) as u8
+                }
+                (None, Some(_)) => {
+                    let sum: i32 = fl.iter().sum();
+                    ((sum + 4) >> 3) as u8
+                }
+                (None, None) => 128,
+            };
+            output.fill(dc);
+        }
+        3 => {
+            // Diagonal Down-Left
+            // Combine t0..t7 and t8..t15 (top-right)
+            let mut t = [0i32; 16];
+            t[..8].copy_from_slice(&ft);
+            t[8..].copy_from_slice(&ftr);
+            for y in 0..8 {
+                for x in 0..8 {
+                    let i = x + y;
+                    output[y * 8 + x] = if x == 7 && y == 7 {
+                        ((t[14] + 3 * t[15] + 2) >> 2) as u8
+                    } else {
+                        ((t[i] + 2 * t[i + 1] + t[i + 2] + 2) >> 2) as u8
+                    };
+                }
+            }
+        }
+        4 => {
+            // Diagonal Down-Right
+            for y in 0..8 {
+                for x in 0..8 {
+                    output[y * 8 + x] = if x > y {
+                        let i = x - y - 1;
+                        ((ft[i] + 2 * ft[i + 1] + ft[i + 2] + 2) >> 2) as u8
+                    } else if x < y {
+                        let i = y - x - 1;
+                        ((fl[i] + 2 * fl[i + 1] + fl[i + 2] + 2) >> 2) as u8
+                    } else {
+                        // x == y: use top-left
+                        ((fl[0] + 2 * flt + ft[0] + 2) >> 2) as u8
+                    };
+                }
+            }
+        }
+        5 => {
+            // Vertical-Right
+            for y in 0..8 {
+                for x in 0..8 {
+                    let zv = 2 * x as i32 - y as i32;
+                    output[y * 8 + x] = if zv >= 0 {
+                        let i = x - (y >> 1);
+                        if zv & 1 == 0 {
+                            ((ft.get(i.wrapping_sub(1)).copied().unwrap_or(flt)
+                                + ft[i] + 1) >> 1) as u8
+                        } else {
+                            let p0 = if i >= 2 { ft[i - 2] } else if i == 1 { flt } else { fl[0] };
+                            ((p0 + 2 * ft.get(i.wrapping_sub(1)).copied().unwrap_or(flt)
+                                + ft[i] + 2) >> 2) as u8
+                        }
+                    } else if zv == -1 {
+                        ((ft[0] + 2 * flt + fl[0] + 2) >> 2) as u8
+                    } else {
+                        let i = y - 2 * x - 1;
+                        if zv % 2 == 0 {
+                            ((fl[i] + 2 * fl[i + 1] + fl.get(i + 2).copied().unwrap_or(fl[7]) + 2) >> 2) as u8
+                        } else {
+                            ((fl[i - 1] + 2 * fl[i] + fl[i + 1] + 2) >> 2) as u8
+                        }
+                    };
+                }
+            }
+        }
+        6 => {
+            // Horizontal-Down
+            for y in 0..8 {
+                for x in 0..8 {
+                    let zh = 2 * y as i32 - x as i32;
+                    output[y * 8 + x] = if zh >= 0 {
+                        let i = y - (x >> 1);
+                        if zh & 1 == 0 {
+                            ((fl.get(i.wrapping_sub(1)).copied().unwrap_or(flt)
+                                + fl[i] + 1) >> 1) as u8
+                        } else {
+                            let p0 = if i >= 2 { fl[i - 2] } else if i == 1 { flt } else { ft[0] };
+                            ((p0 + 2 * fl.get(i.wrapping_sub(1)).copied().unwrap_or(flt)
+                                + fl[i] + 2) >> 2) as u8
+                        }
+                    } else if zh == -1 {
+                        ((fl[0] + 2 * flt + ft[0] + 2) >> 2) as u8
+                    } else {
+                        let i = x - 2 * y - 1;
+                        if zh % 2 == 0 {
+                            ((ft[i] + 2 * ft[i + 1] + ft.get(i + 2).copied().unwrap_or(ft[7]) + 2) >> 2) as u8
+                        } else {
+                            ((ft[i - 1] + 2 * ft[i] + ft[i + 1] + 2) >> 2) as u8
+                        }
+                    };
+                }
+            }
+        }
+        7 => {
+            // Vertical-Left
+            let mut t = [0i32; 16];
+            t[..8].copy_from_slice(&ft);
+            t[8..].copy_from_slice(&ftr);
+            for y in 0..8 {
+                for x in 0..8 {
+                    let i = x + (y >> 1);
+                    output[y * 8 + x] = if y & 1 == 0 {
+                        ((t[i] + t[i + 1] + 1) >> 1) as u8
+                    } else {
+                        ((t[i] + 2 * t[i + 1] + t[i + 2] + 2) >> 2) as u8
+                    };
+                }
+            }
+        }
+        8 => {
+            // Horizontal-Up
+            for y in 0..8 {
+                for x in 0..8 {
+                    let i = y + (x >> 1);
+                    output[y * 8 + x] = if i >= 7 {
+                        fl[7] as u8
+                    } else if x & 1 == 0 {
+                        ((fl[i] + fl[i + 1] + 1) >> 1) as u8
+                    } else {
+                        ((fl[i] + 2 * fl[i + 1] + fl.get(i + 2).copied().unwrap_or(fl[7]) + 2) >> 2) as u8
+                    };
+                }
+            }
+        }
+        _ => output.fill(128),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

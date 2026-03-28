@@ -26,6 +26,8 @@ pub struct Pps {
     pub second_chroma_qp_index_offset: i32,
     /// Effective 4x4 scaling matrices (PPS overrides SPS if present, else SPS, else default).
     pub scaling_list_4x4: [[u8; 16]; 6],
+    /// Effective 8x8 scaling matrices [0]=Intra Y, [1]=Inter Y.
+    pub scaling_list_8x8: [[u8; 64]; 2],
 }
 
 /// Parse a PPS from RBSP data (NAL header byte already stripped).
@@ -64,6 +66,9 @@ pub fn parse_pps(rbsp: &[u8], sps: Option<&Sps>) -> Result<Pps, &'static str> {
     let mut scaling_list_4x4 = sps
         .map(|s| s.scaling_list_4x4)
         .unwrap_or([crate::sps::FLAT_SCALING_4X4; 6]);
+    let mut scaling_list_8x8 = sps
+        .map(|s| s.scaling_list_8x8)
+        .unwrap_or([[16u8; 64]; 2]);
 
     if r.more_rbsp_data() {
         transform_8x8_mode_flag = r.read_bit()? != 0;
@@ -77,7 +82,7 @@ pub fn parse_pps(rbsp: &[u8], sps: Option<&Sps>) -> Result<Pps, &'static str> {
                         scaling_list_4x4[i] =
                             crate::sps::parse_scaling_list::<16>(&mut r, 16)?;
                     } else {
-                        let _: [u8; 64] =
+                        scaling_list_8x8[i - 6] =
                             crate::sps::parse_scaling_list::<64>(&mut r, 64)?;
                     }
                 } else if i < 6 {
@@ -117,6 +122,7 @@ pub fn parse_pps(rbsp: &[u8], sps: Option<&Sps>) -> Result<Pps, &'static str> {
         pic_scaling_matrix_present_flag,
         second_chroma_qp_index_offset,
         scaling_list_4x4,
+        scaling_list_8x8,
     })
 }
 

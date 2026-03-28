@@ -8,13 +8,13 @@ use crate::dpb::{DecodedPicture, Dpb, ReferenceStatus};
 use crate::error::DecodeError;
 use crate::inter_pred;
 use crate::deblock::{self, MbInfo, MbType};
-use crate::intra_pred::{predict_chroma_8x8, predict_intra_16x16, predict_intra_4x4};
+use crate::intra_pred::{predict_chroma_8x8, predict_intra_16x16, predict_intra_4x4, predict_intra_8x8};
 use crate::nal::{NalUnit, NalUnitType};
 use crate::pps::{parse_pps, Pps};
 use crate::residual::{
-    chroma_qp, dequant_4x4_full, dequant_chroma_dc, dequant_luma_dc_i16x16, inverse_dct_4x4,
-    inverse_hadamard_2x2, inverse_hadamard_4x4, BLOCK_INDEX_TO_OFFSET, CBP_INTER_TABLE,
-    CBP_INTRA_TABLE, ZIGZAG_4X4,
+    chroma_qp, dequant_4x4_full, dequant_8x8, dequant_chroma_dc, dequant_luma_dc_i16x16,
+    inverse_dct_4x4, inverse_dct_8x8, inverse_hadamard_2x2, inverse_hadamard_4x4,
+    BLOCK_INDEX_TO_OFFSET, CBP_INTER_TABLE, CBP_INTRA_TABLE, ZIGZAG_4X4, ZIGZAG_8X8_CAVLC,
 };
 use crate::slice::{parse_slice_header, PredWeightTable, SliceType};
 use crate::sps::{parse_sps, Sps};
@@ -4328,6 +4328,12 @@ impl Decoder {
                 let cbp = CBP_INTER_TABLE[cbp_code];
                 let cbp_luma = cbp & 0x0F;
                 let cbp_chroma = cbp >> 4;
+
+                // 8x8 transform flag (High profile inter MBs)
+                let use_8x8_dct = pps.transform_8x8_mode_flag
+                    && cbp_luma != 0
+                    && reader.read_bit()? != 0;
+
                 let qp_y = if cbp_luma != 0 || cbp_chroma != 0 {
                     let mb_qp_delta = reader.read_se()?;
                     ((prev_mb_qp + mb_qp_delta + 52) % 52 + 52) % 52
@@ -4337,34 +4343,72 @@ impl Decoder {
                 prev_mb_qp = qp_y;
                 let qp_c = chroma_qp(qp_y, pps.chroma_qp_index_offset);
 
-                // Decode residual for each partition
-                // Parse luma residual blocks
+                // Decode luma residual
                 let mut luma_residual = [0i32; 256];
-                for blk in 0..16 {
-                    if cbp_luma & (1 << (blk / 4)) != 0 {
-                        let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16);
-                        let mut block_coeffs = [0i32; 16];
-                        let tc = parse_residual_block_cavlc(
-                            &mut reader, &mut block_coeffs, 16, nc,
-                        )?;
-                        nc_luma[mb_idx * 16 + blk] = tc;
-
-                        let mut raster = [0i32; 16];
-                        for i in 0..16 {
-                            let (r, c) = ZIGZAG_4X4[i];
-                            raster[r * 4 + c] = block_coeffs[i];
+                if use_8x8_dct {
+                    // 8x8 transform: 4 blocks of 64 coefficients each
+                    let scale_8x8 = if is_inter { &pps.scaling_list_8x8[1] } else { &pps.scaling_list_8x8[0] };
+                    for i8x8 in 0..4 {
+                        if cbp_luma & (1 << i8x8) == 0 {
+                            continue;
                         }
-                        dequant_4x4_full(&mut raster, qp_y, &pps.scaling_list_4x4[3]);
-                        inverse_dct_4x4(&mut raster);
-
-                        let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
-                        for r in 0..4 {
-                            for c in 0..4 {
-                                luma_residual[(blk_row + r) * 16 + blk_col + c] = raster[r * 4 + c];
+                        let mut block_8x8 = [0i32; 64];
+                        // Decode 4 groups of 16 coefficients via CAVLC
+                        for i4x4 in 0..4 {
+                            let blk = i8x8 * 4 + i4x4;
+                            let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16);
+                            let mut quad_coeffs = [0i32; 16];
+                            let tc = parse_residual_block_cavlc(
+                                &mut reader, &mut quad_coeffs, 16, nc,
+                            )?;
+                            nc_luma[mb_idx * 16 + blk] = tc;
+                            // Place into 8x8 block using scan table
+                            let scan_base = i4x4 * 16;
+                            for k in 0..16 {
+                                if quad_coeffs[k] != 0 {
+                                    block_8x8[ZIGZAG_8X8_CAVLC[scan_base + k]] = quad_coeffs[k];
+                                }
+                            }
+                        }
+                        dequant_8x8(&mut block_8x8, qp_y, scale_8x8);
+                        inverse_dct_8x8(&mut block_8x8);
+                        // Copy 8x8 residual into 16x16 luma residual
+                        let row_off = (i8x8 / 2) * 8;
+                        let col_off = (i8x8 % 2) * 8;
+                        for r in 0..8 {
+                            for c in 0..8 {
+                                luma_residual[(row_off + r) * 16 + col_off + c] = block_8x8[r * 8 + c];
                             }
                         }
                     }
+                } else {
+                    // 4x4 transform (existing path)
+                    for blk in 0..16 {
+                        if cbp_luma & (1 << (blk / 4)) != 0 {
+                            let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16);
+                            let mut block_coeffs = [0i32; 16];
+                            let tc = parse_residual_block_cavlc(
+                                &mut reader, &mut block_coeffs, 16, nc,
+                            )?;
+                            nc_luma[mb_idx * 16 + blk] = tc;
+
+                            let mut raster = [0i32; 16];
+                            for i in 0..16 {
+                                let (r, c) = ZIGZAG_4X4[i];
+                                raster[r * 4 + c] = block_coeffs[i];
+                            }
+                            dequant_4x4_full(&mut raster, qp_y, &pps.scaling_list_4x4[3]);
+                            inverse_dct_4x4(&mut raster);
+
+                            let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
+                            for r in 0..4 {
+                                for c in 0..4 {
+                                    luma_residual[(blk_row + r) * 16 + blk_col + c] = raster[r * 4 + c];
+                                }
+                            }
+                    }
                 }
+                } // close if use_8x8_dct else
 
                 // Motion compensate and add residual for each sub-partition
                 for sp in &sub_parts {
@@ -4516,22 +4560,37 @@ impl Decoder {
             let qp_c;
 
             if mb_type == 0 {
-                // === I_NxN (I4x4) macroblock ===
+                // === I_NxN (I4x4 or I8x8) macroblock ===
 
-                // Parse 16 I4x4 prediction modes
+                // Check 8x8 transform flag
+                let use_8x8_intra = pps.transform_8x8_mode_flag
+                    && reader.read_bit()? != 0;
+
+                // Parse prediction modes: 4 for I8x8, 16 for I4x4
+                let num_modes = if use_8x8_intra { 4 } else { 16 };
                 let mut pred_modes = [2u8; 16];
-                for blk in 0..16 {
+                for blk_idx in 0..num_modes {
+                    let blk = if use_8x8_intra { blk_idx * 4 } else { blk_idx };
                     let prev_flag = reader.read_bit()?;
                     let predicted = predict_i4x4_mode(
                         &i4x4_modes, mb_idx, mb_width as usize, blk,
                     );
-                    if prev_flag != 0 {
-                        pred_modes[blk] = predicted;
+                    let mode = if prev_flag != 0 {
+                        predicted
                     } else {
                         let rem = reader.read_bits(3)? as u8;
-                        pred_modes[blk] = if rem < predicted { rem } else { rem + 1 };
+                        if rem < predicted { rem } else { rem + 1 }
+                    };
+                    if use_8x8_intra {
+                        // Store same mode for all 4 sub-blocks
+                        for sub in 0..4 {
+                            pred_modes[blk_idx * 4 + sub] = mode;
+                            i4x4_modes[mb_idx * 16 + blk_idx * 4 + sub] = mode;
+                        }
+                    } else {
+                        pred_modes[blk] = mode;
+                        i4x4_modes[mb_idx * 16 + blk] = mode;
                     }
-                    i4x4_modes[mb_idx * 16 + blk] = pred_modes[blk];
                 }
                 intra_chroma_pred_mode = reader.read_ue()? as u8;
 
@@ -4552,7 +4611,118 @@ impl Decoder {
                 prev_mb_qp = qp_y;
                 qp_c = chroma_qp(qp_y, pps.chroma_qp_index_offset);
 
-                // Parse and reconstruct each 4x4 luma block sequentially
+                // Parse luma residual and reconstruct
+                if use_8x8_intra {
+                    // I8x8: decode 4 8x8 blocks with 8x8 transform
+                    let mut luma_residual = [0i32; 256];
+                    for i8x8 in 0..4 {
+                        if cbp_luma & (1 << i8x8) == 0 {
+                            continue;
+                        }
+                        let mut block_8x8 = [0i32; 64];
+                        for i4x4 in 0..4 {
+                            let blk = i8x8 * 4 + i4x4;
+                            let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16);
+                            let mut quad_coeffs = [0i32; 16];
+                            let tc = parse_residual_block_cavlc(
+                                &mut reader, &mut quad_coeffs, 16, nc,
+                            )?;
+                            nc_luma[mb_idx * 16 + blk] = tc;
+                            let scan_base = i4x4 * 16;
+                            for k in 0..16 {
+                                if quad_coeffs[k] != 0 {
+                                    block_8x8[ZIGZAG_8X8_CAVLC[scan_base + k]] = quad_coeffs[k];
+                                }
+                            }
+                        }
+                        dequant_8x8(&mut block_8x8, qp_y, &pps.scaling_list_8x8[0]);
+                        inverse_dct_8x8(&mut block_8x8);
+                        let row_off = (i8x8 / 2) * 8;
+                        let col_off = (i8x8 % 2) * 8;
+                        for r in 0..8 {
+                            for c in 0..8 {
+                                luma_residual[(row_off + r) * 16 + col_off + c] =
+                                    block_8x8[r * 8 + c];
+                            }
+                        }
+                    }
+                    // I8x8 prediction + residual reconstruction
+                    for i8x8 in 0..4 {
+                        let row_off = (i8x8 / 2) * 8;
+                        let col_off = (i8x8 % 2) * 8;
+                        let px = mb_x + col_off;
+                        let py = mb_y + row_off;
+
+                        // Gather reference samples: 16 above (8 + 8 above-right)
+                        let above_buf: Option<[u8; 16]> = if py > 0 {
+                            let mut buf = [0u8; 16];
+                            for (i, b) in buf.iter_mut().enumerate().take(8) {
+                                *b = frame.y[(py - 1) * stride + px + i];
+                            }
+                            // Above-right: available if at top of MB or from MB above
+                            let has_tr = if row_off == 0 {
+                                px + 8 < stride
+                            } else {
+                                col_off == 0 // only top-left 8x8 has above-right within MB
+                            };
+                            if has_tr {
+                                for i in 0..8 {
+                                    let col = (px + 8 + i).min(stride - 1);
+                                    buf[8 + i] = frame.y[(py - 1) * stride + col];
+                                }
+                            } else {
+                                let last = buf[7];
+                                buf[8..].fill(last);
+                            }
+                            Some(buf)
+                        } else {
+                            None
+                        };
+
+                        let left_buf: Option<[u8; 8]> = if px > 0 {
+                            let mut buf = [0u8; 8];
+                            for (i, b) in buf.iter_mut().enumerate() {
+                                *b = frame.y[(py + i) * stride + px - 1];
+                            }
+                            Some(buf)
+                        } else {
+                            None
+                        };
+
+                        let above_left_val = if px > 0 && py > 0 {
+                            Some(frame.y[(py - 1) * stride + px - 1])
+                        } else {
+                            None
+                        };
+
+                        let has_topright = above_buf.is_some() && (
+                            (row_off == 0 && px + 8 < stride) ||
+                            (row_off > 0 && col_off == 0)
+                        );
+
+                        let mode = pred_modes[i8x8 * 4]; // mode stored per 8x8
+                        let mut pred = [0u8; 64];
+                        predict_intra_8x8(
+                            mode,
+                            above_buf.as_ref().map(|b| &b[..]),
+                            left_buf.as_ref().map(|b| &b[..]),
+                            above_left_val,
+                            has_topright,
+                            &mut pred,
+                        );
+
+                        // Add residual and write to frame
+                        for r in 0..8 {
+                            for c in 0..8 {
+                                let val = (pred[r * 8 + c] as i32
+                                    + luma_residual[(row_off + r) * 16 + col_off + c])
+                                    .clamp(0, 255) as u8;
+                                frame.y[(py + r) * stride + px + c] = val;
+                            }
+                        }
+                    }
+                } else {
+                // I4x4: existing 4x4 path
                 for blk in 0..16 {
                     let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
                     let px = mb_x + blk_col;
@@ -4649,6 +4819,7 @@ impl Decoder {
                     }
 
                 }
+                } // close if use_8x8_intra else
             } else if mb_type <= 24 {
                 // === I16x16 macroblock ===
                 let mt = mb_type - 1;
@@ -6425,6 +6596,13 @@ mod tests {
         // P8x16 (3.1%) + intra-in-P (3.6%) + skip (68.9%), --no-deblock.
         // Regression test for real-world-sized content with diverse MB types.
         decode_multiframe_and_compare("realworld_test", 6, 320, 240);
+    }
+
+    #[test]
+    fn test_high_profile() {
+        // 320x240, 6 frames: CAVLC High profile with 8x8 transform
+        // (28% intra 8x8, 22.8% inter 8x8), --no-deblock.
+        decode_multiframe_and_compare("high_profile_test", 6, 320, 240);
     }
 
     #[test]

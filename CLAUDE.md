@@ -31,7 +31,7 @@ This is a Rust project using Cargo:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices. Pixel output byte-exact against FFmpeg for weighted P-slice (100% weighted, fading content), CABAC B-slice, and all CAVLC inter test streams.
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for CAVLC (intra and inter). Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices. Pixel output within IDCT rounding tolerance of FFmpeg for CAVLC High profile (max ±2 on I-frames, ±23 on P-frames).
 
 ### Completed
 
@@ -116,13 +116,15 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 **Intra Prediction** (`src/intra_pred.rs`)
 - I16x16: vertical, horizontal, DC, plane (4 modes)
 - I4x4: all 9 modes with above-right availability checks
+- I8x8: all 9 modes at 8×8 granularity with low-pass filtered reference samples
 - Chroma 8x8: DC (per-4x4-quadrant), horizontal, vertical, plane (4 modes)
 
 **Transform & Quantization** (`src/residual.rs`)
 - 4x4 inverse integer DCT
+- 8x8 inverse integer DCT (High profile)
 - 4x4 inverse Hadamard (I16x16 luma DC)
 - 2x2 inverse Hadamard (chroma DC)
-- Dequantization with scaling list support (SPS/PPS, fallback to default matrices)
+- Dequantization with 4x4 and 8x8 scaling list support (SPS/PPS, fallback to default matrices)
 
 **Deblocking Filter** (`src/deblock.rs`)
 - Strong filter (bS=4) and normal filter (bS=1-3)
@@ -136,7 +138,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (73 tests)
+**Test Coverage** (76 tests)
 - Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
   mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
   noise_16x16, scaling_test
@@ -149,8 +151,11 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   cabac_p_test (P_Skip), cabac_intra_p_test (intra-in-P),
   cabac_b_test (B_Skip with spatial direct, byte-exact)
 - Weighted prediction: weighted_p_test (CAVLC, 100% weighted P, fading, byte-exact)
+- High profile: high_profile_test (320x240 CAVLC, 8x8 intra+inter, I-frame ±2 IDCT)
+- Real-world: realworld_test (320x240 P-only), realworld_b_test (320x240 with B-frames)
 
 ### Not Yet Implemented
 
+- CABAC 8x8 transform (intra I8x8 path reads flag but ignores, causing desync)
 - MBAFF/interlaced mode
 - Long-term reference support (MMCO ops 2-6)
