@@ -16,7 +16,7 @@ use crate::residual::{
     inverse_hadamard_2x2, inverse_hadamard_4x4, BLOCK_INDEX_TO_OFFSET, CBP_INTER_TABLE,
     CBP_INTRA_TABLE, ZIGZAG_4X4,
 };
-use crate::slice::{parse_slice_header, SliceType};
+use crate::slice::{parse_slice_header, PredWeightTable, SliceType};
 use crate::sps::{parse_sps, Sps};
 
 /// A decoded YUV 4:2:0 frame.
@@ -138,6 +138,49 @@ impl Decoder {
                 header.frame_num, max_pic_num,
             );
         }
+
+        // Weighted prediction mode:
+        // 0 = no weighting (default)
+        // 1 = explicit weights (P-slice weighted_pred_flag=1, or B-slice weighted_bipred_idc=1)
+        // 2 = implicit weights (B-slice weighted_bipred_idc=2)
+        let use_weight = if (is_p_slice && pps.weighted_pred_flag)
+            || (is_b_slice && pps.weighted_bipred_idc == 1) {
+            1
+        } else if is_b_slice && pps.weighted_bipred_idc == 2 {
+            2
+        } else {
+            0
+        };
+
+        // Implicit weighted prediction: compute L0 weight from POC distances.
+        // implicit_weights[l0_idx][l1_idx] = w0. L1 weight = 64 - w0. Fixed log2_denom=5.
+        let implicit_weights: Vec<Vec<i32>> = if use_weight == 2 {
+            _ref_pic_list_l0.iter().map(|ref_l0| {
+                _ref_pic_list_l1.iter().map(|ref_l1| {
+                    let td = (ref_l1.pic_order_cnt - ref_l0.pic_order_cnt).clamp(-128, 127);
+                    if td == 0 {
+                        32
+                    } else {
+                        let tb = (current_poc - ref_l0.pic_order_cnt).clamp(-128, 127);
+                        let tx = (16384 + (td.abs() / 2)) / td;
+                        let w1 = ((tb * tx + 32) >> 6).clamp(-1024, 1023);
+                        if !(-64..=128).contains(&w1) {
+                            32
+                        } else {
+                            64 - w1
+                        }
+                    }
+                }).collect()
+            }).collect()
+        } else {
+            vec![]
+        };
+
+        let wctx = WeightContext {
+            use_weight,
+            wt: header.weight_table.as_ref(),
+            implicit_weights: &implicit_weights,
+        };
 
         let width = sps.width();
         let height = sps.height();
@@ -271,6 +314,9 @@ impl Decoder {
                                     ref_pic, mb_x as i32, mb_y as i32,
                                     mvp_x as i32, mvp_y as i32, 16, 16, &mut luma_pred,
                                 );
+                                if use_weight == 1 {
+                                    wctx.apply_uni(&mut luma_pred, 0, 0, false, 0);
+                                }
                                 for r in 0..16 {
                                     for c in 0..16 {
                                         frame.y[(mb_y + r) * stride + mb_x + c] = luma_pred[r * 16 + c];
@@ -291,6 +337,10 @@ impl Decoder {
                                     cx as i32, cy as i32, mvp_x as i32, mvp_y as i32,
                                     8, 8, &mut cr_pred_buf,
                                 );
+                                if use_weight == 1 {
+                                    wctx.apply_uni(&mut cb_pred, 0, 0, true, 0);
+                                    wctx.apply_uni(&mut cr_pred_buf, 0, 0, true, 1);
+                                }
                                 for r in 0..8 {
                                     for c in 0..8 {
                                         frame.u[(cy + r) * cw + cx + c] = cb_pred[r * 8 + c];
@@ -338,17 +388,25 @@ impl Decoder {
                                     &_ref_pic_list_l1[ri_l1 as usize], mb_x as i32, mb_y as i32,
                                     mv_l1[0] as i32, mv_l1[1] as i32, 16, 16, &mut p1,
                                 );
-                                inter_pred::bi_pred_avg(&p0, &p1, &mut luma_pred);
+                                wctx.apply_bi(&p0, &p1, &mut luma_pred,
+                                    ri_l0 as usize, ri_l1 as usize, false, 0,
+                                );
                             } else if pl0 {
                                 inter_pred::luma_mc(
                                     &_ref_pic_list_l0[ri_l0 as usize], mb_x as i32, mb_y as i32,
                                     mv_l0[0] as i32, mv_l0[1] as i32, 16, 16, &mut luma_pred,
                                 );
+                                if use_weight == 1 {
+                                    wctx.apply_uni(&mut luma_pred, 0, ri_l0 as usize, false, 0);
+                                }
                             } else if pl1 {
                                 inter_pred::luma_mc(
                                     &_ref_pic_list_l1[ri_l1 as usize], mb_x as i32, mb_y as i32,
                                     mv_l1[0] as i32, mv_l1[1] as i32, 16, 16, &mut luma_pred,
                                 );
+                                if use_weight == 1 {
+                                    wctx.apply_uni(&mut luma_pred, 1, ri_l1 as usize, false, 0);
+                                }
                             }
                             for r in 0..16 {
                                 for c in 0..16 {
@@ -376,7 +434,9 @@ impl Decoder {
                                         cr1, cw, chroma_h, cx as i32, cy as i32,
                                         mv_l1[0] as i32, mv_l1[1] as i32, 8, 8, &mut c1,
                                     );
-                                    inter_pred::bi_pred_avg(&c0, &c1, &mut chroma_pred);
+                                    wctx.apply_bi(&c0, &c1, &mut chroma_pred,
+                                    ri_l0 as usize, ri_l1 as usize, true, plane_idx,
+                                );
                                 } else {
                                     let (ref_list, ri, mv) = if pl0 {
                                         (&_ref_pic_list_l0, ri_l0, mv_l0)
@@ -389,6 +449,10 @@ impl Decoder {
                                         plane_ref, cw, chroma_h, cx as i32, cy as i32,
                                         mv[0] as i32, mv[1] as i32, 8, 8, &mut chroma_pred,
                                     );
+                                    if use_weight == 1 {
+                                        let (list, ri_val) = if pl0 { (0, ri_l0 as usize) } else { (1, ri_l1 as usize) };
+                                        wctx.apply_uni(&mut chroma_pred, list, ri_val, true, plane_idx);
+                                    }
                                 }
                                 let fp = if plane_idx == 0 { &mut frame.u } else { &mut frame.v };
                                 for r in 0..8 {
@@ -1167,6 +1231,9 @@ impl Decoder {
                                         ref_pic, (mb_x + px) as i32, (mb_y + py) as i32,
                                         mv[0] as i32, mv[1] as i32, spw, sph, &mut luma_pred,
                                     );
+                                    if use_weight == 1 {
+                                        wctx.apply_uni(&mut luma_pred, 0, ref_idx as usize, false, 0);
+                                    }
                                     for r in 0..sph {
                                         for c in 0..spw {
                                             frame.y[(mb_y + py + r) * stride + mb_x + px + c] =
@@ -1200,6 +1267,10 @@ impl Decoder {
                                     (cx + cx_off) as i32, (cy + cy_off) as i32,
                                     mv[0] as i32, mv[1] as i32, 4, 4, &mut cr_pred_buf,
                                 );
+                                if use_weight == 1 {
+                                    wctx.apply_uni(&mut cb_pred, 0, sub_ref[smb] as usize, true, 0);
+                                    wctx.apply_uni(&mut cr_pred_buf, 0, sub_ref[smb] as usize, true, 1);
+                                }
                                 for r in 0..4 {
                                     for c in 0..4 {
                                         frame.u[(cy + cy_off + r) * cw + cx + cx_off + c] =
@@ -1264,6 +1335,9 @@ impl Decoder {
                                     ref_pic, (mb_x + px_off) as i32, (mb_y + py_off) as i32,
                                     mv[0] as i32, mv[1] as i32, part_w, part_h, &mut luma_pred,
                                 );
+                                if use_weight == 1 {
+                                    wctx.apply_uni(&mut luma_pred, 0, part_ref[p] as usize, false, 0);
+                                }
                                 for r in 0..part_h {
                                     for c in 0..part_w {
                                         frame.y[(mb_y + py_off + r) * stride + mb_x + px_off + c] =
@@ -1291,6 +1365,10 @@ impl Decoder {
                                     (chroma_mb_x + cx_off) as i32, (chroma_mb_y + cy_off) as i32,
                                     mv[0] as i32, mv[1] as i32, chw, chh, &mut cr_pred_buf,
                                 );
+                                if use_weight == 1 {
+                                    wctx.apply_uni(&mut cb_pred, 0, part_ref[p] as usize, true, 0);
+                                    wctx.apply_uni(&mut cr_pred_buf, 0, part_ref[p] as usize, true, 1);
+                                }
                                 for r in 0..chh {
                                     for c in 0..chw {
                                         frame.u[(chroma_mb_y + cy_off + r) * cw + chroma_mb_x + cx_off + c] =
@@ -2111,7 +2189,11 @@ impl Decoder {
                                     sp.mv_l1[0] as i32, sp.mv_l1[1] as i32,
                                     sp.w, sp.h, &mut p1,
                                 );
-                                inter_pred::bi_pred_avg(&p0, &p1, &mut luma_pred);
+                                wctx.apply_bi(
+                                    &p0, &p1, &mut luma_pred,
+                                    sp.ref_idx_l0 as usize, sp.ref_idx_l1 as usize,
+                                    false, 0,
+                                );
                             } else if sp.pred_l0 {
                                 inter_pred::luma_mc(
                                     &_ref_pic_list_l0[sp.ref_idx_l0 as usize],
@@ -2119,6 +2201,9 @@ impl Decoder {
                                     sp.mv_l0[0] as i32, sp.mv_l0[1] as i32,
                                     sp.w, sp.h, &mut luma_pred,
                                 );
+                                if use_weight == 1 {
+                                    wctx.apply_uni(&mut luma_pred, 0, sp.ref_idx_l0 as usize, false, 0);
+                                }
                             } else if sp.pred_l1 {
                                 inter_pred::luma_mc(
                                     &_ref_pic_list_l1[sp.ref_idx_l1 as usize],
@@ -2126,6 +2211,9 @@ impl Decoder {
                                     sp.mv_l1[0] as i32, sp.mv_l1[1] as i32,
                                     sp.w, sp.h, &mut luma_pred,
                                 );
+                                if use_weight == 1 {
+                                    wctx.apply_uni(&mut luma_pred, 1, sp.ref_idx_l1 as usize, false, 0);
+                                }
                             }
 
                             for r in 0..sp.h {
@@ -2162,7 +2250,11 @@ impl Decoder {
                                         sp.mv_l1[0] as i32, sp.mv_l1[1] as i32,
                                         chw, chh, &mut c1,
                                     );
-                                    inter_pred::bi_pred_avg(&c0, &c1, &mut chroma_pred);
+                                    wctx.apply_bi(
+                                        &c0, &c1, &mut chroma_pred,
+                                        sp.ref_idx_l0 as usize, sp.ref_idx_l1 as usize,
+                                        true, plane_idx,
+                                    );
                                 } else if sp.pred_l0 {
                                     let ref_pic = &_ref_pic_list_l0[sp.ref_idx_l0 as usize];
                                     let plane = if plane_idx == 0 { &ref_pic.u } else { &ref_pic.v };
@@ -2171,6 +2263,9 @@ impl Decoder {
                                         sp.mv_l0[0] as i32, sp.mv_l0[1] as i32,
                                         chw, chh, &mut chroma_pred,
                                     );
+                                    if use_weight == 1 {
+                                        wctx.apply_uni(&mut chroma_pred, 0, sp.ref_idx_l0 as usize, true, plane_idx);
+                                    }
                                 } else if sp.pred_l1 {
                                     let ref_pic = &_ref_pic_list_l1[sp.ref_idx_l1 as usize];
                                     let plane = if plane_idx == 0 { &ref_pic.u } else { &ref_pic.v };
@@ -3003,6 +3098,9 @@ impl Decoder {
                                 ref_pic, mb_x as i32, mb_y as i32,
                                 mvp_x as i32, mvp_y as i32, 16, 16, &mut luma_pred,
                             );
+                            if use_weight == 1 {
+                                wctx.apply_uni(&mut luma_pred, 0, 0, false, 0);
+                            }
                             for r in 0..16 {
                                 for c in 0..16 {
                                     frame.y[(mb_y + r) * stride + mb_x + c] = luma_pred[r * 16 + c];
@@ -3023,6 +3121,10 @@ impl Decoder {
                                 cx as i32, cy as i32, mvp_x as i32, mvp_y as i32,
                                 8, 8, &mut cr_pred,
                             );
+                            if use_weight == 1 {
+                                wctx.apply_uni(&mut cb_pred, 0, 0, true, 0);
+                                wctx.apply_uni(&mut cr_pred, 0, 0, true, 1);
+                            }
                             for r in 0..8 {
                                 for c in 0..8 {
                                     frame.u[(cy + r) * cw + cx + c] = cb_pred[r * 8 + c];
@@ -3073,19 +3175,27 @@ impl Decoder {
                                 mb_x as i32, mb_y as i32,
                                 mv_l1[0] as i32, mv_l1[1] as i32, 16, 16, &mut p1,
                             );
-                            inter_pred::bi_pred_avg(&p0, &p1, &mut luma_pred);
+                            wctx.apply_bi(&p0, &p1, &mut luma_pred,
+                                    ri_l0 as usize, ri_l1 as usize, false, 0,
+                                );
                         } else if pl0 {
                             inter_pred::luma_mc(
                                 &_ref_pic_list_l0[ri_l0 as usize],
                                 mb_x as i32, mb_y as i32,
                                 mv_l0[0] as i32, mv_l0[1] as i32, 16, 16, &mut luma_pred,
                             );
+                            if use_weight == 1 {
+                                wctx.apply_uni(&mut luma_pred, 0, ri_l0 as usize, false, 0);
+                            }
                         } else if pl1 {
                             inter_pred::luma_mc(
                                 &_ref_pic_list_l1[ri_l1 as usize],
                                 mb_x as i32, mb_y as i32,
                                 mv_l1[0] as i32, mv_l1[1] as i32, 16, 16, &mut luma_pred,
                             );
+                            if use_weight == 1 {
+                                wctx.apply_uni(&mut luma_pred, 1, ri_l1 as usize, false, 0);
+                            }
                         }
                         for r in 0..16 {
                             for c in 0..16 {
@@ -3108,7 +3218,9 @@ impl Decoder {
                                 let cr1 = if plane_idx == 0 { &ref_l1.u } else { &ref_l1.v };
                                 inter_pred::chroma_mc(cr0, cw, chroma_h, cx as i32, cy as i32, mv_l0[0] as i32, mv_l0[1] as i32, 8, 8, &mut c0);
                                 inter_pred::chroma_mc(cr1, cw, chroma_h, cx as i32, cy as i32, mv_l1[0] as i32, mv_l1[1] as i32, 8, 8, &mut c1);
-                                inter_pred::bi_pred_avg(&c0, &c1, &mut chroma_pred);
+                                wctx.apply_bi(&c0, &c1, &mut chroma_pred,
+                                    ri_l0 as usize, ri_l1 as usize, true, plane_idx,
+                                );
                             } else {
                                 let (ref_list, ri, mv) = if pl0 {
                                     (&_ref_pic_list_l0, ri_l0, mv_l0)
@@ -3118,6 +3230,10 @@ impl Decoder {
                                 let ref_pic = &ref_list[ri as usize];
                                 let cr = if plane_idx == 0 { &ref_pic.u } else { &ref_pic.v };
                                 inter_pred::chroma_mc(cr, cw, chroma_h, cx as i32, cy as i32, mv[0] as i32, mv[1] as i32, 8, 8, &mut chroma_pred);
+                                if use_weight == 1 {
+                                    let (list, ri_val) = if pl0 { (0, ri_l0 as usize) } else { (1, ri_l1 as usize) };
+                                    wctx.apply_uni(&mut chroma_pred, list, ri_val, true, plane_idx);
+                                }
                             }
                             let fp = if plane_idx == 0 { &mut frame.u } else { &mut frame.v };
                             for r in 0..8 {
@@ -3753,7 +3869,11 @@ impl Decoder {
                             sp.mv_l1[0] as i32, sp.mv_l1[1] as i32,
                             sp.w, sp.h, &mut pred_l1,
                         );
-                        inter_pred::bi_pred_avg(&pred_l0, &pred_l1, &mut luma_pred);
+                        wctx.apply_bi(
+                            &pred_l0, &pred_l1, &mut luma_pred,
+                            sp.ref_idx_l0 as usize, sp.ref_idx_l1 as usize,
+                            false, 0,
+                        );
                     } else if sp.pred_l0 {
                         inter_pred::luma_mc(
                             &_ref_pic_list_l0[sp.ref_idx_l0 as usize],
@@ -3761,6 +3881,9 @@ impl Decoder {
                             sp.mv_l0[0] as i32, sp.mv_l0[1] as i32,
                             sp.w, sp.h, &mut luma_pred,
                         );
+                        if use_weight == 1 {
+                            wctx.apply_uni(&mut luma_pred, 0, sp.ref_idx_l0 as usize, false, 0);
+                        }
                     } else if sp.pred_l1 {
                         inter_pred::luma_mc(
                             &_ref_pic_list_l1[sp.ref_idx_l1 as usize],
@@ -3768,6 +3891,9 @@ impl Decoder {
                             sp.mv_l1[0] as i32, sp.mv_l1[1] as i32,
                             sp.w, sp.h, &mut luma_pred,
                         );
+                        if use_weight == 1 {
+                            wctx.apply_uni(&mut luma_pred, 1, sp.ref_idx_l1 as usize, false, 0);
+                        }
                     }
 
                     for r in 0..sp.h {
@@ -3873,7 +3999,12 @@ impl Decoder {
                                 sp.mv_l1[0] as i32, sp.mv_l1[1] as i32,
                                 cw, ch, &mut c_l1,
                             );
-                            inter_pred::bi_pred_avg(&c_l0, &c_l1, &mut part_pred);
+                            let chroma_comp = if scale_idx == 4 { 0 } else { 1 };
+                            wctx.apply_bi(
+                                &c_l0, &c_l1, &mut part_pred,
+                                sp.ref_idx_l0 as usize, sp.ref_idx_l1 as usize,
+                                true, chroma_comp,
+                            );
                         } else {
                             let (ref_list, ref_idx, mv) = if sp.pred_l0 {
                                 (&_ref_pic_list_l0, sp.ref_idx_l0, sp.mv_l0)
@@ -3887,6 +4018,11 @@ impl Decoder {
                                 mv[0] as i32, mv[1] as i32,
                                 cw, ch, &mut part_pred,
                             );
+                            if use_weight == 1 {
+                                let chroma_comp = if scale_idx == 4 { 0 } else { 1 };
+                                let (list, ri_val) = if sp.pred_l0 { (0, sp.ref_idx_l0 as usize) } else { (1, sp.ref_idx_l1 as usize) };
+                                wctx.apply_uni(&mut part_pred, list, ri_val, true, chroma_comp);
+                            }
                         }
                         for r in 0..ch {
                             for c in 0..cw {
@@ -4112,6 +4248,9 @@ impl Decoder {
                         sp.mv[0] as i32, sp.mv[1] as i32,
                         sp.w, sp.h, &mut luma_pred,
                     );
+                    if use_weight == 1 {
+                        wctx.apply_uni(&mut luma_pred, 0, sp.ref_idx as usize, false, 0);
+                    }
                     for r in 0..sp.h {
                         for c in 0..sp.w {
                             let val = (luma_pred[r * sp.w + c] as i32
@@ -4210,6 +4349,10 @@ impl Decoder {
                                 sp.mv[0] as i32, sp.mv[1] as i32,
                                 cw, ch, &mut part_pred,
                             );
+                            if use_weight == 1 {
+                                let chroma_comp = if scale_idx == 4 { 0 } else { 1 };
+                                wctx.apply_uni(&mut part_pred, 0, sp.ref_idx as usize, true, chroma_comp);
+                            }
                             for r in 0..ch {
                                 for c in 0..cw {
                                     chroma_pred[(cy_off + r) * 8 + cx_off + c] = part_pred[r * cw + c];
@@ -4775,6 +4918,102 @@ fn predict_mv_sub(
     xs.sort();
     ys.sort();
     (xs[1], ys[1])
+}
+
+/// Bundles weighted prediction parameters for a slice, avoiding long argument lists.
+struct WeightContext<'a> {
+    use_weight: u8,
+    wt: Option<&'a PredWeightTable>,
+    implicit_weights: &'a [Vec<i32>],
+}
+
+impl WeightContext<'_> {
+    /// Apply weighted uni-prediction in place. No-op if use_weight != 1.
+    fn apply_uni(
+        &self, pred: &mut [u8], list: usize, ref_idx: usize,
+        is_chroma: bool, chroma_comp: usize,
+    ) {
+        if self.use_weight != 1 {
+            return;
+        }
+        let wt = match self.wt {
+            Some(w) => w,
+            None => return,
+        };
+        let refs = if list == 0 { &wt.l0 } else { &wt.l1 };
+        if ref_idx >= refs.len() {
+            return;
+        }
+        let rw = &refs[ref_idx];
+        if is_chroma {
+            inter_pred::weighted_uni(
+                pred, wt.chroma_log2_weight_denom,
+                rw.chroma_weight[chroma_comp],
+                rw.chroma_offset[chroma_comp],
+            );
+        } else {
+            inter_pred::weighted_uni(
+                pred, wt.luma_log2_weight_denom,
+                rw.luma_weight, rw.luma_offset,
+            );
+        }
+    }
+
+    /// Apply weighted bi-prediction, replacing the standard (a+b+1)>>1 average.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_bi(
+        &self, pred_l0: &[u8], pred_l1: &[u8], output: &mut [u8],
+        ref_idx_l0: usize, ref_idx_l1: usize,
+        is_chroma: bool, chroma_comp: usize,
+    ) {
+        match self.use_weight {
+            1 => {
+                let wt = match self.wt {
+                    Some(w) => w,
+                    None => {
+                        inter_pred::bi_pred_avg(pred_l0, pred_l1, output);
+                        return;
+                    }
+                };
+                let rw0 = wt.l0.get(ref_idx_l0);
+                let rw1 = wt.l1.get(ref_idx_l1);
+                match (rw0, rw1) {
+                    (Some(w0), Some(w1)) if is_chroma => {
+                        inter_pred::weighted_bi(
+                            pred_l0, pred_l1, output,
+                            wt.chroma_log2_weight_denom,
+                            w0.chroma_weight[chroma_comp],
+                            w0.chroma_offset[chroma_comp],
+                            w1.chroma_weight[chroma_comp],
+                            w1.chroma_offset[chroma_comp],
+                        );
+                    }
+                    (Some(w0), Some(w1)) => {
+                        inter_pred::weighted_bi(
+                            pred_l0, pred_l1, output,
+                            wt.luma_log2_weight_denom,
+                            w0.luma_weight, w0.luma_offset,
+                            w1.luma_weight, w1.luma_offset,
+                        );
+                    }
+                    _ => inter_pred::bi_pred_avg(pred_l0, pred_l1, output),
+                }
+            }
+            2 => {
+                if ref_idx_l0 < self.implicit_weights.len()
+                    && ref_idx_l1 < self.implicit_weights[ref_idx_l0].len()
+                {
+                    let w0 = self.implicit_weights[ref_idx_l0][ref_idx_l1];
+                    inter_pred::weighted_bi_implicit(
+                        pred_l0, pred_l1, output, w0, 64 - w0,
+                    );
+                } else {
+                    inter_pred::bi_pred_avg(pred_l0, pred_l1, output);
+                }
+            }
+            _ => inter_pred::bi_pred_avg(pred_l0, pred_l1, output),
+        }
+    }
 }
 
 /// Motion vector prediction for P_Skip macroblocks.
@@ -6001,5 +6240,12 @@ mod tests {
         // 32x32, 15 frames: CABAC B-frames with B_L0_16x16, B_L1_16x16, B_Skip
         // (--no-deblock, spatial direct), byte-exact against FFmpeg
         decode_multiframe_and_compare("cabac_b_test", 15, 32, 32);
+    }
+
+    #[test]
+    fn test_weighted_p() {
+        // 32x32, 10 frames: CAVLC P with explicit weighted prediction (100% weighted,
+        // 77.8% chroma weighted), fading content, --no-deblock, byte-exact against FFmpeg
+        decode_multiframe_and_compare("weighted_p_test", 10, 32, 32);
     }
 }

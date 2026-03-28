@@ -31,7 +31,7 @@ This is a Rust project using Cargo:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. All CABAC syntax element values verified byte-exact against FFmpeg for I4x4, I16x16, P-slice inter (Skip, L0_16x16/16x8/8x16, 8x8, intra-in-P), and B-slice inter (Skip, Direct_16x16, L0/L1/Bi_16x16, 16x8/8x16, 8x8 with all sub_mb_types). Pixel output byte-exact against FFmpeg for B_L0/L1_16x16 + B_Skip test streams.
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices. Pixel output byte-exact against FFmpeg for weighted P-slice (100% weighted, fading content), CABAC B-slice, and all CAVLC inter test streams.
 
 ### Completed
 
@@ -70,6 +70,8 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - Luma: 6-tap FIR filter for half-pel, bilinear averaging for quarter-pel (all 16 positions)
 - Chroma: bilinear interpolation at eighth-pel precision
 - Bi-prediction: `bi_pred_avg` pixel averaging of L0 and L1 predictions
+- Weighted prediction: `weighted_uni` (explicit P/B), `weighted_bi` (explicit B),
+  `weighted_bi_implicit` (implicit B with POC-distance weights)
 - Boundary clipping per spec 8.4.2.2.1
 
 **Decoded Picture Buffer** (`src/dpb.rs`)
@@ -131,7 +133,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (72 tests)
+**Test Coverage** (73 tests)
 - Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
   mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
   noise_16x16, scaling_test
@@ -143,10 +145,10 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   cabac_mixed_test (multi-MB mixed I4x4/I16x16, ±1 IDCT tolerance),
   cabac_p_test (P_Skip), cabac_intra_p_test (intra-in-P),
   cabac_b_test (B_Skip with spatial direct, byte-exact)
+- Weighted prediction: weighted_p_test (CAVLC, 100% weighted P, fading, byte-exact)
 
 ### Not Yet Implemented
 
 - MBAFF/interlaced mode
-- Weighted prediction
 - Long-term reference support (MMCO ops 2-6)
 - Full deblocking bS derivation (inter-aware per-4x4-block checks)

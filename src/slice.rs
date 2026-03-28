@@ -58,6 +58,28 @@ pub struct SliceHeader {
     pub ref_list_mod_l1: Vec<(u32, u32)>,
     /// CABAC context initialization index (0-2) for P/B slices. Only valid when entropy_coding_mode_flag=1.
     pub cabac_init_idc: u32,
+    /// Weighted prediction table (spec 7.3.3.2).
+    pub weight_table: Option<PredWeightTable>,
+}
+
+/// Weighted prediction parameters from pred_weight_table().
+/// Stores per-reference weight and offset for luma and chroma.
+#[derive(Debug, Clone)]
+pub struct PredWeightTable {
+    pub luma_log2_weight_denom: u32,
+    pub chroma_log2_weight_denom: u32,
+    /// Per-reference weights for L0.
+    pub l0: Vec<RefWeight>,
+    /// L1 weights (B-slices only).
+    pub l1: Vec<RefWeight>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RefWeight {
+    pub luma_weight: i32,
+    pub luma_offset: i32,
+    pub chroma_weight: [i32; 2], // Cb, Cr
+    pub chroma_offset: [i32; 2], // Cb, Cr
 }
 
 impl SliceHeader {
@@ -166,43 +188,70 @@ pub fn parse_slice_header(
         }
     }
 
-    // pred_weight_table (spec 7.3.3.2) — consume but don't store
+    // pred_weight_table (spec 7.3.3.2)
     let needs_weight_table = (slice_type == SliceType::P && pps.weighted_pred_flag)
         || (slice_type == SliceType::B && pps.weighted_bipred_idc == 1);
-    if needs_weight_table {
-        let _luma_log2_weight_denom = r.read_ue()?;
-        let _chroma_log2_weight_denom = r.read_ue()?;
+    let weight_table = if needs_weight_table {
+        let luma_log2_weight_denom = r.read_ue()?;
+        let chroma_log2_weight_denom = r.read_ue()?;
+        let luma_def = 1i32 << luma_log2_weight_denom;
+        let chroma_def = 1i32 << chroma_log2_weight_denom;
+
+        let mut l0 = Vec::new();
         for _ in 0..num_ref_idx_l0_active {
+            let mut rw = RefWeight {
+                luma_weight: luma_def,
+                luma_offset: 0,
+                chroma_weight: [chroma_def, chroma_def],
+                chroma_offset: [0, 0],
+            };
             let luma_weight_flag = r.read_bit()? != 0;
             if luma_weight_flag {
-                let _ = r.read_se()?; // luma_weight
-                let _ = r.read_se()?; // luma_offset
+                rw.luma_weight = r.read_se()?;
+                rw.luma_offset = r.read_se()?;
             }
             let chroma_weight_flag = r.read_bit()? != 0;
             if chroma_weight_flag {
-                for _ in 0..2 {
-                    let _ = r.read_se()?; // chroma_weight
-                    let _ = r.read_se()?; // chroma_offset
+                for j in 0..2 {
+                    rw.chroma_weight[j] = r.read_se()?;
+                    rw.chroma_offset[j] = r.read_se()?;
                 }
             }
+            l0.push(rw);
         }
+
+        let mut l1 = Vec::new();
         if slice_type == SliceType::B {
             for _ in 0..num_ref_idx_l1_active {
+                let mut rw = RefWeight {
+                    luma_weight: luma_def, luma_offset: 0,
+                    chroma_weight: [chroma_def, chroma_def], chroma_offset: [0, 0],
+                };
                 let luma_weight_flag = r.read_bit()? != 0;
                 if luma_weight_flag {
-                    let _ = r.read_se()?;
-                    let _ = r.read_se()?;
+                    rw.luma_weight = r.read_se()?;
+                    rw.luma_offset = r.read_se()?;
                 }
                 let chroma_weight_flag = r.read_bit()? != 0;
                 if chroma_weight_flag {
-                    for _ in 0..2 {
-                        let _ = r.read_se()?;
-                        let _ = r.read_se()?;
+                    for j in 0..2 {
+                        rw.chroma_weight[j] = r.read_se()?;
+                        rw.chroma_offset[j] = r.read_se()?;
                     }
                 }
+                l1.push(rw);
             }
         }
-    }
+
+        Some(PredWeightTable {
+            luma_log2_weight_denom,
+            chroma_log2_weight_denom,
+            l0,
+            l1,
+        })
+    } else {
+        None
+    };
 
     // dec_ref_pic_marking (spec 7.3.3.3)
     let mut no_output_of_prior_pics_flag = false;
@@ -283,6 +332,7 @@ pub fn parse_slice_header(
         ref_list_mod_l0,
         ref_list_mod_l1,
         cabac_init_idc,
+        weight_table,
     };
 
     Ok((header, r))

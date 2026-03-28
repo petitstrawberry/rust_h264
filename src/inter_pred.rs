@@ -193,6 +193,60 @@ pub fn bi_pred_avg(pred_l0: &[u8], pred_l1: &[u8], output: &mut [u8]) {
     }
 }
 
+/// Apply explicit weighted prediction to uni-directional MC output (spec 8.4.2.3.1).
+/// `output[i] = clip((pred[i] * weight + (1 << (log2_denom - 1))) >> log2_denom + offset)`
+/// When log2_denom == 0, the rounding term is 0.
+pub fn weighted_uni(pred: &mut [u8], log2_denom: u32, weight: i32, offset: i32) {
+    if log2_denom == 0 {
+        for p in pred.iter_mut() {
+            *p = ((*p as i32 * weight + offset).clamp(0, 255)) as u8;
+        }
+    } else {
+        let round = 1i32 << (log2_denom - 1);
+        for p in pred.iter_mut() {
+            *p = ((*p as i32 * weight + round) >> log2_denom)
+                .wrapping_add(offset)
+                .clamp(0, 255) as u8;
+        }
+    }
+}
+
+/// Apply explicit weighted bi-prediction (spec 8.4.2.3.2).
+/// Formula: `clip((p0*w0 + p1*w1 + round) >> (denom+1) + (o0+o1+1)>>1)`
+#[allow(clippy::too_many_arguments)]
+pub fn weighted_bi(
+    pred_l0: &[u8],
+    pred_l1: &[u8],
+    output: &mut [u8],
+    log2_denom: u32,
+    w0: i32,
+    o0: i32,
+    w1: i32,
+    o1: i32,
+) {
+    let round = 1i32 << log2_denom;
+    let offset = (o0 + o1 + 1) >> 1;
+    let shift = log2_denom + 1;
+    for (o, (&a, &b)) in output.iter_mut().zip(pred_l0.iter().zip(pred_l1.iter())) {
+        *o = ((a as i32 * w0 + b as i32 * w1 + round) >> shift)
+            .wrapping_add(offset)
+            .clamp(0, 255) as u8;
+    }
+}
+
+/// Apply implicit weighted bi-prediction for B-slices (spec 8.4.2.3.2).
+/// Uses POC-distance-derived weights with fixed log2_denom=5.
+pub fn weighted_bi_implicit(
+    pred_l0: &[u8], pred_l1: &[u8], output: &mut [u8],
+    w0: i32, w1: i32,
+) {
+    let round = 1i32 << 5; // 1 << log2_denom where log2_denom=5
+    for (o, (&a, &b)) in output.iter_mut().zip(pred_l0.iter().zip(pred_l1.iter())) {
+        *o = ((a as i32 * w0 + b as i32 * w1 + round) >> 6)
+            .clamp(0, 255) as u8;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
