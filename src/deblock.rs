@@ -128,40 +128,32 @@ pub fn filter_frame(
             let c_alpha = ALPHA_TABLE[c_index_a];
             let c_beta = BETA_TABLE[c_index_b];
 
-            // Filter 4 segments, each spanning 4 rows
+            // Compute bS for all 4 segments first
+            let mut seg_bs = [0i32; 4];
             for seg in 0..4 {
-                // q block: column `edge`, row `seg` within the MB
                 let blk_q = blk_idx(edge, seg);
-                // p block: column to the left of q
                 let blk_p = if is_mb_edge {
-                    blk_idx(3, seg) // rightmost column of left MB
+                    blk_idx(3, seg)
                 } else {
                     blk_idx(edge - 1, seg)
                 };
+                seg_bs[seg] = derive_bs(mb_p, mb_q, blk_p, blk_q, is_mb_edge);
+            }
 
-                let bs = derive_bs(mb_p, mb_q, blk_p, blk_q, is_mb_edge);
-                if bs == 0 {
-                    continue;
-                }
-
-                let tc0 = if bs < 4 { TC0_TABLE[index_a][(bs - 1) as usize] } else { 0 };
+            // Luma: filter each segment independently
+            for seg in 0..4 {
+                if seg_bs[seg] == 0 { continue; }
+                let tc0 = if seg_bs[seg] < 4 { TC0_TABLE[index_a][(seg_bs[seg] - 1) as usize] } else { 0 };
                 let y = mb_y + seg * 4;
-                filter_edge_v(&mut frame.y, stride_y, edge_x, y, 4, bs, alpha, beta, tc0);
+                filter_edge_v(&mut frame.y, stride_y, edge_x, y, 4, seg_bs[seg], alpha, beta, tc0);
+            }
 
-                // Chroma: only at even edges and even segments
-                if edge % 2 == 0 && seg % 2 == 0 {
-                    let c_edge_x = mb_col * 8 + (edge / 2) * 4;
-                    let cy = mb_row * 8 + (seg / 2) * 4;
-                    // Per-pixel bS: first 2 chroma pixels use bs from seg,
-                    // next 2 use bs2 from seg+1
-                    let blk_q2 = blk_idx(edge, seg + 1);
-                    let blk_p2 = if is_mb_edge {
-                        blk_idx(3, seg + 1)
-                    } else {
-                        blk_idx(edge - 1, seg + 1)
-                    };
-                    let bs2 = derive_bs(mb_p, mb_q, blk_p2, blk_q2, is_mb_edge);
-                    let c_bs = [bs, bs, bs2, bs2];
+            // Chroma: per-pixel bS from all 4 luma segments
+            if edge % 2 == 0 {
+                let c_edge_x = mb_col * 8 + (edge / 2) * 4;
+                for cseg in 0..2 {
+                    let cy = mb_row * 8 + cseg * 4;
+                    let c_bs = [seg_bs[cseg * 2], seg_bs[cseg * 2], seg_bs[cseg * 2 + 1], seg_bs[cseg * 2 + 1]];
                     for plane in [&mut frame.u, &mut frame.v] {
                         for i in 0..4 {
                             let pbs = c_bs[i];
@@ -203,37 +195,32 @@ pub fn filter_frame(
             let c_alpha = ALPHA_TABLE[c_index_a];
             let c_beta = BETA_TABLE[c_index_b];
 
+            // Compute bS for all 4 segments first
+            let mut seg_bs = [0i32; 4];
             for seg in 0..4 {
-                // q block: column `seg`, row `edge` within the MB
                 let blk_q = blk_idx(seg, edge);
-                // p block: row above q
                 let blk_p = if is_mb_edge {
-                    blk_idx(seg, 3) // bottom row of above MB
+                    blk_idx(seg, 3)
                 } else {
                     blk_idx(seg, edge - 1)
                 };
+                seg_bs[seg] = derive_bs(mb_p, mb_q, blk_p, blk_q, is_mb_edge);
+            }
 
-                let bs = derive_bs(mb_p, mb_q, blk_p, blk_q, is_mb_edge);
-                if bs == 0 {
-                    continue;
-                }
-
-                let tc0 = if bs < 4 { TC0_TABLE[index_a][(bs - 1) as usize] } else { 0 };
+            // Luma: filter each segment independently
+            for seg in 0..4 {
+                if seg_bs[seg] == 0 { continue; }
+                let tc0 = if seg_bs[seg] < 4 { TC0_TABLE[index_a][(seg_bs[seg] - 1) as usize] } else { 0 };
                 let x = mb_x + seg * 4;
-                filter_edge_h(&mut frame.y, stride_y, x, edge_y, 4, bs, alpha, beta, tc0);
+                filter_edge_h(&mut frame.y, stride_y, x, edge_y, 4, seg_bs[seg], alpha, beta, tc0);
+            }
 
-                if edge % 2 == 0 && seg % 2 == 0 {
-                    let c_edge_y = mb_row * 8 + (edge / 2) * 4;
-                    let cx = mb_col * 8 + (seg / 2) * 4;
-                    // Per-pixel bS for chroma horizontal edge
-                    let blk_q2 = blk_idx(seg + 1, edge);
-                    let blk_p2 = if is_mb_edge {
-                        blk_idx(seg + 1, 3)
-                    } else {
-                        blk_idx(seg + 1, edge - 1)
-                    };
-                    let bs2 = derive_bs(mb_p, mb_q, blk_p2, blk_q2, is_mb_edge);
-                    let c_bs = [bs, bs, bs2, bs2];
+            // Chroma: per-pixel bS from all 4 luma segments
+            if edge % 2 == 0 {
+                let c_edge_y = mb_row * 8 + (edge / 2) * 4;
+                for cseg in 0..2 {
+                    let cx = mb_col * 8 + cseg * 4;
+                    let c_bs = [seg_bs[cseg * 2], seg_bs[cseg * 2], seg_bs[cseg * 2 + 1], seg_bs[cseg * 2 + 1]];
                     for plane in [&mut frame.u, &mut frame.v] {
                         for i in 0..4 {
                             let pbs = c_bs[i];
