@@ -4589,7 +4589,6 @@ impl Decoder {
                 };
                 prev_mb_qp = qp_y;
                 let qp_c = chroma_qp(qp_y, pps.chroma_qp_index_offset);
-
                 // Decode luma residual
                 let mut luma_residual = [0i32; 256];
                 if use_8x8_dct {

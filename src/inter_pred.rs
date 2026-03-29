@@ -95,11 +95,12 @@ fn luma_interp(
         (1, 2) => avg(half_pel_v(pic, x, y), half_pel_hv(pic, x, y)),
         (3, 2) => avg(half_pel_hv(pic, x, y), half_pel_v(pic, x + 1, y)),
 
-        // Quarter-pel corner positions: average of integer corner and diagonal half-pel
-        (1, 1) => avg(ref_luma(pic, x, y) as u8, half_pel_hv(pic, x, y)),
-        (3, 1) => avg(ref_luma(pic, x + 1, y) as u8, half_pel_hv(pic, x, y)),
-        (1, 3) => avg(ref_luma(pic, x, y + 1) as u8, half_pel_hv(pic, x, y)),
-        (3, 3) => avg(ref_luma(pic, x + 1, y + 1) as u8, half_pel_hv(pic, x, y)),
+        // Quarter-pel corner positions per spec Table 8-12:
+        // e = avg(b, h), g = avg(b, m), p = avg(h, s), r = avg(m, s)
+        (1, 1) => avg(half_pel_h(pic, x, y), half_pel_v(pic, x, y)),
+        (3, 1) => avg(half_pel_h(pic, x, y), half_pel_v(pic, x + 1, y)),
+        (1, 3) => avg(half_pel_v(pic, x, y), half_pel_h(pic, x, y + 1)),
+        (3, 3) => avg(half_pel_v(pic, x + 1, y), half_pel_h(pic, x, y + 1)),
 
         _ => unreachable!(),
     }
