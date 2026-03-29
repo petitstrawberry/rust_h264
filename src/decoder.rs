@@ -1832,18 +1832,44 @@ impl Decoder {
                                     ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
                                 }
                             }
-                            // Build sub_parts per 4x4 block for MC
-                            for blk in 0..16 {
-                                let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
-                                let ri_l0 = ref_idx_store_l0[mb_idx * 16 + blk];
-                                let ri_l1 = ref_idx_store_l1[mb_idx * 16 + blk];
-                                b_sub_parts.push(BSubPart {
-                                    x: blk_col, y: blk_row, w: 4, h: 4,
-                                    ref_idx_l0: ri_l0, ref_idx_l1: ri_l1,
-                                    mv_l0: mv_store_l0[mb_idx * 16 + blk],
-                                    mv_l1: mv_store_l1[mb_idx * 16 + blk],
-                                    pred_l0: ri_l0 >= 0, pred_l1: ri_l1 >= 0,
+                            // Build sub_parts, coalescing per-8x8 when MVs are uniform
+                            let base = mb_idx * 16;
+                            for i8x8 in 0..4 {
+                                let blk0 = i8x8 * 4;
+                                let mv0 = mv_store_l0[base + blk0];
+                                let mv1 = mv_store_l1[base + blk0];
+                                let r0 = ref_idx_store_l0[base + blk0];
+                                let r1 = ref_idx_store_l1[base + blk0];
+                                let uniform = (1..4).all(|sub| {
+                                    let b = blk0 + sub;
+                                    mv_store_l0[base + b] == mv0
+                                        && mv_store_l1[base + b] == mv1
+                                        && ref_idx_store_l0[base + b] == r0
+                                        && ref_idx_store_l1[base + b] == r1
                                 });
+                                let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk0];
+                                if uniform {
+                                    b_sub_parts.push(BSubPart {
+                                        x: blk_col, y: blk_row, w: 8, h: 8,
+                                        ref_idx_l0: r0, ref_idx_l1: r1,
+                                        mv_l0: mv0, mv_l1: mv1,
+                                        pred_l0: r0 >= 0, pred_l1: r1 >= 0,
+                                    });
+                                } else {
+                                    for sub in 0..4 {
+                                        let b = blk0 + sub;
+                                        let (br, bc) = BLOCK_INDEX_TO_OFFSET[b];
+                                        let rl0 = ref_idx_store_l0[base + b];
+                                        let rl1 = ref_idx_store_l1[base + b];
+                                        b_sub_parts.push(BSubPart {
+                                            x: bc, y: br, w: 4, h: 4,
+                                            ref_idx_l0: rl0, ref_idx_l1: rl1,
+                                            mv_l0: mv_store_l0[base + b],
+                                            mv_l1: mv_store_l1[base + b],
+                                            pred_l0: rl0 >= 0, pred_l1: rl1 >= 0,
+                                        });
+                                    }
+                                }
                             }
                         } else if raw_mb_type <= 3 {
                             // B_L0_16x16 (1), B_L1_16x16 (2), B_Bi_16x16 (3)
@@ -3656,23 +3682,58 @@ impl Decoder {
                                 frame.y[(mb_y + r) * stride + mb_x + c] = luma_pred[r * 16 + c];
                             }
                         }
-                        // Chroma: per-4x4-block MC using per-block MVs
+                        // Chroma: coalesce per-8x8 when all 4x4 blocks share the same MV
                         let cw = (width / 2) as usize;
                         let cx = mb_x / 2;
                         let cy = mb_y / 2;
                         let chroma_h = (height / 2) as usize;
+                        // Check if all 16 blocks have the same MV/ref (uniform direct mode)
+                        let base = mb_idx * 16;
+                        let all_uniform = (1..16).all(|b| {
+                            mv_store_l0[base + b] == mv_store_l0[base]
+                                && mv_store_l1[base + b] == mv_store_l1[base]
+                                && ref_idx_store_l0[base + b] == ref_idx_store_l0[base]
+                                && ref_idx_store_l1[base + b] == ref_idx_store_l1[base]
+                        });
                         for plane_idx in 0..2 {
                             let mut chroma_pred = [0u8; 64];
-                            // 4 chroma blocks, each 4x4, corresponding to 4 8x8 luma regions
+                            if all_uniform {
+                                // Single 8x8 chroma MC
+                                let mv0 = mv_store_l0[base];
+                                let mv1 = mv_store_l1[base];
+                                let r0 = ref_idx_store_l0[base];
+                                let r1 = ref_idx_store_l1[base];
+                                let bp0 = r0 >= 0;
+                                let bp1 = r1 >= 0;
+                                if bp0 && bp1 {
+                                    let mut c0 = [0u8; 64];
+                                    let mut c1 = [0u8; 64];
+                                    let ref_l0 = ref_pic_safe(&_ref_pic_list_l0, r0);
+                                    let ref_l1 = ref_pic_safe(&_ref_pic_list_l1, r1);
+                                    let cr0 = if plane_idx == 0 { &ref_l0.u } else { &ref_l0.v };
+                                    let cr1 = if plane_idx == 0 { &ref_l1.u } else { &ref_l1.v };
+                                    inter_pred::chroma_mc(cr0, cw, chroma_h, cx as i32, cy as i32, mv0[0] as i32, mv0[1] as i32, 8, 8, &mut c0);
+                                    inter_pred::chroma_mc(cr1, cw, chroma_h, cx as i32, cy as i32, mv1[0] as i32, mv1[1] as i32, 8, 8, &mut c1);
+                                    inter_pred::bi_pred_avg(&c0, &c1, &mut chroma_pred);
+                                } else if bp0 {
+                                    let ref_pic = ref_pic_safe(&_ref_pic_list_l0, r0);
+                                    let cr = if plane_idx == 0 { &ref_pic.u } else { &ref_pic.v };
+                                    inter_pred::chroma_mc(cr, cw, chroma_h, cx as i32, cy as i32, mv0[0] as i32, mv0[1] as i32, 8, 8, &mut chroma_pred);
+                                } else if bp1 {
+                                    let ref_pic = ref_pic_safe(&_ref_pic_list_l1, r1);
+                                    let cr = if plane_idx == 0 { &ref_pic.u } else { &ref_pic.v };
+                                    inter_pred::chroma_mc(cr, cw, chroma_h, cx as i32, cy as i32, mv1[0] as i32, mv1[1] as i32, 8, 8, &mut chroma_pred);
+                                }
+                            } else {
+                            // Per-4x4 chroma blocks for non-uniform MVs
                             for cblk in 0..4 {
                                 let cblk_row = (cblk / 2) * 4;
                                 let cblk_col = (cblk % 2) * 4;
-                                // Use the MV from the top-left 4x4 luma block of this 8x8 region
-                                let luma_blk = cblk * 4; // block 0,4,8,12
-                                let mv0 = mv_store_l0[mb_idx * 16 + luma_blk];
-                                let mv1 = mv_store_l1[mb_idx * 16 + luma_blk];
-                                let r0 = ref_idx_store_l0[mb_idx * 16 + luma_blk];
-                                let r1 = ref_idx_store_l1[mb_idx * 16 + luma_blk];
+                                let luma_blk = cblk * 4;
+                                let mv0 = mv_store_l0[base + luma_blk];
+                                let mv1 = mv_store_l1[base + luma_blk];
+                                let r0 = ref_idx_store_l0[base + luma_blk];
+                                let r1 = ref_idx_store_l1[base + luma_blk];
                                 let bp0 = r0 >= 0;
                                 let bp1 = r1 >= 0;
                                 let mut cblk_pred = [0u8; 16];
@@ -3701,6 +3762,7 @@ impl Decoder {
                                     }
                                 }
                             }
+                            } // close else (non-uniform)
                             let fp = if plane_idx == 0 { &mut frame.u } else { &mut frame.v };
                             for r in 0..8 {
                                 for c in 0..8 {
@@ -3821,18 +3883,46 @@ impl Decoder {
                                 ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
                             }
                         }
-                        // Build sub_parts per 4x4 block for MC
-                        for blk in 0..16 {
-                            let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
-                            let ri_l0 = ref_idx_store_l0[mb_idx * 16 + blk];
-                            let ri_l1 = ref_idx_store_l1[mb_idx * 16 + blk];
-                            sub_parts.push(SubPart {
-                                x: blk_col, y: blk_row, w: 4, h: 4,
-                                ref_idx_l0: ri_l0, ref_idx_l1: ri_l1,
-                                mv_l0: mv_store_l0[mb_idx * 16 + blk],
-                                mv_l1: mv_store_l1[mb_idx * 16 + blk],
-                                pred_l0: ri_l0 >= 0, pred_l1: ri_l1 >= 0,
+                        // Build sub_parts for MC, coalescing blocks with identical MVs/refs
+                        // per 8x8 sub-block (spec 8.4.1.2.1: direct mode applied per 8x8)
+                        let base = mb_idx * 16;
+                        for i8x8 in 0..4 {
+                            let blk0 = i8x8 * 4; // top-left 4x4 block of this 8x8
+                            let mv0 = mv_store_l0[base + blk0];
+                            let mv1 = mv_store_l1[base + blk0];
+                            let r0 = ref_idx_store_l0[base + blk0];
+                            let r1 = ref_idx_store_l1[base + blk0];
+                            // Check if all 4 blocks in this 8x8 have the same MV/ref
+                            let uniform = (1..4).all(|sub| {
+                                let b = blk0 + sub;
+                                mv_store_l0[base + b] == mv0
+                                    && mv_store_l1[base + b] == mv1
+                                    && ref_idx_store_l0[base + b] == r0
+                                    && ref_idx_store_l1[base + b] == r1
                             });
+                            let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk0];
+                            if uniform {
+                                sub_parts.push(SubPart {
+                                    x: blk_col, y: blk_row, w: 8, h: 8,
+                                    ref_idx_l0: r0, ref_idx_l1: r1,
+                                    mv_l0: mv0, mv_l1: mv1,
+                                    pred_l0: r0 >= 0, pred_l1: r1 >= 0,
+                                });
+                            } else {
+                                for sub in 0..4 {
+                                    let b = blk0 + sub;
+                                    let (br, bc) = BLOCK_INDEX_TO_OFFSET[b];
+                                    let rl0 = ref_idx_store_l0[base + b];
+                                    let rl1 = ref_idx_store_l1[base + b];
+                                    sub_parts.push(SubPart {
+                                        x: bc, y: br, w: 4, h: 4,
+                                        ref_idx_l0: rl0, ref_idx_l1: rl1,
+                                        mv_l0: mv_store_l0[base + b],
+                                        mv_l1: mv_store_l1[base + b],
+                                        pred_l0: rl0 >= 0, pred_l1: rl1 >= 0,
+                                    });
+                                }
+                            }
                         }
                     }
                     3 => {
@@ -4246,25 +4336,48 @@ impl Decoder {
                         idx = 0;
                         for layout in &layouts {
                             if sub_mb_types[layout.smb] == 0 {
-                                // B_Direct_8x8: per-4x4-block MVs already derived above
+                                // B_Direct_8x8: coalesce to 8x8 if all 4 blocks share MV/ref
                                 let base = mb_idx * 16;
-                                for dr in (0..8).step_by(4) {
-                                    for dc in (0..8).step_by(4) {
-                                        let lr = (layout.sy + dr) / 4;
-                                        let lc = (layout.sx + dc) / 4;
-                                        let blk = BLOCK_INDEX_TO_OFFSET.iter()
-                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                            .unwrap_or(0);
-                                        let mv_l0 = mv_store_l0[base + blk];
-                                        let mv_l1 = mv_store_l1[base + blk];
-                                        let ri_l0 = ref_idx_store_l0[base + blk];
-                                        let ri_l1 = ref_idx_store_l1[base + blk];
-                                        sub_parts.push(SubPart {
-                                            x: layout.sx + dc, y: layout.sy + dr, w: 4, h: 4,
-                                            ref_idx_l0: ri_l0, ref_idx_l1: ri_l1,
-                                            mv_l0, mv_l1,
-                                            pred_l0: ri_l0 >= 0, pred_l1: ri_l1 >= 0,
-                                        });
+                                let blk0 = BLOCK_INDEX_TO_OFFSET.iter()
+                                    .position(|&(br, bc)| br / 4 == layout.sy / 4 && bc / 4 == layout.sx / 4)
+                                    .unwrap_or(0);
+                                let mv0 = mv_store_l0[base + blk0];
+                                let mv1 = mv_store_l1[base + blk0];
+                                let r0 = ref_idx_store_l0[base + blk0];
+                                let r1 = ref_idx_store_l1[base + blk0];
+                                let uniform = (1..4).all(|sub| {
+                                    let b = blk0 + sub;
+                                    mv_store_l0[base + b] == mv0
+                                        && mv_store_l1[base + b] == mv1
+                                        && ref_idx_store_l0[base + b] == r0
+                                        && ref_idx_store_l1[base + b] == r1
+                                });
+                                if uniform {
+                                    sub_parts.push(SubPart {
+                                        x: layout.sx, y: layout.sy, w: 8, h: 8,
+                                        ref_idx_l0: r0, ref_idx_l1: r1,
+                                        mv_l0: mv0, mv_l1: mv1,
+                                        pred_l0: r0 >= 0, pred_l1: r1 >= 0,
+                                    });
+                                } else {
+                                    for dr in (0..8).step_by(4) {
+                                        for dc in (0..8).step_by(4) {
+                                            let lr = (layout.sy + dr) / 4;
+                                            let lc = (layout.sx + dc) / 4;
+                                            let blk = BLOCK_INDEX_TO_OFFSET.iter()
+                                                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                                .unwrap_or(0);
+                                            let mv_l0 = mv_store_l0[base + blk];
+                                            let mv_l1 = mv_store_l1[base + blk];
+                                            let ri_l0 = ref_idx_store_l0[base + blk];
+                                            let ri_l1 = ref_idx_store_l1[base + blk];
+                                            sub_parts.push(SubPart {
+                                                x: layout.sx + dc, y: layout.sy + dr, w: 4, h: 4,
+                                                ref_idx_l0: ri_l0, ref_idx_l1: ri_l1,
+                                                mv_l0, mv_l1,
+                                                pred_l0: ri_l0 >= 0, pred_l1: ri_l1 >= 0,
+                                            });
+                                        }
                                     }
                                 }
                                 idx += 1;
