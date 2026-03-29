@@ -31,7 +31,7 @@ This is a Rust project using Cargo:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). 23 of 28 test streams byte-exact against FFmpeg; remaining 5 have small diffs (max 1-5) except one B-frame stream (max 141, under investigation). Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). 24 of 28 test streams byte-exact against FFmpeg; remaining 4 have max diffs of 1-5 (IDCT rounding). Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
 
 ### Completed
 
@@ -57,17 +57,17 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - MV prediction with median and directional (match_count) logic
 - Inter CBP table, inter scaling lists (indices 3-5)
 - P_8x8 with all sub-partition types (8x8, 8x4, 4x8, 4x4) and P_8x8ref0
-- B_Skip (spatial/temporal direct mode, no residual)
-- B_Direct_16x16 (spatial/temporal direct mode + residual)
+- B_Skip (spatial/temporal direct mode, per-4x4-block MV derivation, no residual)
+- B_Direct_16x16 (spatial/temporal direct mode, per-4x4-block MV derivation + residual)
 - B_L0_16x16, B_L1_16x16 (uni-directional), B_Bi_16x16 (bi-directional)
 - Dual MV/ref_idx storage (L0 + L1) for B-slice support
 - Spatial direct mode: min-positive ref_idx from neighbors, median MV prediction,
-  co-located zero-MV refinement
-- Temporal direct mode: co-located MV scaling by POC distance (dist_scale_factor)
+  per-4x4-block co-located zero-MV refinement
+- Temporal direct mode: per-4x4-block co-located MV scaling by POC distance (dist_scale_factor)
 - Bi-prediction averaging for luma and chroma
 
 **Motion Compensation** (`src/inter_pred.rs`)
-- Luma: 6-tap FIR filter for half-pel, bilinear averaging for quarter-pel (all 16 positions)
+- Luma: 6-tap FIR filter for half-pel, bilinear averaging for quarter-pel (all 16 positions per spec Table 8-12)
 - Chroma: bilinear interpolation at eighth-pel precision
 - Bi-prediction: `bi_pred_avg` pixel averaging of L0 and L1 predictions
 - Weighted prediction: `weighted_uni` (explicit P/B), `weighted_bi` (explicit B),
@@ -154,8 +154,9 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   cabac_b_test (B_Skip with spatial direct, byte-exact),
   cabac_high_profile (CABAC High profile 8x8 inter, byte-exact)
 - Weighted prediction: weighted_p_test (CAVLC, 100% weighted P, fading, byte-exact)
-- High profile: high_profile_test (320x240 CAVLC, 8x8 intra+inter, I-frame ±2 IDCT)
-- Real-world: realworld_test (320x240 P-only), realworld_b_test (320x240 with B-frames)
+- High profile: high_profile_test (320x240 CAVLC, 8x8 intra+inter)
+- Real-world: realworld_test (320x240 P-only, byte-exact),
+  realworld_b_test (320x240 with B-frames, byte-exact)
 
 ### Not Yet Implemented
 

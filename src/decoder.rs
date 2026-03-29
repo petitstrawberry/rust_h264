@@ -380,59 +380,77 @@ impl Decoder {
                                 ref_idx_store_l0[mb_idx * 16 + blk] = 0;
                             }
                         } else {
-                            // B_Skip: spatial or temporal direct mode
-                            let (mv_l0, mv_l1, ri_l0, ri_l1, pl0, pl1) =
-                                if header.direct_spatial_mv_pred_flag {
-                                    derive_spatial_direct(
-                                        &mv_store_l0, &ref_idx_store_l0,
-                                        &mv_store_l1, &ref_idx_store_l1,
-                                        mb_idx, mb_width as usize,
-                                        _ref_pic_list_l1.first().map(|p| p.as_ref()),
-                                    )
-                                } else {
-                                    let col_pic = &_ref_pic_list_l1[0];
-                                    derive_temporal_direct(
-                                        col_pic, &_ref_pic_list_l0,
-                                        current_poc, col_pic.pic_order_cnt, mb_idx,
-                                    )
-                                };
-                            for blk in 0..16 {
-                                mv_store_l0[mb_idx * 16 + blk] = mv_l0;
-                                ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
-                                mv_store_l1[mb_idx * 16 + blk] = mv_l1;
-                                ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
-                            }
-                            // MC
-                            let mut luma_pred = [0u8; 256];
-                            if pl0 && pl1 {
-                                let mut p0 = [0u8; 256];
-                                let mut p1 = [0u8; 256];
-                                inter_pred::luma_mc(
-                                    ref_pic_safe(&_ref_pic_list_l0, ri_l0), mb_x as i32, mb_y as i32,
-                                    mv_l0[0] as i32, mv_l0[1] as i32, 16, 16, &mut p0,
-                                );
-                                inter_pred::luma_mc(
-                                    ref_pic_safe(&_ref_pic_list_l1, ri_l1), mb_x as i32, mb_y as i32,
-                                    mv_l1[0] as i32, mv_l1[1] as i32, 16, 16, &mut p1,
-                                );
-                                wctx.apply_bi(&p0, &p1, &mut luma_pred,
-                                    ri_l0 as usize, ri_l1 as usize, false, 0,
-                                );
-                            } else if pl0 {
-                                inter_pred::luma_mc(
-                                    ref_pic_safe(&_ref_pic_list_l0, ri_l0), mb_x as i32, mb_y as i32,
-                                    mv_l0[0] as i32, mv_l0[1] as i32, 16, 16, &mut luma_pred,
-                                );
-                                if use_weight == 1 {
-                                    wctx.apply_uni(&mut luma_pred, 0, ri_l0 as usize, false, 0);
+                            // B_Skip: derive MVs per 4x4 block via spatial or temporal direct mode
+                            if header.direct_spatial_mv_pred_flag {
+                                for blk in 0..16 {
+                                    let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) =
+                                        derive_spatial_direct_blk(
+                                            &mv_store_l0, &ref_idx_store_l0,
+                                            &mv_store_l1, &ref_idx_store_l1,
+                                            mb_idx, mb_width as usize,
+                                            _ref_pic_list_l1.first().map(|p| p.as_ref()),
+                                            blk,
+                                        );
+                                    mv_store_l0[mb_idx * 16 + blk] = mv_l0;
+                                    ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
+                                    mv_store_l1[mb_idx * 16 + blk] = mv_l1;
+                                    ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
                                 }
-                            } else if pl1 {
-                                inter_pred::luma_mc(
-                                    ref_pic_safe(&_ref_pic_list_l1, ri_l1), mb_x as i32, mb_y as i32,
-                                    mv_l1[0] as i32, mv_l1[1] as i32, 16, 16, &mut luma_pred,
-                                );
-                                if use_weight == 1 {
-                                    wctx.apply_uni(&mut luma_pred, 1, ri_l1 as usize, false, 0);
+                            } else {
+                                let col_pic = &_ref_pic_list_l1[0];
+                                for blk in 0..16 {
+                                    let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) =
+                                        derive_temporal_direct_blk(
+                                            col_pic, &_ref_pic_list_l0,
+                                            current_poc, col_pic.pic_order_cnt, mb_idx, blk,
+                                        );
+                                    mv_store_l0[mb_idx * 16 + blk] = mv_l0;
+                                    ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
+                                    mv_store_l1[mb_idx * 16 + blk] = mv_l1;
+                                    ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
+                                }
+                            }
+                            // Determine pred flags from block 0
+                            let ri_l0 = ref_idx_store_l0[mb_idx * 16];
+                            let ri_l1 = ref_idx_store_l1[mb_idx * 16];
+                            let pl0 = ri_l0 >= 0;
+                            let pl1 = ri_l1 >= 0;
+                            // MC: per-4x4-block for luma and chroma
+                            let mut luma_pred = [0u8; 256];
+                            for blk in 0..16 {
+                                let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
+                                let bx = mb_x + blk_col;
+                                let by = mb_y + blk_row;
+                                let mv0 = mv_store_l0[mb_idx * 16 + blk];
+                                let mv1 = mv_store_l1[mb_idx * 16 + blk];
+                                let r0 = ref_idx_store_l0[mb_idx * 16 + blk];
+                                let r1 = ref_idx_store_l1[mb_idx * 16 + blk];
+                                let bp0 = r0 >= 0;
+                                let bp1 = r1 >= 0;
+                                let mut blk_pred = [0u8; 16];
+                                if bp0 && bp1 {
+                                    let mut p0 = [0u8; 16];
+                                    let mut p1 = [0u8; 16];
+                                    inter_pred::luma_mc(ref_pic_safe(&_ref_pic_list_l0, r0), bx as i32, by as i32, mv0[0] as i32, mv0[1] as i32, 4, 4, &mut p0);
+                                    inter_pred::luma_mc(ref_pic_safe(&_ref_pic_list_l1, r1), bx as i32, by as i32, mv1[0] as i32, mv1[1] as i32, 4, 4, &mut p1);
+                                    inter_pred::bi_pred_avg(&p0, &p1, &mut blk_pred);
+                                } else if bp0 {
+                                    inter_pred::luma_mc(ref_pic_safe(&_ref_pic_list_l0, r0), bx as i32, by as i32, mv0[0] as i32, mv0[1] as i32, 4, 4, &mut blk_pred);
+                                } else if bp1 {
+                                    inter_pred::luma_mc(ref_pic_safe(&_ref_pic_list_l1, r1), bx as i32, by as i32, mv1[0] as i32, mv1[1] as i32, 4, 4, &mut blk_pred);
+                                }
+                                for r in 0..4 {
+                                    for c in 0..4 {
+                                        luma_pred[(blk_row + r) * 16 + blk_col + c] = blk_pred[r * 4 + c];
+                                    }
+                                }
+                            }
+                            if use_weight != 0 {
+                                if pl0 && pl1 {
+                                    // weights already handled via bi_pred_avg for use_weight=0
+                                } else if use_weight == 1 {
+                                    if pl0 { wctx.apply_uni(&mut luma_pred, 0, ri_l0 as usize, false, 0); }
+                                    else if pl1 { wctx.apply_uni(&mut luma_pred, 1, ri_l1 as usize, false, 0); }
                                 }
                             }
                             for r in 0..16 {
@@ -440,45 +458,47 @@ impl Decoder {
                                     frame.y[(mb_y + r) * stride + mb_x + c] = luma_pred[r * 16 + c];
                                 }
                             }
+                            // Chroma: per-4x4-block MC using per-block MVs
                             let cw = (width / 2) as usize;
                             let cx = mb_x / 2;
                             let cy = mb_y / 2;
                             let chroma_h = (height / 2) as usize;
                             for plane_idx in 0..2 {
                                 let mut chroma_pred = [0u8; 64];
-                                if pl0 && pl1 {
-                                    let ref_l0 = ref_pic_safe(&_ref_pic_list_l0, ri_l0);
-                                    let ref_l1 = ref_pic_safe(&_ref_pic_list_l1, ri_l1);
-                                    let cr0 = if plane_idx == 0 { &ref_l0.u } else { &ref_l0.v };
-                                    let cr1 = if plane_idx == 0 { &ref_l1.u } else { &ref_l1.v };
-                                    let mut c0 = [0u8; 64];
-                                    let mut c1 = [0u8; 64];
-                                    inter_pred::chroma_mc(
-                                        cr0, cw, chroma_h, cx as i32, cy as i32,
-                                        mv_l0[0] as i32, mv_l0[1] as i32, 8, 8, &mut c0,
-                                    );
-                                    inter_pred::chroma_mc(
-                                        cr1, cw, chroma_h, cx as i32, cy as i32,
-                                        mv_l1[0] as i32, mv_l1[1] as i32, 8, 8, &mut c1,
-                                    );
-                                    wctx.apply_bi(&c0, &c1, &mut chroma_pred,
-                                    ri_l0 as usize, ri_l1 as usize, true, plane_idx,
-                                );
-                                } else {
-                                    let (ref_list, ri, mv) = if pl0 {
-                                        (&_ref_pic_list_l0, ri_l0, mv_l0)
-                                    } else {
-                                        (&_ref_pic_list_l1, ri_l1, mv_l1)
-                                    };
-                                    let ref_pic = &ref_list[ri as usize];
-                                    let plane_ref = if plane_idx == 0 { &ref_pic.u } else { &ref_pic.v };
-                                    inter_pred::chroma_mc(
-                                        plane_ref, cw, chroma_h, cx as i32, cy as i32,
-                                        mv[0] as i32, mv[1] as i32, 8, 8, &mut chroma_pred,
-                                    );
-                                    if use_weight == 1 {
-                                        let (list, ri_val) = if pl0 { (0, ri_l0 as usize) } else { (1, ri_l1 as usize) };
-                                        wctx.apply_uni(&mut chroma_pred, list, ri_val, true, plane_idx);
+                                for cblk in 0..4 {
+                                    let cblk_row = (cblk / 2) * 4;
+                                    let cblk_col = (cblk % 2) * 4;
+                                    let luma_blk = cblk * 4; // block 0,4,8,12
+                                    let mv0 = mv_store_l0[mb_idx * 16 + luma_blk];
+                                    let mv1 = mv_store_l1[mb_idx * 16 + luma_blk];
+                                    let r0 = ref_idx_store_l0[mb_idx * 16 + luma_blk];
+                                    let r1 = ref_idx_store_l1[mb_idx * 16 + luma_blk];
+                                    let bp0 = r0 >= 0;
+                                    let bp1 = r1 >= 0;
+                                    let mut cblk_pred = [0u8; 16];
+                                    if bp0 && bp1 {
+                                        let mut c0 = [0u8; 16];
+                                        let mut c1 = [0u8; 16];
+                                        let ref_l0 = ref_pic_safe(&_ref_pic_list_l0, r0);
+                                        let ref_l1 = ref_pic_safe(&_ref_pic_list_l1, r1);
+                                        let cr0 = if plane_idx == 0 { &ref_l0.u } else { &ref_l0.v };
+                                        let cr1 = if plane_idx == 0 { &ref_l1.u } else { &ref_l1.v };
+                                        inter_pred::chroma_mc(cr0, cw, chroma_h, (cx + cblk_col) as i32, (cy + cblk_row) as i32, mv0[0] as i32, mv0[1] as i32, 4, 4, &mut c0);
+                                        inter_pred::chroma_mc(cr1, cw, chroma_h, (cx + cblk_col) as i32, (cy + cblk_row) as i32, mv1[0] as i32, mv1[1] as i32, 4, 4, &mut c1);
+                                        inter_pred::bi_pred_avg(&c0, &c1, &mut cblk_pred);
+                                    } else if bp0 {
+                                        let ref_pic = ref_pic_safe(&_ref_pic_list_l0, r0);
+                                        let cr = if plane_idx == 0 { &ref_pic.u } else { &ref_pic.v };
+                                        inter_pred::chroma_mc(cr, cw, chroma_h, (cx + cblk_col) as i32, (cy + cblk_row) as i32, mv0[0] as i32, mv0[1] as i32, 4, 4, &mut cblk_pred);
+                                    } else if bp1 {
+                                        let ref_pic = ref_pic_safe(&_ref_pic_list_l1, r1);
+                                        let cr = if plane_idx == 0 { &ref_pic.u } else { &ref_pic.v };
+                                        inter_pred::chroma_mc(cr, cw, chroma_h, (cx + cblk_col) as i32, (cy + cblk_row) as i32, mv1[0] as i32, mv1[1] as i32, 4, 4, &mut cblk_pred);
+                                    }
+                                    for r in 0..4 {
+                                        for c in 0..4 {
+                                            chroma_pred[(cblk_row + r) * 8 + cblk_col + c] = cblk_pred[r * 4 + c];
+                                        }
                                     }
                                 }
                                 let fp = if plane_idx == 0 { &mut frame.u } else { &mut frame.v };
@@ -1781,34 +1801,50 @@ impl Decoder {
                         let mut b_sub_parts: Vec<BSubPart> = Vec::new();
 
                         if raw_mb_type == 0 {
-                            // B_Direct_16x16
+                            // B_Direct_16x16: derive MVs per 4x4 block
                             mb_is_direct[mb_idx] = true;
-                            let (mv_l0, mv_l1, ri_l0, ri_l1, pl0, pl1) =
-                                if header.direct_spatial_mv_pred_flag {
-                                    derive_spatial_direct(
-                                        &mv_store_l0, &ref_idx_store_l0,
-                                        &mv_store_l1, &ref_idx_store_l1,
-                                        mb_idx, mb_width as usize,
-                                        _ref_pic_list_l1.first().map(|p| p.as_ref()),
-                                    )
-                                } else {
-                                    let col_pic = &_ref_pic_list_l1[0];
-                                    derive_temporal_direct(
-                                        col_pic, &_ref_pic_list_l0,
-                                        current_poc, col_pic.pic_order_cnt, mb_idx,
-                                    )
-                                };
-                            for blk in 0..16 {
-                                mv_store_l0[mb_idx * 16 + blk] = mv_l0;
-                                ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
-                                mv_store_l1[mb_idx * 16 + blk] = mv_l1;
-                                ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
+                            if header.direct_spatial_mv_pred_flag {
+                                for blk in 0..16 {
+                                    let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) =
+                                        derive_spatial_direct_blk(
+                                            &mv_store_l0, &ref_idx_store_l0,
+                                            &mv_store_l1, &ref_idx_store_l1,
+                                            mb_idx, mb_width as usize,
+                                            _ref_pic_list_l1.first().map(|p| p.as_ref()),
+                                            blk,
+                                        );
+                                    mv_store_l0[mb_idx * 16 + blk] = mv_l0;
+                                    ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
+                                    mv_store_l1[mb_idx * 16 + blk] = mv_l1;
+                                    ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
+                                }
+                            } else {
+                                let col_pic = &_ref_pic_list_l1[0];
+                                for blk in 0..16 {
+                                    let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) =
+                                        derive_temporal_direct_blk(
+                                            col_pic, &_ref_pic_list_l0,
+                                            current_poc, col_pic.pic_order_cnt, mb_idx, blk,
+                                        );
+                                    mv_store_l0[mb_idx * 16 + blk] = mv_l0;
+                                    ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
+                                    mv_store_l1[mb_idx * 16 + blk] = mv_l1;
+                                    ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
+                                }
                             }
-                            b_sub_parts.push(BSubPart {
-                                x: 0, y: 0, w: 16, h: 16,
-                                ref_idx_l0: ri_l0, ref_idx_l1: ri_l1,
-                                mv_l0, mv_l1, pred_l0: pl0, pred_l1: pl1,
-                            });
+                            // Build sub_parts per 4x4 block for MC
+                            for blk in 0..16 {
+                                let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
+                                let ri_l0 = ref_idx_store_l0[mb_idx * 16 + blk];
+                                let ri_l1 = ref_idx_store_l1[mb_idx * 16 + blk];
+                                b_sub_parts.push(BSubPart {
+                                    x: blk_col, y: blk_row, w: 4, h: 4,
+                                    ref_idx_l0: ri_l0, ref_idx_l1: ri_l1,
+                                    mv_l0: mv_store_l0[mb_idx * 16 + blk],
+                                    mv_l1: mv_store_l1[mb_idx * 16 + blk],
+                                    pred_l0: ri_l0 >= 0, pred_l1: ri_l1 >= 0,
+                                });
+                            }
                         } else if raw_mb_type <= 3 {
                             // B_L0_16x16 (1), B_L1_16x16 (2), B_Bi_16x16 (3)
                             let pred_l0 = raw_mb_type == 1 || raw_mb_type == 3;
@@ -2156,25 +2192,10 @@ impl Decoder {
                                 }
                             }
 
-                            // Derive B_Direct_8x8 MVs BEFORE MVD parsing
+                            // Derive B_Direct_8x8 MVs per 4x4 block BEFORE MVD parsing
                             for smb in 0..4 {
                                 if sub_mb_types[smb] != 0 { continue; }
                                 let (sy, sx) = sub_mb_origins[smb];
-                                let (d_mv_l0, d_mv_l1, d_ri_l0, d_ri_l1, _, _) =
-                                    if header.direct_spatial_mv_pred_flag {
-                                        derive_spatial_direct(
-                                            &mv_store_l0, &ref_idx_store_l0,
-                                            &mv_store_l1, &ref_idx_store_l1,
-                                            mb_idx, mb_width as usize,
-                                            _ref_pic_list_l1.first().map(|p| p.as_ref()),
-                                        )
-                                    } else {
-                                        let col_pic = &_ref_pic_list_l1[0];
-                                        derive_temporal_direct(
-                                            col_pic, &_ref_pic_list_l0,
-                                            current_poc, col_pic.pic_order_cnt, mb_idx,
-                                        )
-                                    };
                                 for r in (0..8).step_by(4) {
                                     for c in (0..8).step_by(4) {
                                         let lr = (sy + r) / 4;
@@ -2182,6 +2203,22 @@ impl Decoder {
                                         if let Some(blk) = BLOCK_INDEX_TO_OFFSET.iter()
                                             .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
                                         {
+                                            let (d_mv_l0, d_mv_l1, d_ri_l0, d_ri_l1, _, _) =
+                                                if header.direct_spatial_mv_pred_flag {
+                                                    derive_spatial_direct_blk(
+                                                        &mv_store_l0, &ref_idx_store_l0,
+                                                        &mv_store_l1, &ref_idx_store_l1,
+                                                        mb_idx, mb_width as usize,
+                                                        _ref_pic_list_l1.first().map(|p| p.as_ref()),
+                                                        blk,
+                                                    )
+                                                } else {
+                                                    let col_pic = &_ref_pic_list_l1[0];
+                                                    derive_temporal_direct_blk(
+                                                        col_pic, &_ref_pic_list_l0,
+                                                        current_poc, col_pic.pic_order_cnt, mb_idx, blk,
+                                                    )
+                                                };
                                             mv_store_l0[mb_idx * 16 + blk] = d_mv_l0;
                                             ref_idx_store_l0[mb_idx * 16 + blk] = d_ri_l0;
                                             mv_store_l1[mb_idx * 16 + blk] = d_mv_l1;
@@ -2302,20 +2339,26 @@ impl Decoder {
                             for layout in &layouts {
                                 let (sy, sx) = sub_mb_origins[layout.smb];
                                 if sub_mb_types[layout.smb] == 0 {
-                                    // B_Direct_8x8
-                                    let blk0 = BLOCK_INDEX_TO_OFFSET.iter()
-                                        .position(|&(br, bc)| br / 4 == sy / 4 && bc / 4 == sx / 4)
-                                        .unwrap_or(0);
+                                    // B_Direct_8x8: per-4x4-block sub_parts
                                     let base = mb_idx * 16;
-                                    b_sub_parts.push(BSubPart {
-                                        x: sx, y: sy, w: 8, h: 8,
-                                        ref_idx_l0: ref_idx_store_l0[base + blk0],
-                                        ref_idx_l1: ref_idx_store_l1[base + blk0],
-                                        mv_l0: mv_store_l0[base + blk0],
-                                        mv_l1: mv_store_l1[base + blk0],
-                                        pred_l0: ref_idx_store_l0[base + blk0] >= 0,
-                                        pred_l1: ref_idx_store_l1[base + blk0] >= 0,
-                                    });
+                                    for r in (0..8).step_by(4) {
+                                        for c in (0..8).step_by(4) {
+                                            let lr = (sy + r) / 4;
+                                            let lc = (sx + c) / 4;
+                                            let blk = BLOCK_INDEX_TO_OFFSET.iter()
+                                                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                                .unwrap_or(0);
+                                            let ri_l0 = ref_idx_store_l0[base + blk];
+                                            let ri_l1 = ref_idx_store_l1[base + blk];
+                                            b_sub_parts.push(BSubPart {
+                                                x: sx + c, y: sy + r, w: 4, h: 4,
+                                                ref_idx_l0: ri_l0, ref_idx_l1: ri_l1,
+                                                mv_l0: mv_store_l0[base + blk],
+                                                mv_l1: mv_store_l1[base + blk],
+                                                pred_l0: ri_l0 >= 0, pred_l1: ri_l1 >= 0,
+                                            });
+                                        }
+                                    }
                                 } else {
                                     let smt = sub_mb_types[layout.smb] as usize;
                                     let (_, _, pl0, pl1) = B_SUB_TABLE[smt];
@@ -3513,62 +3556,81 @@ impl Decoder {
                         }
                     } else {
                         // B_Skip: derive MVs via spatial or temporal direct mode, no residual
-                        let (mv_l0, mv_l1, ri_l0, ri_l1, pl0, pl1) =
-                            if header.direct_spatial_mv_pred_flag {
-                                derive_spatial_direct(
-                                    &mv_store_l0, &ref_idx_store_l0,
-                                    &mv_store_l1, &ref_idx_store_l1,
-                                    mb_idx, mb_width as usize,
-                                    _ref_pic_list_l1.first().map(|p| p.as_ref()),
-                                )
-                            } else {
-                                let col_pic = &_ref_pic_list_l1[0];
-                                derive_temporal_direct(
-                                    col_pic, &_ref_pic_list_l0,
-                                    current_poc, col_pic.pic_order_cnt, mb_idx,
-                                )
-                            };
-                        for blk in 0..16 {
-                            mv_store_l0[mb_idx * 16 + blk] = mv_l0;
-                            ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
-                            mv_store_l1[mb_idx * 16 + blk] = mv_l1;
-                            ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
-                        }
-                        // MC: single-list or bi-prediction
-                        let mut luma_pred = [0u8; 256];
-                        if pl0 && pl1 {
-                            let mut p0 = [0u8; 256];
-                            let mut p1 = [0u8; 256];
-                            inter_pred::luma_mc(
-                                ref_pic_safe(&_ref_pic_list_l0, ri_l0),
-                                mb_x as i32, mb_y as i32,
-                                mv_l0[0] as i32, mv_l0[1] as i32, 16, 16, &mut p0,
-                            );
-                            inter_pred::luma_mc(
-                                ref_pic_safe(&_ref_pic_list_l1, ri_l1),
-                                mb_x as i32, mb_y as i32,
-                                mv_l1[0] as i32, mv_l1[1] as i32, 16, 16, &mut p1,
-                            );
-                            wctx.apply_bi(&p0, &p1, &mut luma_pred,
-                                    ri_l0 as usize, ri_l1 as usize, false, 0,
-                                );
-                        } else if pl0 {
-                            inter_pred::luma_mc(
-                                ref_pic_safe(&_ref_pic_list_l0, ri_l0),
-                                mb_x as i32, mb_y as i32,
-                                mv_l0[0] as i32, mv_l0[1] as i32, 16, 16, &mut luma_pred,
-                            );
-                            if use_weight == 1 {
-                                wctx.apply_uni(&mut luma_pred, 0, ri_l0 as usize, false, 0);
+                        // Per spec 8.4.1.2, temporal direct derives per-4x4-block MVs
+                        if header.direct_spatial_mv_pred_flag {
+                            // Spatial direct: derive MVs once for the MB, but check
+                            // co-located zero-MV per 4x4 block
+                            for blk in 0..16 {
+                                let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) =
+                                    derive_spatial_direct_blk(
+                                        &mv_store_l0, &ref_idx_store_l0,
+                                        &mv_store_l1, &ref_idx_store_l1,
+                                        mb_idx, mb_width as usize,
+                                        _ref_pic_list_l1.first().map(|p| p.as_ref()),
+                                        blk,
+                                    );
+                                mv_store_l0[mb_idx * 16 + blk] = mv_l0;
+                                ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
+                                mv_store_l1[mb_idx * 16 + blk] = mv_l1;
+                                ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
                             }
-                        } else if pl1 {
-                            inter_pred::luma_mc(
-                                ref_pic_safe(&_ref_pic_list_l1, ri_l1),
-                                mb_x as i32, mb_y as i32,
-                                mv_l1[0] as i32, mv_l1[1] as i32, 16, 16, &mut luma_pred,
-                            );
-                            if use_weight == 1 {
-                                wctx.apply_uni(&mut luma_pred, 1, ri_l1 as usize, false, 0);
+                        } else {
+                            let col_pic = &_ref_pic_list_l1[0];
+                            for blk in 0..16 {
+                                let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) =
+                                    derive_temporal_direct_blk(
+                                        col_pic, &_ref_pic_list_l0,
+                                        current_poc, col_pic.pic_order_cnt, mb_idx, blk,
+                                    );
+                                mv_store_l0[mb_idx * 16 + blk] = mv_l0;
+                                ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
+                                mv_store_l1[mb_idx * 16 + blk] = mv_l1;
+                                ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
+                            }
+                        }
+                        // Determine pred flags from block 0 (all blocks share the same pred direction)
+                        let ri_l0 = ref_idx_store_l0[mb_idx * 16];
+                        let ri_l1 = ref_idx_store_l1[mb_idx * 16];
+                        let pl0 = ri_l0 >= 0;
+                        let pl1 = ri_l1 >= 0;
+                        // MC: per-4x4-block for luma and chroma
+                        let mut luma_pred = [0u8; 256];
+                        for blk in 0..16 {
+                            let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
+                            let bx = mb_x + blk_col;
+                            let by = mb_y + blk_row;
+                            let mv0 = mv_store_l0[mb_idx * 16 + blk];
+                            let mv1 = mv_store_l1[mb_idx * 16 + blk];
+                            let r0 = ref_idx_store_l0[mb_idx * 16 + blk];
+                            let r1 = ref_idx_store_l1[mb_idx * 16 + blk];
+                            let bp0 = r0 >= 0;
+                            let bp1 = r1 >= 0;
+                            let mut blk_pred = [0u8; 16];
+                            if bp0 && bp1 {
+                                let mut p0 = [0u8; 16];
+                                let mut p1 = [0u8; 16];
+                                inter_pred::luma_mc(ref_pic_safe(&_ref_pic_list_l0, r0), bx as i32, by as i32, mv0[0] as i32, mv0[1] as i32, 4, 4, &mut p0);
+                                inter_pred::luma_mc(ref_pic_safe(&_ref_pic_list_l1, r1), bx as i32, by as i32, mv1[0] as i32, mv1[1] as i32, 4, 4, &mut p1);
+                                inter_pred::bi_pred_avg(&p0, &p1, &mut blk_pred);
+                            } else if bp0 {
+                                inter_pred::luma_mc(ref_pic_safe(&_ref_pic_list_l0, r0), bx as i32, by as i32, mv0[0] as i32, mv0[1] as i32, 4, 4, &mut blk_pred);
+                            } else if bp1 {
+                                inter_pred::luma_mc(ref_pic_safe(&_ref_pic_list_l1, r1), bx as i32, by as i32, mv1[0] as i32, mv1[1] as i32, 4, 4, &mut blk_pred);
+                            }
+                            for r in 0..4 {
+                                for c in 0..4 {
+                                    luma_pred[(blk_row + r) * 16 + blk_col + c] = blk_pred[r * 4 + c];
+                                }
+                            }
+                        }
+                        if use_weight != 0 {
+                            // Apply weights to the full 16x16 pred
+                            if pl0 && pl1 {
+                                // Already applied via bi_pred_avg (no weights for use_weight=0)
+                                // For weighted modes, would need per-block weight application
+                            } else if use_weight == 1 {
+                                if pl0 { wctx.apply_uni(&mut luma_pred, 0, ri_l0 as usize, false, 0); }
+                                else if pl1 { wctx.apply_uni(&mut luma_pred, 1, ri_l1 as usize, false, 0); }
                             }
                         }
                         for r in 0..16 {
@@ -3576,37 +3638,49 @@ impl Decoder {
                                 frame.y[(mb_y + r) * stride + mb_x + c] = luma_pred[r * 16 + c];
                             }
                         }
-                        // Chroma
+                        // Chroma: per-4x4-block MC using per-block MVs
                         let cw = (width / 2) as usize;
                         let cx = mb_x / 2;
                         let cy = mb_y / 2;
                         let chroma_h = (height / 2) as usize;
                         for plane_idx in 0..2 {
                             let mut chroma_pred = [0u8; 64];
-                            if pl0 && pl1 {
-                                let mut c0 = [0u8; 64];
-                                let mut c1 = [0u8; 64];
-                                let ref_l0 = ref_pic_safe(&_ref_pic_list_l0, ri_l0);
-                                let ref_l1 = ref_pic_safe(&_ref_pic_list_l1, ri_l1);
-                                let cr0 = if plane_idx == 0 { &ref_l0.u } else { &ref_l0.v };
-                                let cr1 = if plane_idx == 0 { &ref_l1.u } else { &ref_l1.v };
-                                inter_pred::chroma_mc(cr0, cw, chroma_h, cx as i32, cy as i32, mv_l0[0] as i32, mv_l0[1] as i32, 8, 8, &mut c0);
-                                inter_pred::chroma_mc(cr1, cw, chroma_h, cx as i32, cy as i32, mv_l1[0] as i32, mv_l1[1] as i32, 8, 8, &mut c1);
-                                wctx.apply_bi(&c0, &c1, &mut chroma_pred,
-                                    ri_l0 as usize, ri_l1 as usize, true, plane_idx,
-                                );
-                            } else {
-                                let (ref_list, ri, mv) = if pl0 {
-                                    (&_ref_pic_list_l0, ri_l0, mv_l0)
-                                } else {
-                                    (&_ref_pic_list_l1, ri_l1, mv_l1)
-                                };
-                                let ref_pic = &ref_list[ri as usize];
-                                let cr = if plane_idx == 0 { &ref_pic.u } else { &ref_pic.v };
-                                inter_pred::chroma_mc(cr, cw, chroma_h, cx as i32, cy as i32, mv[0] as i32, mv[1] as i32, 8, 8, &mut chroma_pred);
-                                if use_weight == 1 {
-                                    let (list, ri_val) = if pl0 { (0, ri_l0 as usize) } else { (1, ri_l1 as usize) };
-                                    wctx.apply_uni(&mut chroma_pred, list, ri_val, true, plane_idx);
+                            // 4 chroma blocks, each 4x4, corresponding to 4 8x8 luma regions
+                            for cblk in 0..4 {
+                                let cblk_row = (cblk / 2) * 4;
+                                let cblk_col = (cblk % 2) * 4;
+                                // Use the MV from the top-left 4x4 luma block of this 8x8 region
+                                let luma_blk = cblk * 4; // block 0,4,8,12
+                                let mv0 = mv_store_l0[mb_idx * 16 + luma_blk];
+                                let mv1 = mv_store_l1[mb_idx * 16 + luma_blk];
+                                let r0 = ref_idx_store_l0[mb_idx * 16 + luma_blk];
+                                let r1 = ref_idx_store_l1[mb_idx * 16 + luma_blk];
+                                let bp0 = r0 >= 0;
+                                let bp1 = r1 >= 0;
+                                let mut cblk_pred = [0u8; 16];
+                                if bp0 && bp1 {
+                                    let mut c0 = [0u8; 16];
+                                    let mut c1 = [0u8; 16];
+                                    let ref_l0 = ref_pic_safe(&_ref_pic_list_l0, r0);
+                                    let ref_l1 = ref_pic_safe(&_ref_pic_list_l1, r1);
+                                    let cr0 = if plane_idx == 0 { &ref_l0.u } else { &ref_l0.v };
+                                    let cr1 = if plane_idx == 0 { &ref_l1.u } else { &ref_l1.v };
+                                    inter_pred::chroma_mc(cr0, cw, chroma_h, (cx + cblk_col) as i32, (cy + cblk_row) as i32, mv0[0] as i32, mv0[1] as i32, 4, 4, &mut c0);
+                                    inter_pred::chroma_mc(cr1, cw, chroma_h, (cx + cblk_col) as i32, (cy + cblk_row) as i32, mv1[0] as i32, mv1[1] as i32, 4, 4, &mut c1);
+                                    inter_pred::bi_pred_avg(&c0, &c1, &mut cblk_pred);
+                                } else if bp0 {
+                                    let ref_pic = ref_pic_safe(&_ref_pic_list_l0, r0);
+                                    let cr = if plane_idx == 0 { &ref_pic.u } else { &ref_pic.v };
+                                    inter_pred::chroma_mc(cr, cw, chroma_h, (cx + cblk_col) as i32, (cy + cblk_row) as i32, mv0[0] as i32, mv0[1] as i32, 4, 4, &mut cblk_pred);
+                                } else if bp1 {
+                                    let ref_pic = ref_pic_safe(&_ref_pic_list_l1, r1);
+                                    let cr = if plane_idx == 0 { &ref_pic.u } else { &ref_pic.v };
+                                    inter_pred::chroma_mc(cr, cw, chroma_h, (cx + cblk_col) as i32, (cy + cblk_row) as i32, mv1[0] as i32, mv1[1] as i32, 4, 4, &mut cblk_pred);
+                                }
+                                for r in 0..4 {
+                                    for c in 0..4 {
+                                        chroma_pred[(cblk_row + r) * 8 + cblk_col + c] = cblk_pred[r * 4 + c];
+                                    }
                                 }
                             }
                             let fp = if plane_idx == 0 { &mut frame.u } else { &mut frame.v };
@@ -3699,34 +3773,49 @@ impl Decoder {
                         });
                     }
                     0 => {
-                        // B_Direct_16x16: derive MVs via spatial or temporal direct mode
-                        let (mv_l0, mv_l1, ri_l0, ri_l1, pl0, pl1) =
-                            if header.direct_spatial_mv_pred_flag {
-                                derive_spatial_direct(
-                                    &mv_store_l0, &ref_idx_store_l0,
-                                    &mv_store_l1, &ref_idx_store_l1,
-                                    mb_idx, mb_width as usize,
-                                    _ref_pic_list_l1.first().map(|p| p.as_ref()),
-                                )
-                            } else {
-                                let col_pic = &_ref_pic_list_l1[0];
-                                derive_temporal_direct(
-                                    col_pic, &_ref_pic_list_l0,
-                                    current_poc, col_pic.pic_order_cnt, mb_idx,
-                                )
-                            };
-                        for blk in 0..16 {
-                            mv_store_l0[mb_idx * 16 + blk] = mv_l0;
-                            ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
-                            mv_store_l1[mb_idx * 16 + blk] = mv_l1;
-                            ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
+                        // B_Direct_16x16: derive MVs per 4x4 block via spatial or temporal direct
+                        if header.direct_spatial_mv_pred_flag {
+                            for blk in 0..16 {
+                                let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) =
+                                    derive_spatial_direct_blk(
+                                        &mv_store_l0, &ref_idx_store_l0,
+                                        &mv_store_l1, &ref_idx_store_l1,
+                                        mb_idx, mb_width as usize,
+                                        _ref_pic_list_l1.first().map(|p| p.as_ref()),
+                                        blk,
+                                    );
+                                mv_store_l0[mb_idx * 16 + blk] = mv_l0;
+                                ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
+                                mv_store_l1[mb_idx * 16 + blk] = mv_l1;
+                                ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
+                            }
+                        } else {
+                            let col_pic = &_ref_pic_list_l1[0];
+                            for blk in 0..16 {
+                                let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) =
+                                    derive_temporal_direct_blk(
+                                        col_pic, &_ref_pic_list_l0,
+                                        current_poc, col_pic.pic_order_cnt, mb_idx, blk,
+                                    );
+                                mv_store_l0[mb_idx * 16 + blk] = mv_l0;
+                                ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
+                                mv_store_l1[mb_idx * 16 + blk] = mv_l1;
+                                ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
+                            }
                         }
-                        sub_parts.push(SubPart {
-                            x: 0, y: 0, w: 16, h: 16,
-                            ref_idx_l0: ri_l0, ref_idx_l1: ri_l1,
-                            mv_l0, mv_l1,
-                            pred_l0: pl0, pred_l1: pl1,
-                        });
+                        // Build sub_parts per 4x4 block for MC
+                        for blk in 0..16 {
+                            let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
+                            let ri_l0 = ref_idx_store_l0[mb_idx * 16 + blk];
+                            let ri_l1 = ref_idx_store_l1[mb_idx * 16 + blk];
+                            sub_parts.push(SubPart {
+                                x: blk_col, y: blk_row, w: 4, h: 4,
+                                ref_idx_l0: ri_l0, ref_idx_l1: ri_l1,
+                                mv_l0: mv_store_l0[mb_idx * 16 + blk],
+                                mv_l1: mv_store_l1[mb_idx * 16 + blk],
+                                pred_l0: ri_l0 >= 0, pred_l1: ri_l1 >= 0,
+                            });
+                        }
                     }
                     3 => {
                         // B_Bi_16x16: both L0 and L1, averaged
@@ -4016,25 +4105,9 @@ impl Decoder {
                             layouts.push(SubLayout { smb, sx, sy, sub_w, sub_h, pl0, pl1, offsets });
                         }
 
-                        // Derive B_Direct_8x8 MVs BEFORE MVD parsing
-                        // (non-direct sub-MBs need direct neighbors' MVs for prediction)
+                        // Derive B_Direct_8x8 MVs per 4x4 block BEFORE MVD parsing
                         for layout in &layouts {
                             if sub_mb_types[layout.smb] == 0 {
-                                let (d_mv_l0, d_mv_l1, d_ri_l0, d_ri_l1, _, _) =
-                                    if header.direct_spatial_mv_pred_flag {
-                                        derive_spatial_direct(
-                                            &mv_store_l0, &ref_idx_store_l0,
-                                            &mv_store_l1, &ref_idx_store_l1,
-                                            mb_idx, mb_width as usize,
-                                            _ref_pic_list_l1.first().map(|p| p.as_ref()),
-                                        )
-                                    } else {
-                                        let col_pic = &_ref_pic_list_l1[0];
-                                        derive_temporal_direct(
-                                            col_pic, &_ref_pic_list_l0,
-                                            current_poc, col_pic.pic_order_cnt, mb_idx,
-                                        )
-                                    };
                                 for r in (0..8).step_by(4) {
                                     for c in (0..8).step_by(4) {
                                         let lr = (layout.sy + r) / 4;
@@ -4043,6 +4116,22 @@ impl Decoder {
                                             .iter()
                                             .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
                                         {
+                                            let (d_mv_l0, d_mv_l1, d_ri_l0, d_ri_l1, _, _) =
+                                                if header.direct_spatial_mv_pred_flag {
+                                                    derive_spatial_direct_blk(
+                                                        &mv_store_l0, &ref_idx_store_l0,
+                                                        &mv_store_l1, &ref_idx_store_l1,
+                                                        mb_idx, mb_width as usize,
+                                                        _ref_pic_list_l1.first().map(|p| p.as_ref()),
+                                                        blk,
+                                                    )
+                                                } else {
+                                                    let col_pic = &_ref_pic_list_l1[0];
+                                                    derive_temporal_direct_blk(
+                                                        col_pic, &_ref_pic_list_l0,
+                                                        current_poc, col_pic.pic_order_cnt, mb_idx, blk,
+                                                    )
+                                                };
                                             mv_store_l0[mb_idx * 16 + blk] = d_mv_l0;
                                             ref_idx_store_l0[mb_idx * 16 + blk] = d_ri_l0;
                                             mv_store_l1[mb_idx * 16 + blk] = d_mv_l1;
@@ -4139,22 +4228,27 @@ impl Decoder {
                         idx = 0;
                         for layout in &layouts {
                             if sub_mb_types[layout.smb] == 0 {
-                                // B_Direct_8x8: MVs already derived and stored above
+                                // B_Direct_8x8: per-4x4-block MVs already derived above
                                 let base = mb_idx * 16;
-                                let blk0 = BLOCK_INDEX_TO_OFFSET.iter()
-                                    .position(|&(br, bc)| br / 4 == layout.sy / 4 && bc / 4 == layout.sx / 4)
-                                    .unwrap_or(0);
-                                let mv_l0 = mv_store_l0[base + blk0];
-                                let mv_l1 = mv_store_l1[base + blk0];
-                                let ri_l0 = ref_idx_store_l0[base + blk0];
-                                let ri_l1 = ref_idx_store_l1[base + blk0];
-                                let pl0 = ri_l0 >= 0;
-                                let pl1 = ri_l1 >= 0;
-                                sub_parts.push(SubPart {
-                                    x: layout.sx, y: layout.sy, w: 8, h: 8,
-                                    ref_idx_l0: ri_l0, ref_idx_l1: ri_l1,
-                                    mv_l0, mv_l1, pred_l0: pl0, pred_l1: pl1,
-                                });
+                                for dr in (0..8).step_by(4) {
+                                    for dc in (0..8).step_by(4) {
+                                        let lr = (layout.sy + dr) / 4;
+                                        let lc = (layout.sx + dc) / 4;
+                                        let blk = BLOCK_INDEX_TO_OFFSET.iter()
+                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                            .unwrap_or(0);
+                                        let mv_l0 = mv_store_l0[base + blk];
+                                        let mv_l1 = mv_store_l1[base + blk];
+                                        let ri_l0 = ref_idx_store_l0[base + blk];
+                                        let ri_l1 = ref_idx_store_l1[base + blk];
+                                        sub_parts.push(SubPart {
+                                            x: layout.sx + dc, y: layout.sy + dr, w: 4, h: 4,
+                                            ref_idx_l0: ri_l0, ref_idx_l1: ri_l1,
+                                            mv_l0, mv_l1,
+                                            pred_l0: ri_l0 >= 0, pred_l1: ri_l1 >= 0,
+                                        });
+                                    }
+                                }
                                 idx += 1;
                             } else {
                                 let smt = sub_mb_types[layout.smb] as usize;
@@ -4345,7 +4439,7 @@ impl Decoder {
 
                     // Chroma MC for each sub-partition
                     let mut chroma_pred = [0u8; 64];
-                    for sp in &sub_parts {
+                    for (_sp_i, sp) in sub_parts.iter().enumerate() {
                         let cx_off = sp.x / 2;
                         let cy_off = sp.y / 2;
                         let cw = sp.w.max(2) / 2;
@@ -5626,6 +5720,22 @@ fn derive_spatial_direct(
     mb_width: usize,
     col_pic: Option<&DecodedPicture>,
 ) -> ([i16; 2], [i16; 2], i8, i8, bool, bool) {
+    derive_spatial_direct_blk(mv_store_l0, ref_idx_store_l0, mv_store_l1, ref_idx_store_l1,
+        mb_idx, mb_width, col_pic, 0)
+}
+
+/// Derive spatial direct mode MVs with per-4x4-block co-located check.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn derive_spatial_direct_blk(
+    mv_store_l0: &[[i16; 2]],
+    ref_idx_store_l0: &[i8],
+    mv_store_l1: &[[i16; 2]],
+    ref_idx_store_l1: &[i8],
+    mb_idx: usize,
+    mb_width: usize,
+    col_pic: Option<&DecodedPicture>,
+    col_blk: usize,
+) -> ([i16; 2], [i16; 2], i8, i8, bool, bool) {
     let mut ref_idx = [-1i8; 2];
     let mut mv = [[0i16; 2]; 2];
     let mut pred_flag = [false; 2];
@@ -5703,14 +5813,14 @@ fn derive_spatial_direct(
     }
 
     // Co-located zero-MV refinement (spec 8.4.1.2.2):
-    // If the co-located MB in L1[0] has near-zero MV with ref_idx=0,
+    // If the co-located block in L1[0] has near-zero MV with ref_idx=0,
     // zero out spatial MVs for lists where ref_idx == 0.
     if let Some(col) = col_pic {
-        let col_base = mb_idx * 16;
-        if col_base < col.ref_idx_l0.len() && !col.is_intra {
-            let col_ref = col.ref_idx_l0[col_base];
-            let col_mv = if col_base < col.mv_l0.len() {
-                col.mv_l0[col_base]
+        let col_pos = mb_idx * 16 + col_blk;
+        if col_pos < col.ref_idx_l0.len() && !col.is_intra {
+            let col_ref = col.ref_idx_l0[col_pos];
+            let col_mv = if col_pos < col.mv_l0.len() {
+                col.mv_l0[col_pos]
             } else {
                 [0, 0]
             };
@@ -5744,18 +5854,33 @@ fn derive_temporal_direct(
     col_poc: i32,
     mb_idx: usize,
 ) -> ([i16; 2], [i16; 2], i8, i8, bool, bool) {
+    // Use the first 4x4 block of the MB for whole-MB temporal direct
+    derive_temporal_direct_blk(col_pic, ref_pic_list_l0, current_poc, col_poc, mb_idx, 0)
+}
+
+/// Derive temporal direct mode MVs for a specific 4x4 block within an MB.
+/// Per spec 8.4.1.2.3, reads the co-located block's MV and scales by POC distance.
+#[allow(clippy::type_complexity)]
+fn derive_temporal_direct_blk(
+    col_pic: &DecodedPicture,
+    ref_pic_list_l0: &[Rc<DecodedPicture>],
+    current_poc: i32,
+    col_poc: i32,
+    mb_idx: usize,
+    blk: usize,
+) -> ([i16; 2], [i16; 2], i8, i8, bool, bool) {
     // Check if co-located MB is intra
     let col_base = mb_idx * 16;
-    if col_pic.is_intra || col_base >= col_pic.ref_idx_l0.len()
-        || col_pic.ref_idx_l0[col_base] < 0
+    if col_pic.is_intra || col_base + blk >= col_pic.ref_idx_l0.len()
+        || col_pic.ref_idx_l0[col_base + blk] < 0
     {
         // Intra co-located: zero MVs, ref_idx=0
         return ([0, 0], [0, 0], 0, 0, true, true);
     }
 
-    // Get co-located MV and ref_idx (use the first 4x4 block of the MB)
-    let col_mv = col_pic.mv_l0[col_base];
-    let col_ref_idx = col_pic.ref_idx_l0[col_base];
+    // Get co-located MV and ref_idx for the specific 4x4 block
+    let col_mv = col_pic.mv_l0[col_base + blk];
+    let col_ref_idx = col_pic.ref_idx_l0[col_base + blk];
 
     // Map co-located ref_idx to current L0 ref_idx by matching POC
     // For simplicity: assume col_ref_idx maps to the same index in current L0
