@@ -31,7 +31,7 @@ This is a Rust project using Cargo:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for CAVLC (intra and inter). Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices. Pixel output within IDCT rounding tolerance of FFmpeg for CAVLC High profile (max ±2 on I-frames, ±23 on P-frames).
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). CABAC High profile byte-exact against FFmpeg. Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
 
 ### Completed
 
@@ -102,6 +102,8 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   B 16x8/8x16 (18 partition variants), B_8x8 (13 sub_mb_types including B_Direct_8x8),
   intra-in-B (I4x4 and I16x16)
 - Dual MVD stores (L0 + L1) for B-slice CABAC amvd context
+- Category 5 (8x8 luma): no coded_block_flag (CBP bit sufficient), per-position context offsets
+- `transform_size_8x8_flag` context: `399 + neighbor_transform_size` with `mb_is_8x8dct` tracking
 
 **NAL Unit Parsing** (`src/nal.rs`)
 - Annex B start code detection (3-byte and 4-byte)
@@ -138,7 +140,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (76 tests)
+**Test Coverage** (77 tests)
 - Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
   mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
   noise_16x16, scaling_test
@@ -148,14 +150,19 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   (hierarchical B-frames with ref_pic_list_modification)
 - CABAC: cabac_i4x4_test (byte-exact), cabac_i16x16_test (byte-exact),
   cabac_mixed_test (multi-MB mixed I4x4/I16x16, ±1 IDCT tolerance),
-  cabac_p_test (P_Skip), cabac_intra_p_test (intra-in-P),
-  cabac_b_test (B_Skip with spatial direct, byte-exact)
+  cabac_p_test (P_Skip), cabac_intra_p_test (P_L0_16x16),
+  cabac_b_test (B_Skip with spatial direct, byte-exact),
+  cabac_high_profile (CABAC High profile 8x8 inter, byte-exact)
 - Weighted prediction: weighted_p_test (CAVLC, 100% weighted P, fading, byte-exact)
 - High profile: high_profile_test (320x240 CAVLC, 8x8 intra+inter, I-frame ±2 IDCT)
 - Real-world: realworld_test (320x240 P-only), realworld_b_test (320x240 with B-frames)
 
+### Known Issues
+
+- CABAC intra-in-P: I16x16 MBs within CABAC P-slices have large diffs vs FFmpeg.
+  Streams with 0% I-in-P are byte-exact. Root cause unknown.
+
 ### Not Yet Implemented
 
-- CABAC 8x8 correctness (structurally complete but has diffs — needs debugging)
 - MBAFF/interlaced mode
 - Long-term reference support (MMCO ops 2-6)

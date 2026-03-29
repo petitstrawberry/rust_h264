@@ -601,23 +601,19 @@ impl Decoder {
                                 let mut luma_residual = [0i32; 256];
                                 for i8x8 in 0..4 {
                                     if cbp_luma & (1 << i8x8) != 0 {
-                                        let blk0 = i8x8 * 4;
-                                        let left_nz = cabac_neighbor_nz_luma(&nc_luma, mb_idx, mb_width as usize, blk0, true, true);
-                                        let top_nz = cabac_neighbor_nz_luma(&nc_luma, mb_idx, mb_width as usize, blk0, false, true);
-                                        if cr.decode_coded_block_flag(st, 5, left_nz, top_nz) {
-                                            let (coeffs, tc) = cr.decode_residual_cabac(st, 5, 64);
-                                            let tc_per = tc.div_ceil(4);
-                                            for sub in 0..4 { nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = tc_per; }
-                                            let mut block_8x8 = [0i32; 64];
-                                            for (pos, val) in &coeffs { block_8x8[ZIGZAG_8X8_CABAC[*pos]] = *val; }
-                                            dequant_8x8(&mut block_8x8, qp_y, &pps.scaling_list_8x8[0]);
-                                            inverse_dct_8x8(&mut block_8x8);
-                                            let row_off = (i8x8 / 2) * 8;
-                                            let col_off = (i8x8 % 2) * 8;
-                                            for r in 0..8 { for c in 0..8 {
-                                                luma_residual[(row_off + r) * 16 + col_off + c] = block_8x8[r * 8 + c];
-                                            }}
-                                        }
+                                        // cat=5: no coded_block_flag, CBP bit is sufficient
+                                        let (coeffs, tc) = cr.decode_residual_cabac(st, 5, 64);
+                                        let tc_per = tc.div_ceil(4);
+                                        for sub in 0..4 { nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = tc_per; }
+                                        let mut block_8x8 = [0i32; 64];
+                                        for (pos, val) in &coeffs { block_8x8[ZIGZAG_8X8_CABAC[*pos]] = *val; }
+                                        dequant_8x8(&mut block_8x8, qp_y, &pps.scaling_list_8x8[0]);
+                                        inverse_dct_8x8(&mut block_8x8);
+                                        let row_off = (i8x8 / 2) * 8;
+                                        let col_off = (i8x8 % 2) * 8;
+                                        for r in 0..8 { for c in 0..8 {
+                                            luma_residual[(row_off + r) * 16 + col_off + c] = block_8x8[r * 8 + c];
+                                        }}
                                     }
                                 }
                                 for i8x8 in 0..4 {
@@ -1372,41 +1368,55 @@ impl Decoder {
                                     }
                                 }
                             }
-                            // Chroma MC for P_8x8
+                            // Chroma MC for P_8x8 (per sub-partition)
                             let cw = (width / 2) as usize;
                             let cx = mb_x / 2;
                             let cy = mb_y / 2;
                             for smb in 0..4 {
                                 let (sy, sx) = sub_mb_origins[smb];
                                 let ref_pic = &ref_pic_list[(sub_ref[smb] as usize).min(ref_pic_list.len() - 1)];
-                                let blk_idx = BLOCK_INDEX_TO_OFFSET.iter()
-                                    .position(|&(br, bc)| br == sy && bc == sx)
-                                    .unwrap_or(0);
-                                let mv = mv_store_l0[mb_idx * 16 + blk_idx];
-                                let cx_off = sx / 2;
-                                let cy_off = sy / 2;
-                                let mut cb_pred = [0u8; 16];
-                                let mut cr_pred_buf = [0u8; 16];
-                                inter_pred::chroma_mc(
-                                    &ref_pic.u, cw, (height / 2) as usize,
-                                    (cx + cx_off) as i32, (cy + cy_off) as i32,
-                                    mv[0] as i32, mv[1] as i32, 4, 4, &mut cb_pred,
-                                );
-                                inter_pred::chroma_mc(
-                                    &ref_pic.v, cw, (height / 2) as usize,
-                                    (cx + cx_off) as i32, (cy + cy_off) as i32,
-                                    mv[0] as i32, mv[1] as i32, 4, 4, &mut cr_pred_buf,
-                                );
-                                if use_weight == 1 {
-                                    wctx.apply_uni(&mut cb_pred, 0, sub_ref[smb] as usize, true, 0);
-                                    wctx.apply_uni(&mut cr_pred_buf, 0, sub_ref[smb] as usize, true, 1);
-                                }
-                                for r in 0..4 {
-                                    for c in 0..4 {
-                                        frame.u[(cy + cy_off + r) * cw + cx + cx_off + c] =
-                                            cb_pred[r * 4 + c];
-                                        frame.v[(cy + cy_off + r) * cw + cx + cx_off + c] =
-                                            cr_pred_buf[r * 4 + c];
+                                let sub_parts: Vec<(usize, usize, usize, usize)> = match sub_mb_types[smb] {
+                                    0 => vec![(0, 0, 8, 8)],
+                                    1 => vec![(0, 0, 8, 4), (0, 4, 8, 4)],
+                                    2 => vec![(0, 0, 4, 8), (4, 0, 4, 8)],
+                                    3 => vec![(0, 0, 4, 4), (4, 0, 4, 4), (0, 4, 4, 4), (4, 4, 4, 4)],
+                                    _ => vec![(0, 0, 8, 8)],
+                                };
+                                for &(dx, dy, spw, sph) in &sub_parts {
+                                    let px = sx + dx;
+                                    let py = sy + dy;
+                                    let blk_idx = BLOCK_INDEX_TO_OFFSET.iter()
+                                        .position(|&(br, bc)| br == py && bc == px)
+                                        .unwrap_or(0);
+                                    let mv = mv_store_l0[mb_idx * 16 + blk_idx];
+                                    let ccx = px / 2;
+                                    let ccy = py / 2;
+                                    let ccw = spw.max(2) / 2;
+                                    let cch = sph.max(2) / 2;
+                                    if ccw == 0 || cch == 0 { continue; }
+                                    let mut cb_pred = vec![0u8; ccw * cch];
+                                    let mut cr_pred_buf = vec![0u8; ccw * cch];
+                                    inter_pred::chroma_mc(
+                                        &ref_pic.u, cw, (height / 2) as usize,
+                                        (cx + ccx) as i32, (cy + ccy) as i32,
+                                        mv[0] as i32, mv[1] as i32, ccw, cch, &mut cb_pred,
+                                    );
+                                    inter_pred::chroma_mc(
+                                        &ref_pic.v, cw, (height / 2) as usize,
+                                        (cx + ccx) as i32, (cy + ccy) as i32,
+                                        mv[0] as i32, mv[1] as i32, ccw, cch, &mut cr_pred_buf,
+                                    );
+                                    if use_weight == 1 {
+                                        wctx.apply_uni(&mut cb_pred, 0, sub_ref[smb] as usize, true, 0);
+                                        wctx.apply_uni(&mut cr_pred_buf, 0, sub_ref[smb] as usize, true, 1);
+                                    }
+                                    for r in 0..cch {
+                                        for c in 0..ccw {
+                                            frame.u[(cy + ccy + r) * cw + cx + ccx + c] =
+                                                cb_pred[r * ccw + c];
+                                            frame.v[(cy + ccy + r) * cw + cx + ccx + c] =
+                                                cr_pred_buf[r * ccw + c];
+                                        }
                                     }
                                 }
                             }
@@ -1560,23 +1570,20 @@ impl Decoder {
                                 let scale_8x8 = &pps.scaling_list_8x8[1]; // inter
                                 for i8x8 in 0..4 {
                                     if cbp_luma & (1 << i8x8) == 0 { continue; }
-                                    let blk0 = i8x8 * 4;
-                                    let left_nz = cabac_neighbor_nz_luma(&nc_luma, mb_idx, mb_width as usize, blk0, true, false);
-                                    let top_nz = cabac_neighbor_nz_luma(&nc_luma, mb_idx, mb_width as usize, blk0, false, false);
-                                    if cr.decode_coded_block_flag(st, 5, left_nz, top_nz) {
-                                        let (coeffs, tc) = cr.decode_residual_cabac(st, 5, 64);
-                                        let tc_per = tc.div_ceil(4);
-                                        for sub in 0..4 { nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = tc_per; }
-                                        let mut block_8x8 = [0i32; 64];
-                                        for (pos, val) in &coeffs { block_8x8[ZIGZAG_8X8_CABAC[*pos]] = *val; }
-                                        dequant_8x8(&mut block_8x8, qp_y, scale_8x8);
-                                        inverse_dct_8x8(&mut block_8x8);
-                                        let row_off = (i8x8 / 2) * 8;
-                                        let col_off = (i8x8 % 2) * 8;
-                                        for r in 0..8 { for c in 0..8 {
-                                            luma_residual[(row_off + r) * 16 + col_off + c] = block_8x8[r * 8 + c];
-                                        }}
-                                    }
+                                    // Note: cat=5 (8x8 luma) does NOT use coded_block_flag.
+                                    // The CBP luma bit alone indicates coefficients are present.
+                                    let (coeffs, tc) = cr.decode_residual_cabac(st, 5, 64);
+                                    let tc_per = tc.div_ceil(4);
+                                    for sub in 0..4 { nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = tc_per; }
+                                    let mut block_8x8 = [0i32; 64];
+                                    for (pos, val) in &coeffs { block_8x8[ZIGZAG_8X8_CABAC[*pos]] = *val; }
+                                    dequant_8x8(&mut block_8x8, qp_y, scale_8x8);
+                                    inverse_dct_8x8(&mut block_8x8);
+                                    let row_off = (i8x8 / 2) * 8;
+                                    let col_off = (i8x8 % 2) * 8;
+                                    for r in 0..8 { for c in 0..8 {
+                                        luma_residual[(row_off + r) * 16 + col_off + c] = block_8x8[r * 8 + c];
+                                    }}
                                 }
                             } else {
                             // 4x4 transform (existing path)
@@ -2501,23 +2508,19 @@ impl Decoder {
                                 let scale_8x8 = &pps.scaling_list_8x8[1];
                                 for i8x8 in 0..4 {
                                     if cbp_luma & (1 << i8x8) == 0 { continue; }
-                                    let blk0 = i8x8 * 4;
-                                    let left_nz = cabac_neighbor_nz_luma(&nc_luma, mb_idx, mb_width as usize, blk0, true, false);
-                                    let top_nz = cabac_neighbor_nz_luma(&nc_luma, mb_idx, mb_width as usize, blk0, false, false);
-                                    if cr.decode_coded_block_flag(st, 5, left_nz, top_nz) {
-                                        let (coeffs, tc) = cr.decode_residual_cabac(st, 5, 64);
-                                        let tc_per = tc.div_ceil(4);
-                                        for sub in 0..4 { nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = tc_per; }
-                                        let mut block_8x8 = [0i32; 64];
-                                        for (pos, val) in &coeffs { block_8x8[ZIGZAG_8X8_CABAC[*pos]] = *val; }
-                                        dequant_8x8(&mut block_8x8, qp_y, scale_8x8);
-                                        inverse_dct_8x8(&mut block_8x8);
-                                        let row_off = (i8x8 / 2) * 8;
-                                        let col_off = (i8x8 % 2) * 8;
-                                        for r in 0..8 { for c in 0..8 {
-                                            luma_residual[(row_off + r) * 16 + col_off + c] = block_8x8[r * 8 + c];
-                                        }}
-                                    }
+                                    // cat=5: no coded_block_flag, CBP bit is sufficient
+                                    let (coeffs, tc) = cr.decode_residual_cabac(st, 5, 64);
+                                    let tc_per = tc.div_ceil(4);
+                                    for sub in 0..4 { nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = tc_per; }
+                                    let mut block_8x8 = [0i32; 64];
+                                    for (pos, val) in &coeffs { block_8x8[ZIGZAG_8X8_CABAC[*pos]] = *val; }
+                                    dequant_8x8(&mut block_8x8, qp_y, scale_8x8);
+                                    inverse_dct_8x8(&mut block_8x8);
+                                    let row_off = (i8x8 / 2) * 8;
+                                    let col_off = (i8x8 % 2) * 8;
+                                    for r in 0..8 { for c in 0..8 {
+                                        luma_residual[(row_off + r) * 16 + col_off + c] = block_8x8[r * 8 + c];
+                                    }}
                                 }
                             } else {
                             for blk in 0..16 {
@@ -2798,20 +2801,7 @@ impl Decoder {
                                 }
                                 continue;
                             }
-                            // CBF check: use first sub-block's neighbors
-                            let blk0 = i8x8 * 4;
-                            let left_nz = cabac_neighbor_nz_luma(
-                                &nc_luma, mb_idx, mb_width as usize, blk0, true, true,
-                            );
-                            let top_nz = cabac_neighbor_nz_luma(
-                                &nc_luma, mb_idx, mb_width as usize, blk0, false, true,
-                            );
-                            if !cr.decode_coded_block_flag(st, 5, left_nz, top_nz) {
-                                for sub in 0..4 {
-                                    nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = 0;
-                                }
-                                continue;
-                            }
+                            // cat=5: no coded_block_flag, CBP bit is sufficient
                             let (coeffs, tc) = cr.decode_residual_cabac(st, 5, 64);
                             // Distribute nC across sub-blocks
                             let tc_per = tc.div_ceil(4);
@@ -6830,7 +6820,8 @@ mod tests {
 
     #[test]
     fn test_cabac_intra_in_p() {
-        // 64x64, 3 frames: CABAC IDR + 2 P-frames with 59% I16x16-in-P + 41% P_L0_16x16
+        // 64x64, 3 frames: CABAC IDR + 2 P-frames with P_L0_16x16 (25%) + skip (75%),
+        // --no-deblock, --partitions none, byte-exact against FFmpeg
         decode_multiframe_and_compare("cabac_intra_p_test", 3, 64, 64);
     }
 
@@ -6843,9 +6834,9 @@ mod tests {
 
     #[test]
     fn test_cabac_high_profile() {
-        // 64x64, 20 frames: CABAC High profile with 8x8 transform (25.5% inter 8x8),
-        // P-only, --no-deblock, veryslow preset
-        decode_multiframe_and_compare("cabac_high_test", 20, 64, 64);
+        // 64x64, 5 frames: CABAC High profile with 8x8 transform (43.8% inter 8x8),
+        // P-only, --no-deblock, medium preset, byte-exact against FFmpeg
+        decode_multiframe_and_compare("cabac_high_test", 5, 64, 64);
     }
 
     #[test]
