@@ -52,42 +52,33 @@ pub fn inverse_hadamard_2x2(dc: &mut [i32; 4]) {
 /// Operates in-place on 16 coefficients in raster order.
 /// Horizontal pass (rows) first, then vertical pass (columns), per spec 8.5.12.1.
 pub fn inverse_dct_4x4(block: &mut [i32; 16]) {
-    let mut tmp = [0i32; 16];
+    // Rounding bias before butterfly (spec 8.5.12.1)
+    block[0] += 32;
 
-    // Horizontal pass (rows)
+    // First pass: rows (matches column-major first pass since our data is row-major)
     for i in 0..4 {
-        let z0 = block[i * 4];
-        let z1 = block[i * 4 + 1];
-        let z2 = block[i * 4 + 2];
-        let z3 = block[i * 4 + 3];
+        let z0 = block[i * 4] + block[i * 4 + 2];
+        let z1 = block[i * 4] - block[i * 4 + 2];
+        let z2 = (block[i * 4 + 1] >> 1) - block[i * 4 + 3];
+        let z3 = block[i * 4 + 1] + (block[i * 4 + 3] >> 1);
 
-        let e0 = z0 + z2;
-        let e1 = z0 - z2;
-        let e2 = (z1 >> 1) - z3;
-        let e3 = z1 + (z3 >> 1);
-
-        tmp[i * 4] = e0 + e3;
-        tmp[i * 4 + 1] = e1 + e2;
-        tmp[i * 4 + 2] = e1 - e2;
-        tmp[i * 4 + 3] = e0 - e3;
+        block[i * 4] = z0 + z3;
+        block[i * 4 + 1] = z1 + z2;
+        block[i * 4 + 2] = z1 - z2;
+        block[i * 4 + 3] = z0 - z3;
     }
 
-    // Vertical pass (columns), with rounding: (x + 32) >> 6
+    // Second pass: columns, with >> 6 normalization
     for j in 0..4 {
-        let z0 = tmp[j];
-        let z1 = tmp[4 + j];
-        let z2 = tmp[8 + j];
-        let z3 = tmp[12 + j];
+        let z0 = block[j] + block[8 + j];
+        let z1 = block[j] - block[8 + j];
+        let z2 = (block[4 + j] >> 1) - block[12 + j];
+        let z3 = block[4 + j] + (block[12 + j] >> 1);
 
-        let e0 = z0 + z2;
-        let e1 = z0 - z2;
-        let e2 = (z1 >> 1) - z3;
-        let e3 = z1 + (z3 >> 1);
-
-        block[j] = (e0 + e3 + 32) >> 6;
-        block[4 + j] = (e1 + e2 + 32) >> 6;
-        block[8 + j] = (e1 - e2 + 32) >> 6;
-        block[12 + j] = (e0 - e3 + 32) >> 6;
+        block[j] = (z0 + z3) >> 6;
+        block[4 + j] = (z1 + z2) >> 6;
+        block[8 + j] = (z1 - z2) >> 6;
+        block[12 + j] = (z0 - z3) >> 6;
     }
 }
 
