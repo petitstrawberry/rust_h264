@@ -6468,12 +6468,12 @@ fn dequant_4x4_ac_raster(block: &mut [i32; 16], qp: i32, scale: &[u8; 16]) {
     let qp_rem = (qp % 6) as usize;
 
     const LEVEL_SCALE: [[i32; 3]; 6] = [
-        [10, 16, 13],
-        [11, 18, 14],
-        [13, 20, 16],
-        [14, 23, 18],
-        [16, 25, 20],
-        [18, 29, 23],
+        [10, 13, 16],
+        [11, 14, 18],
+        [13, 16, 20],
+        [14, 18, 23],
+        [16, 20, 25],
+        [18, 23, 29],
     ];
 
     for r in 0..4 {
@@ -6483,11 +6483,7 @@ fn dequant_4x4_ac_raster(block: &mut [i32; 16], qp: i32, scale: &[u8; 16]) {
             }
             let idx = r * 4 + c;
             if block[idx] != 0 {
-                let pc = match (r % 2, c % 2) {
-                    (0, 0) => 0,
-                    (1, 1) => 1,
-                    _ => 2,
-                };
+                let pc = (r & 1) + (c & 1);
                 let scan_idx = ZIGZAG_4X4.iter().position(|&(zr, zc)| zr == r && zc == c).unwrap();
                 let v = LEVEL_SCALE[qp_rem][pc] * scale[scan_idx] as i32;
                 if qp_per >= 4 {

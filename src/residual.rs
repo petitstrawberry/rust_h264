@@ -93,25 +93,22 @@ pub fn inverse_dct_4x4(block: &mut [i32; 16]) {
 
 /// LevelScale factors from H.264 Table 8-13.
 /// Indexed by [qp_rem][position_category] where position categories are:
-/// 0: (0,0),(2,0),(0,2),(2,2)
-/// 1: (1,1),(3,1),(1,3),(3,3)
-/// 2: other positions
+/// 0: even row, even col — (0,0),(2,0),(0,2),(2,2)
+/// 1: mixed parity — (0,1),(1,0),(0,3),(2,1), etc.
+/// 2: odd row, odd col — (1,1),(3,1),(1,3),(3,3)
 const LEVEL_SCALE: [[i32; 3]; 6] = [
-    [10, 16, 13],
-    [11, 18, 14],
-    [13, 20, 16],
-    [14, 23, 18],
-    [16, 25, 20],
-    [18, 29, 23],
+    [10, 13, 16],
+    [11, 14, 18],
+    [13, 16, 20],
+    [14, 18, 23],
+    [16, 20, 25],
+    [18, 23, 29],
 ];
 
 /// Get the position category for a 4x4 block position (row, col).
+/// Per spec Table 8-13: 0=even-even, 1=mixed parity, 2=odd-odd.
 fn position_category(row: usize, col: usize) -> usize {
-    match (row % 2, col % 2) {
-        (0, 0) => 0,
-        (1, 1) => 1,
-        _ => 2,
-    }
+    (row & 1) + (col & 1)
 }
 
 /// Dequantize a 4x4 AC residual block in-place.
