@@ -148,11 +148,12 @@ pub fn filter_frame(
                 let y = mb_y + seg * 4;
                 filter_edge_v(&mut frame.y, stride_y, edge_x, y, 4, bs, alpha, beta, tc0);
 
-                // Chroma: only at MB boundary (edge 0) and edge 2
+                // Chroma: only at even edges and even segments
                 if edge % 2 == 0 && seg % 2 == 0 {
                     let c_edge_x = mb_col * 8 + (edge / 2) * 4;
                     let cy = mb_row * 8 + (seg / 2) * 4;
-                    // Use max bS of the two 4x4 segments that map to one chroma segment
+                    // Per-pixel bS: first 2 chroma pixels use bs from seg,
+                    // next 2 use bs2 from seg+1
                     let blk_q2 = blk_idx(edge, seg + 1);
                     let blk_p2 = if is_mb_edge {
                         blk_idx(3, seg + 1)
@@ -160,20 +161,18 @@ pub fn filter_frame(
                         blk_idx(edge - 1, seg + 1)
                     };
                     let bs2 = derive_bs(mb_p, mb_q, blk_p2, blk_q2, is_mb_edge);
-                    let c_bs = bs.max(bs2);
-                    let c_tc0 = if c_bs < 4 {
-                        TC0_TABLE[c_index_a][(c_bs - 1) as usize]
-                    } else {
-                        0
-                    };
-                    filter_edge_v_chroma(
-                        &mut frame.u, stride_c, c_edge_x, cy, 4,
-                        c_bs, c_alpha, c_beta, c_tc0,
-                    );
-                    filter_edge_v_chroma(
-                        &mut frame.v, stride_c, c_edge_x, cy, 4,
-                        c_bs, c_alpha, c_beta, c_tc0,
-                    );
+                    let c_bs = [bs, bs, bs2, bs2];
+                    for plane in [&mut frame.u, &mut frame.v] {
+                        for i in 0..4 {
+                            let pbs = c_bs[i];
+                            if pbs == 0 { continue; }
+                            let ptc0 = if pbs < 4 { TC0_TABLE[c_index_a][(pbs - 1) as usize] } else { 0 };
+                            filter_edge_v_chroma(
+                                plane, stride_c, c_edge_x, cy + i, 1,
+                                pbs, c_alpha, c_beta, ptc0,
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -226,6 +225,7 @@ pub fn filter_frame(
                 if edge % 2 == 0 && seg % 2 == 0 {
                     let c_edge_y = mb_row * 8 + (edge / 2) * 4;
                     let cx = mb_col * 8 + (seg / 2) * 4;
+                    // Per-pixel bS for chroma horizontal edge
                     let blk_q2 = blk_idx(seg + 1, edge);
                     let blk_p2 = if is_mb_edge {
                         blk_idx(seg + 1, 3)
@@ -233,20 +233,18 @@ pub fn filter_frame(
                         blk_idx(seg + 1, edge - 1)
                     };
                     let bs2 = derive_bs(mb_p, mb_q, blk_p2, blk_q2, is_mb_edge);
-                    let c_bs = bs.max(bs2);
-                    let c_tc0 = if c_bs < 4 {
-                        TC0_TABLE[c_index_a][(c_bs - 1) as usize]
-                    } else {
-                        0
-                    };
-                    filter_edge_h_chroma(
-                        &mut frame.u, stride_c, cx, c_edge_y, 4,
-                        c_bs, c_alpha, c_beta, c_tc0,
-                    );
-                    filter_edge_h_chroma(
-                        &mut frame.v, stride_c, cx, c_edge_y, 4,
-                        c_bs, c_alpha, c_beta, c_tc0,
-                    );
+                    let c_bs = [bs, bs, bs2, bs2];
+                    for plane in [&mut frame.u, &mut frame.v] {
+                        for i in 0..4 {
+                            let pbs = c_bs[i];
+                            if pbs == 0 { continue; }
+                            let ptc0 = if pbs < 4 { TC0_TABLE[c_index_a][(pbs - 1) as usize] } else { 0 };
+                            filter_edge_h_chroma(
+                                plane, stride_c, cx + i, c_edge_y, 1,
+                                pbs, c_alpha, c_beta, ptc0,
+                            );
+                        }
+                    }
                 }
             }
         }

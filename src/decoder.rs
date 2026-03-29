@@ -3178,13 +3178,7 @@ impl Decoder {
                                 }
                                 dequant_4x4_ac_raster(&mut block_raster, _qp_c, chroma_scale);
                             }
-                            if mb_idx == 2 && scale_idx == 2 && blk == 3 {
-                                eprintln!("I4x4_V blk3 pre-IDCT: {:?}", block_raster);
-                            }
                             inverse_dct_4x4(&mut block_raster);
-                            if mb_idx == 2 && scale_idx == 2 && blk == 3 {
-                                eprintln!("I4x4_V blk3 post-IDCT: {:?}", block_raster);
-                            }
                             for r in 0..4 {
                                 for c in 0..4 {
                                     chroma_residual[(blk_row + r) * 8 + blk_col + c] =
@@ -3193,9 +3187,6 @@ impl Decoder {
                             }
                         }
 
-                        if mb_idx == 2 && scale_idx == 2 {
-                            eprintln!("I4x4_V pred[53]={} res[53]={} sum={}", pred_plane[53], chroma_residual[53], pred_plane[53] as i32 + chroma_residual[53]);
-                        }
                         for y in 0..8 {
                             for x in 0..8 {
                                 let val = (pred_plane[y * 8 + x] as i32
@@ -3471,21 +3462,12 @@ impl Decoder {
                                 }
                                 dequant_4x4_ac_raster(&mut block_raster, qp_c, chroma_scale);
                             }
-                            if mb_idx == 2 && scale_idx == 2 && blk == 3 {
-                                eprintln!("CABAC_I V blk3 pre-IDCT: {:?}", block_raster);
-                            }
                             inverse_dct_4x4(&mut block_raster);
-                            if mb_idx == 2 && scale_idx == 2 && blk == 3 {
-                                eprintln!("CABAC_I V blk3 post-IDCT: {:?}", block_raster);
-                            }
                             for r in 0..4 {
                                 for c in 0..4 {
                                     chroma_residual[(blk_row + r) * 8 + blk_col + c] = block_raster[r * 4 + c];
                                 }
                             }
-                        }
-                        if mb_idx == 2 && scale_idx == 2 {
-                            eprintln!("CABAC_I V pred[53]={} res[53]={}", pred_plane[53], chroma_residual[53]);
                         }
                         for y in 0..8 {
                             for x in 0..8 {
