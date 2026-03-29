@@ -198,6 +198,19 @@ pub const ZIGZAG_8X8_CAVLC: [usize; 64] = [
     16, 10, 25,  5, 33, 34,  6, 28, 56, 36, 23, 51, 45, 46, 54, 63,
 ];
 
+/// 8x8 zigzag scan for CABAC (standard zigzag, value = row*8+col).
+#[rustfmt::skip]
+pub const ZIGZAG_8X8_CABAC: [usize; 64] = [
+     0,  1,  8, 16,  9,  2,  3, 10,
+    17, 24, 32, 25, 18, 11,  4,  5,
+    12, 19, 26, 33, 40, 48, 41, 34,
+    27, 20, 13,  6,  7, 14, 21, 28,
+    35, 42, 49, 56, 57, 50, 43, 36,
+    29, 22, 15, 23, 30, 37, 44, 51,
+    58, 59, 52, 45, 38, 31, 39, 46,
+    53, 60, 61, 54, 47, 55, 62, 63,
+];
+
 /// LevelScale factors for 8x8 blocks (H.264 Table 8-14).
 /// Indexed by [qp_rem][position_category_8x8].
 /// 8x8 blocks have 6 position categories (vs 3 for 4x4).

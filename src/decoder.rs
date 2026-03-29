@@ -14,7 +14,8 @@ use crate::pps::{parse_pps, Pps};
 use crate::residual::{
     chroma_qp, dequant_4x4_full, dequant_8x8, dequant_chroma_dc, dequant_luma_dc_i16x16,
     inverse_dct_4x4, inverse_dct_8x8, inverse_hadamard_2x2, inverse_hadamard_4x4,
-    BLOCK_INDEX_TO_OFFSET, CBP_INTER_TABLE, CBP_INTRA_TABLE, ZIGZAG_4X4, ZIGZAG_8X8_CAVLC,
+    BLOCK_INDEX_TO_OFFSET, CBP_INTER_TABLE, CBP_INTRA_TABLE, ZIGZAG_4X4, ZIGZAG_8X8_CABAC,
+    ZIGZAG_8X8_CAVLC,
 };
 use crate::slice::{parse_slice_header, PredWeightTable, SliceType};
 use crate::sps::{parse_sps, Sps};
@@ -285,6 +286,8 @@ impl Decoder {
         let mut mb_cbp = vec![0u16; total_mbs];
         // Track per-MB chroma prediction mode for CABAC neighbor context
         let mut mb_chroma_pred = vec![0u8; total_mbs];
+        // Track per-MB 8x8 DCT usage for CABAC transform_size_8x8_flag context
+        let mut mb_is_8x8dct = vec![false; total_mbs];
         // Track per-MB skip status for CABAC skip flag context
         let mut mb_skip = vec![false; total_mbs];
         // Track per-MB direct mode for B-slice CABAC mb_type context
@@ -523,15 +526,31 @@ impl Decoder {
                         }
 
                         if i_mb_type == 0 {
-                            // I4x4 in P/B
-                            if pps.transform_8x8_mode_flag {
-                                let _t8x8 = cr.get_cabac(&mut st[399]);
-                            }
+                            // I4x4/I8x8 in P/B
+                            let nts = {
+                                let left = if mb_idx % mb_width as usize != 0 { mb_is_8x8dct[mb_idx - 1] as usize } else { 0 };
+                                let top = if mb_idx >= mb_width as usize { mb_is_8x8dct[mb_idx - mb_width as usize] as usize } else { 0 };
+                                left + top
+                            };
+                            let use_8x8_intra_pb = pps.transform_8x8_mode_flag
+                                && cr.get_cabac(&mut st[399 + nts]) != 0;
+                            mb_is_8x8dct[mb_idx] = use_8x8_intra_pb;
+
+                            let num_modes = if use_8x8_intra_pb { 4 } else { 16 };
                             let mut pred_modes = [2u8; 16];
-                            for blk in 0..16 {
+                            for blk_idx in 0..num_modes {
+                                let blk = if use_8x8_intra_pb { blk_idx * 4 } else { blk_idx };
                                 let predicted = predict_i4x4_mode(&i4x4_modes, mb_idx, mb_width as usize, blk);
-                                pred_modes[blk] = cr.decode_intra4x4_pred_mode(st, predicted);
-                                i4x4_modes[mb_idx * 16 + blk] = pred_modes[blk];
+                                let mode = cr.decode_intra4x4_pred_mode(st, predicted);
+                                if use_8x8_intra_pb {
+                                    for sub in 0..4 {
+                                        pred_modes[blk_idx * 4 + sub] = mode;
+                                        i4x4_modes[mb_idx * 16 + blk_idx * 4 + sub] = mode;
+                                    }
+                                } else {
+                                    pred_modes[blk] = mode;
+                                    i4x4_modes[mb_idx * 16 + blk] = mode;
+                                }
                             }
                             let left_cm = if !mb_idx.is_multiple_of(mb_width as usize) {
                                 mb_chroma_pred[mb_idx - 1]
@@ -576,7 +595,60 @@ impl Decoder {
                             prev_mb_qp = qp_y;
                             let _qp_c = chroma_qp(qp_y, pps.chroma_qp_index_offset);
 
-                            // Decode luma residual + I4x4 prediction + chroma (same as I-slice path)
+                            // Decode luma residual + prediction
+                            if use_8x8_intra_pb {
+                                // I8x8 in P/B: same as I-slice I8x8 CABAC path
+                                let mut luma_residual = [0i32; 256];
+                                for i8x8 in 0..4 {
+                                    if cbp_luma & (1 << i8x8) != 0 {
+                                        let blk0 = i8x8 * 4;
+                                        let left_nz = cabac_neighbor_nz_luma(&nc_luma, mb_idx, mb_width as usize, blk0, true, true);
+                                        let top_nz = cabac_neighbor_nz_luma(&nc_luma, mb_idx, mb_width as usize, blk0, false, true);
+                                        if cr.decode_coded_block_flag(st, 5, left_nz, top_nz) {
+                                            let (coeffs, tc) = cr.decode_residual_cabac(st, 5, 64);
+                                            let tc_per = tc.div_ceil(4);
+                                            for sub in 0..4 { nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = tc_per; }
+                                            let mut block_8x8 = [0i32; 64];
+                                            for (pos, val) in &coeffs { block_8x8[ZIGZAG_8X8_CABAC[*pos]] = *val; }
+                                            dequant_8x8(&mut block_8x8, qp_y, &pps.scaling_list_8x8[0]);
+                                            inverse_dct_8x8(&mut block_8x8);
+                                            let row_off = (i8x8 / 2) * 8;
+                                            let col_off = (i8x8 % 2) * 8;
+                                            for r in 0..8 { for c in 0..8 {
+                                                luma_residual[(row_off + r) * 16 + col_off + c] = block_8x8[r * 8 + c];
+                                            }}
+                                        }
+                                    }
+                                }
+                                for i8x8 in 0..4 {
+                                    let row_off = (i8x8 / 2) * 8;
+                                    let col_off = (i8x8 % 2) * 8;
+                                    let px = mb_x + col_off;
+                                    let py = mb_y + row_off;
+                                    let above_buf: Option<[u8; 16]> = if py > 0 {
+                                        let mut buf = [0u8; 16];
+                                        for (i, b) in buf.iter_mut().enumerate().take(8) { *b = frame.y[(py - 1) * stride + px + i]; }
+                                        let has_tr = if row_off == 0 { px + 8 < stride } else { col_off == 0 };
+                                        if has_tr { for i in 0..8 { buf[8 + i] = frame.y[(py - 1) * stride + (px + 8 + i).min(stride - 1)]; } }
+                                        else { let last = buf[7]; buf[8..].fill(last); }
+                                        Some(buf)
+                                    } else { None };
+                                    let left_buf: Option<[u8; 8]> = if px > 0 {
+                                        let mut buf = [0u8; 8];
+                                        for (i, b) in buf.iter_mut().enumerate() { *b = frame.y[(py + i) * stride + px - 1]; }
+                                        Some(buf)
+                                    } else { None };
+                                    let al = if px > 0 && py > 0 { Some(frame.y[(py - 1) * stride + px - 1]) } else { None };
+                                    let has_tr = above_buf.is_some() && ((row_off == 0 && px + 8 < stride) || (row_off > 0 && col_off == 0));
+                                    let mut pred = [0u8; 64];
+                                    predict_intra_8x8(pred_modes[i8x8 * 4], above_buf.as_ref().map(|b| &b[..]), left_buf.as_ref().map(|b| &b[..]), al, has_tr, &mut pred);
+                                    for r in 0..8 { for c in 0..8 {
+                                        let val = (pred[r * 8 + c] as i32 + luma_residual[(row_off + r) * 16 + col_off + c]).clamp(0, 255) as u8;
+                                        frame.y[(py + r) * stride + px + c] = val;
+                                    }}
+                                }
+                            } else {
+                            // I4x4 path (existing)
                             for blk in 0..16 {
                                 let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
                                 let px = mb_x + blk_col;
@@ -656,6 +728,7 @@ impl Decoder {
                                     }
                                 }
                             }
+                            } // close if use_8x8_intra_pb else
 
                             // Chroma prediction
                             let chroma_width = (width / 2) as usize;
@@ -1458,6 +1531,17 @@ impl Decoder {
                         let cbp_chroma = cr.decode_cbp_chroma(st, left_cbp_c, top_cbp_c);
                         mb_cbp[mb_idx] = (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
 
+                        // 8x8 transform flag for inter MBs (CABAC context 399 + neighbor_transform_size)
+                        let nts = {
+                            let left = if mb_idx % mb_width as usize != 0 { mb_is_8x8dct[mb_idx - 1] as usize } else { 0 };
+                            let top = if mb_idx >= mb_width as usize { mb_is_8x8dct[mb_idx - mb_width as usize] as usize } else { 0 };
+                            left + top
+                        };
+                        let use_8x8_inter = pps.transform_8x8_mode_flag
+                            && cbp_luma != 0
+                            && cr.get_cabac(&mut st[399 + nts]) != 0;
+                        mb_is_8x8dct[mb_idx] = use_8x8_inter;
+
                         let qp_y = if cbp_luma != 0 || cbp_chroma != 0 {
                             let delta = cr.decode_mb_qp_delta(st, last_qp_delta_nonzero);
                             last_qp_delta_nonzero = delta != 0;
@@ -1471,6 +1555,31 @@ impl Decoder {
                         // Decode and add luma residual
                         if cbp_luma != 0 {
                             let mut luma_residual = [0i32; 256];
+                            if use_8x8_inter {
+                                // 8x8 transform: 4 blocks of 64 coefficients
+                                let scale_8x8 = &pps.scaling_list_8x8[1]; // inter
+                                for i8x8 in 0..4 {
+                                    if cbp_luma & (1 << i8x8) == 0 { continue; }
+                                    let blk0 = i8x8 * 4;
+                                    let left_nz = cabac_neighbor_nz_luma(&nc_luma, mb_idx, mb_width as usize, blk0, true, false);
+                                    let top_nz = cabac_neighbor_nz_luma(&nc_luma, mb_idx, mb_width as usize, blk0, false, false);
+                                    if cr.decode_coded_block_flag(st, 5, left_nz, top_nz) {
+                                        let (coeffs, tc) = cr.decode_residual_cabac(st, 5, 64);
+                                        let tc_per = tc.div_ceil(4);
+                                        for sub in 0..4 { nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = tc_per; }
+                                        let mut block_8x8 = [0i32; 64];
+                                        for (pos, val) in &coeffs { block_8x8[ZIGZAG_8X8_CABAC[*pos]] = *val; }
+                                        dequant_8x8(&mut block_8x8, qp_y, scale_8x8);
+                                        inverse_dct_8x8(&mut block_8x8);
+                                        let row_off = (i8x8 / 2) * 8;
+                                        let col_off = (i8x8 % 2) * 8;
+                                        for r in 0..8 { for c in 0..8 {
+                                            luma_residual[(row_off + r) * 16 + col_off + c] = block_8x8[r * 8 + c];
+                                        }}
+                                    }
+                                }
+                            } else {
+                            // 4x4 transform (existing path)
                             for blk in 0..16 {
                                 if cbp_luma & (1 << (blk / 4)) != 0 {
                                     let left_nz = cabac_neighbor_nz_luma(&nc_luma, mb_idx, mb_width as usize, blk, true, false);
@@ -1495,6 +1604,7 @@ impl Decoder {
                                     }
                                 }
                             }
+                            } // close if use_8x8_inter else
                             // Add residual to prediction
                             for r in 0..16 {
                                 for c in 0..16 {
@@ -2363,6 +2473,17 @@ impl Decoder {
                         let cbp_chroma = cr.decode_cbp_chroma(st, left_cbp_c, top_cbp_c);
                         mb_cbp[mb_idx] = (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
 
+                        // 8x8 transform flag for B inter MBs (context 399 + neighbor_transform_size)
+                        let nts = {
+                            let left = if mb_idx % mb_width as usize != 0 { mb_is_8x8dct[mb_idx - 1] as usize } else { 0 };
+                            let top = if mb_idx >= mb_width as usize { mb_is_8x8dct[mb_idx - mb_width as usize] as usize } else { 0 };
+                            left + top
+                        };
+                        let use_8x8_b_inter = pps.transform_8x8_mode_flag
+                            && cbp_luma != 0
+                            && cr.get_cabac(&mut st[399 + nts]) != 0;
+                        mb_is_8x8dct[mb_idx] = use_8x8_b_inter;
+
                         let qp_y = if cbp_luma != 0 || cbp_chroma != 0 {
                             let delta = cr.decode_mb_qp_delta(st, last_qp_delta_nonzero);
                             last_qp_delta_nonzero = delta != 0;
@@ -2376,6 +2497,29 @@ impl Decoder {
                         // Luma residual
                         if cbp_luma != 0 {
                             let mut luma_residual = [0i32; 256];
+                            if use_8x8_b_inter {
+                                let scale_8x8 = &pps.scaling_list_8x8[1];
+                                for i8x8 in 0..4 {
+                                    if cbp_luma & (1 << i8x8) == 0 { continue; }
+                                    let blk0 = i8x8 * 4;
+                                    let left_nz = cabac_neighbor_nz_luma(&nc_luma, mb_idx, mb_width as usize, blk0, true, false);
+                                    let top_nz = cabac_neighbor_nz_luma(&nc_luma, mb_idx, mb_width as usize, blk0, false, false);
+                                    if cr.decode_coded_block_flag(st, 5, left_nz, top_nz) {
+                                        let (coeffs, tc) = cr.decode_residual_cabac(st, 5, 64);
+                                        let tc_per = tc.div_ceil(4);
+                                        for sub in 0..4 { nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = tc_per; }
+                                        let mut block_8x8 = [0i32; 64];
+                                        for (pos, val) in &coeffs { block_8x8[ZIGZAG_8X8_CABAC[*pos]] = *val; }
+                                        dequant_8x8(&mut block_8x8, qp_y, scale_8x8);
+                                        inverse_dct_8x8(&mut block_8x8);
+                                        let row_off = (i8x8 / 2) * 8;
+                                        let col_off = (i8x8 % 2) * 8;
+                                        for r in 0..8 { for c in 0..8 {
+                                            luma_residual[(row_off + r) * 16 + col_off + c] = block_8x8[r * 8 + c];
+                                        }}
+                                    }
+                                }
+                            } else {
                             for blk in 0..16 {
                                 if cbp_luma & (1 << (blk / 4)) != 0 {
                                     let left_nz = cabac_neighbor_nz_luma(
@@ -2404,6 +2548,7 @@ impl Decoder {
                                     }
                                 }
                             }
+                            } // close if use_8x8_b_inter else
                             for r in 0..16 {
                                 for c in 0..16 {
                                     let val = (frame.y[(mb_y + r) * stride + mb_x + c] as i32
@@ -2571,19 +2716,34 @@ impl Decoder {
                 }
 
                 if mb_type == 0 {
-                    // I4x4 via CABAC
-                    // High profile: decode transform_8x8_mode_flag (context 399)
-                    if pps.transform_8x8_mode_flag {
-                        let _t8x8 = cr.get_cabac(&mut st[399]);
-                        // TODO: handle 8x8 DCT if t8x8 != 0
-                    }
+                    // I4x4/I8x8 via CABAC
+                    let nts = {
+                        let left = if mb_idx % mb_width as usize != 0 { mb_is_8x8dct[mb_idx - 1] as usize } else { 0 };
+                        let top = if mb_idx >= mb_width as usize { mb_is_8x8dct[mb_idx - mb_width as usize] as usize } else { 0 };
+                        left + top
+                    };
+                    let use_8x8_intra = pps.transform_8x8_mode_flag
+                        && cr.get_cabac(&mut st[399 + nts]) != 0;
+                    mb_is_8x8dct[mb_idx] = use_8x8_intra;
+
+                    // Parse prediction modes: 4 for I8x8, 16 for I4x4
+                    let num_modes = if use_8x8_intra { 4 } else { 16 };
                     let mut pred_modes = [2u8; 16];
-                    for blk in 0..16 {
+                    for blk_idx in 0..num_modes {
+                        let blk = if use_8x8_intra { blk_idx * 4 } else { blk_idx };
                         let predicted = predict_i4x4_mode(
                             &i4x4_modes, mb_idx, mb_width as usize, blk,
                         );
-                        pred_modes[blk] = cr.decode_intra4x4_pred_mode(st, predicted);
-                        i4x4_modes[mb_idx * 16 + blk] = pred_modes[blk];
+                        let mode = cr.decode_intra4x4_pred_mode(st, predicted);
+                        if use_8x8_intra {
+                            for sub in 0..4 {
+                                pred_modes[blk_idx * 4 + sub] = mode;
+                                i4x4_modes[mb_idx * 16 + blk_idx * 4 + sub] = mode;
+                            }
+                        } else {
+                            pred_modes[blk] = mode;
+                            i4x4_modes[mb_idx * 16 + blk] = mode;
+                        }
                     }
 
                     // TODO: track neighbor chroma pred modes for proper context
@@ -2627,7 +2787,105 @@ impl Decoder {
                     prev_mb_qp = qp_y;
                     let _qp_c = chroma_qp(qp_y, pps.chroma_qp_index_offset);
 
-                    // Decode and reconstruct each 4x4 luma block
+                    if use_8x8_intra {
+                        // I8x8 via CABAC: decode 4 blocks of 64 coefficients
+                        let mut luma_residual = [0i32; 256];
+                        for i8x8 in 0..4 {
+                            if cbp_luma & (1 << i8x8) == 0 {
+                                // Set nC=0 for all sub-blocks
+                                for sub in 0..4 {
+                                    nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = 0;
+                                }
+                                continue;
+                            }
+                            // CBF check: use first sub-block's neighbors
+                            let blk0 = i8x8 * 4;
+                            let left_nz = cabac_neighbor_nz_luma(
+                                &nc_luma, mb_idx, mb_width as usize, blk0, true, true,
+                            );
+                            let top_nz = cabac_neighbor_nz_luma(
+                                &nc_luma, mb_idx, mb_width as usize, blk0, false, true,
+                            );
+                            if !cr.decode_coded_block_flag(st, 5, left_nz, top_nz) {
+                                for sub in 0..4 {
+                                    nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = 0;
+                                }
+                                continue;
+                            }
+                            let (coeffs, tc) = cr.decode_residual_cabac(st, 5, 64);
+                            // Distribute nC across sub-blocks
+                            let tc_per = tc.div_ceil(4);
+                            for sub in 0..4 {
+                                nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = tc_per;
+                            }
+                            let mut block_8x8 = [0i32; 64];
+                            for (pos, val) in &coeffs {
+                                block_8x8[ZIGZAG_8X8_CABAC[*pos]] = *val;
+                            }
+                            dequant_8x8(&mut block_8x8, qp_y, &pps.scaling_list_8x8[0]);
+                            inverse_dct_8x8(&mut block_8x8);
+                            let row_off = (i8x8 / 2) * 8;
+                            let col_off = (i8x8 % 2) * 8;
+                            for r in 0..8 {
+                                for c in 0..8 {
+                                    luma_residual[(row_off + r) * 16 + col_off + c] =
+                                        block_8x8[r * 8 + c];
+                                }
+                            }
+                        }
+                        // I8x8 prediction + residual reconstruction
+                        for i8x8 in 0..4 {
+                            let row_off = (i8x8 / 2) * 8;
+                            let col_off = (i8x8 % 2) * 8;
+                            let px = mb_x + col_off;
+                            let py = mb_y + row_off;
+                            let above_buf: Option<[u8; 16]> = if py > 0 {
+                                let mut buf = [0u8; 16];
+                                for (i, b) in buf.iter_mut().enumerate().take(8) {
+                                    *b = frame.y[(py - 1) * stride + px + i];
+                                }
+                                let has_tr = if row_off == 0 { px + 8 < stride } else { col_off == 0 };
+                                if has_tr {
+                                    for i in 0..8 {
+                                        let col = (px + 8 + i).min(stride - 1);
+                                        buf[8 + i] = frame.y[(py - 1) * stride + col];
+                                    }
+                                } else {
+                                    let last = buf[7];
+                                    buf[8..].fill(last);
+                                }
+                                Some(buf)
+                            } else { None };
+                            let left_buf: Option<[u8; 8]> = if px > 0 {
+                                let mut buf = [0u8; 8];
+                                for (i, b) in buf.iter_mut().enumerate() {
+                                    *b = frame.y[(py + i) * stride + px - 1];
+                                }
+                                Some(buf)
+                            } else { None };
+                            let above_left_val = if px > 0 && py > 0 {
+                                Some(frame.y[(py - 1) * stride + px - 1])
+                            } else { None };
+                            let has_topright = above_buf.is_some()
+                                && ((row_off == 0 && px + 8 < stride) || (row_off > 0 && col_off == 0));
+                            let mode = pred_modes[i8x8 * 4];
+                            let mut pred = [0u8; 64];
+                            predict_intra_8x8(
+                                mode, above_buf.as_ref().map(|b| &b[..]),
+                                left_buf.as_ref().map(|b| &b[..]),
+                                above_left_val, has_topright, &mut pred,
+                            );
+                            for r in 0..8 {
+                                for c in 0..8 {
+                                    let val = (pred[r * 8 + c] as i32
+                                        + luma_residual[(row_off + r) * 16 + col_off + c])
+                                        .clamp(0, 255) as u8;
+                                    frame.y[(py + r) * stride + px + c] = val;
+                                }
+                            }
+                        }
+                    } else {
+                    // I4x4 via CABAC: existing path
                     for blk in 0..16 {
                         let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
                         let px = mb_x + blk_col;
@@ -2635,7 +2893,6 @@ impl Decoder {
 
                         let mut block_coeffs = [0i32; 16];
                         if cbp_luma & (1 << (blk / 4)) != 0 {
-                            // CBF neighbor lookup for CABAC context
                             let left_nz_blk = cabac_neighbor_nz_luma(
                                 &nc_luma, mb_idx, mb_width as usize, blk, true, true);
                             let top_nz_blk = cabac_neighbor_nz_luma(
@@ -2882,8 +3139,9 @@ impl Decoder {
                         }
                     }
 
+                    } // close if use_8x8_intra else
                     mb_info[mb_idx] = MbInfo { mb_type: MbType::Intra, qp_y, ..Default::default() };
-                    // I4x4 is NOT I16x16 for CABAC context
+                    // I4x4/I8x8 is NOT I16x16 for CABAC context
                 } else if mb_type <= 24 {
                     // I16x16 via CABAC
                     is_i16x16[mb_idx] = true;
@@ -6581,6 +6839,13 @@ mod tests {
         // 32x32, 15 frames: CABAC B-frames with B_L0_16x16, B_L1_16x16, B_Skip
         // (--no-deblock, spatial direct), byte-exact against FFmpeg
         decode_multiframe_and_compare("cabac_b_test", 15, 32, 32);
+    }
+
+    #[test]
+    fn test_cabac_high_profile() {
+        // 64x64, 20 frames: CABAC High profile with 8x8 transform (25.5% inter 8x8),
+        // P-only, --no-deblock, veryslow preset
+        decode_multiframe_and_compare("cabac_high_test", 20, 64, 64);
     }
 
     #[test]

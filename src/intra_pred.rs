@@ -488,16 +488,19 @@ pub fn predict_intra_8x8(
         }
         4 => {
             // Diagonal Down-Right
+            // Build combined top reference: ft[0..7] + ftr[0..7]
+            let mut t = [0i32; 16];
+            t[..8].copy_from_slice(&ft);
+            t[8..].copy_from_slice(&ftr);
             for y in 0..8 {
                 for x in 0..8 {
                     output[y * 8 + x] = if x > y {
                         let i = x - y - 1;
-                        ((ft[i] + 2 * ft[i + 1] + ft[i + 2] + 2) >> 2) as u8
+                        ((t[i] + 2 * t[i + 1] + t[i + 2] + 2) >> 2) as u8
                     } else if x < y {
                         let i = y - x - 1;
-                        ((fl[i] + 2 * fl[i + 1] + fl[i + 2] + 2) >> 2) as u8
+                        ((fl[i] + 2 * fl[i + 1] + fl.get(i + 2).copied().unwrap_or(fl[7]) + 2) >> 2) as u8
                     } else {
-                        // x == y: use top-left
                         ((fl[0] + 2 * flt + ft[0] + 2) >> 2) as u8
                     };
                 }

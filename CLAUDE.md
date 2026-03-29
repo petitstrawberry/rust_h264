@@ -156,6 +156,6 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 
 ### Not Yet Implemented
 
-- CABAC 8x8 transform (intra I8x8 path reads flag but ignores, causing desync)
+- CABAC 8x8 correctness (structurally complete but has diffs — needs debugging)
 - MBAFF/interlaced mode
 - Long-term reference support (MMCO ops 2-6)

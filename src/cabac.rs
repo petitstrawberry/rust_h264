@@ -352,32 +352,53 @@ use crate::cabac_tables::{CABAC_CONTEXT_INIT_I, CABAC_CONTEXT_INIT_PB};
 
 /// Context base indices for significant_coeff_flag by block category (frame mode).
 #[rustfmt::skip]
-const SIGNIFICANT_COEFF_FLAG_OFFSET: [usize; 5] = [
+const SIGNIFICANT_COEFF_FLAG_OFFSET: [usize; 6] = [
     105,    // cat 0: luma DC (I16x16)
     105+15, // cat 1: luma AC (I16x16)
     105+29, // cat 2: luma 4x4
     105+44, // cat 3: chroma DC
     105+47, // cat 4: chroma AC
+    402,    // cat 5: luma 8x8
 ];
 
 /// Context base indices for last_significant_coeff_flag by block category (frame mode).
 #[rustfmt::skip]
-const LAST_COEFF_FLAG_OFFSET: [usize; 5] = [
+const LAST_COEFF_FLAG_OFFSET: [usize; 6] = [
     166,    // cat 0
     166+15, // cat 1
     166+29, // cat 2
     166+44, // cat 3
     166+47, // cat 4
+    417,    // cat 5: luma 8x8
 ];
 
 /// Context base indices for coeff_abs_level_minus1 by block category.
 #[rustfmt::skip]
-const COEFF_ABS_LEVEL_M1_OFFSET: [usize; 5] = [
+const COEFF_ABS_LEVEL_M1_OFFSET: [usize; 6] = [
     227,    // cat 0
     227+10, // cat 1
     227+20, // cat 2
     227+30, // cat 3
     227+39, // cat 4
+    426,    // cat 5: luma 8x8
+];
+
+/// Per-position context offset for significant_coeff_flag in 8x8 blocks (frame mode).
+#[rustfmt::skip]
+const SIGNIFICANT_COEFF_FLAG_OFFSET_8X8: [u8; 63] = [
+    0, 1, 2, 3, 4, 5, 5, 4, 4, 3, 3, 4, 4, 4, 5, 5,
+    4, 4, 4, 4, 3, 3, 6, 7, 7, 7, 8, 9,10, 9, 8, 7,
+    7, 6,11,12,13,11, 6, 7, 8, 9,14,10, 9, 8, 6,11,
+   12,13,11, 6, 9,14,10, 9,11,12,13,11,14,10,12,
+];
+
+/// Per-position context offset for last_significant_coeff_flag in 8x8 blocks.
+#[rustfmt::skip]
+const LAST_COEFF_FLAG_OFFSET_8X8: [u8; 63] = [
+    0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4,
+    5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8,
 ];
 
 /// Node context to CABAC context mapping for coeff_abs_level == 1.
@@ -396,12 +417,10 @@ impl CabacReader<'_> {
     /// Decode a CABAC residual block (spec 9.3.3.1.3).
     ///
     /// * `state`: mutable CABAC context state array (1024 entries)
-    /// * `cat`: block category (0=luma DC I16x16, 1=luma AC I16x16, 2=luma 4x4, 3=chroma DC, 4=chroma AC)
-    /// * `max_coeff`: maximum number of coefficients (16 for 4x4, 15 for AC, 4 for chroma DC)
-    /// * `coded_block_flag`: whether coded_block_flag was signaled true (caller checks)
+    /// * `cat`: block category (0-4 for 4x4 blocks, 5 for 8x8 luma)
+    /// * `max_coeff`: maximum number of coefficients (16 for 4x4, 15 for AC, 4 for chroma DC, 64 for 8x8)
     ///
-    /// Returns coefficients in scan order (caller must apply zigzag/dequant).
-    /// Returns the number of non-zero coefficients.
+    /// Returns coefficients in scan order and the non-zero count.
     pub fn decode_residual_cabac(
         &mut self,
         state: &mut [u8; 1024],
@@ -411,18 +430,28 @@ impl CabacReader<'_> {
         let sig_base = SIGNIFICANT_COEFF_FLAG_OFFSET[cat];
         let last_base = LAST_COEFF_FLAG_OFFSET[cat];
         let abs_base = COEFF_ABS_LEVEL_M1_OFFSET[cat];
+        let is_8x8 = cat == 5;
 
-        // Phase 1: Decode significance map (which positions have non-zero coefficients)
-        // Matches DECODE_SIGNIFICANCE macro: scan 0..max_coeff-2, then implicitly add
-        // max_coeff-1 if loop completes without last_significant_coeff_flag=1.
+        // Phase 1: Decode significance map
         let mut sig_positions: Vec<usize> = Vec::new();
         let mut found_last = false;
 
         for pos in 0..max_coeff - 1 {
-            let sig = self.get_cabac(&mut state[sig_base + pos]);
+            // For 8x8 blocks, use per-position context offsets
+            let sig_ctx = if is_8x8 {
+                sig_base + SIGNIFICANT_COEFF_FLAG_OFFSET_8X8[pos] as usize
+            } else {
+                sig_base + pos
+            };
+            let sig = self.get_cabac(&mut state[sig_ctx]);
             if sig != 0 {
                 sig_positions.push(pos);
-                let last = self.get_cabac(&mut state[last_base + pos]);
+                let last_ctx = if is_8x8 {
+                    last_base + LAST_COEFF_FLAG_OFFSET_8X8[pos] as usize
+                } else {
+                    last_base + pos
+                };
+                let last = self.get_cabac(&mut state[last_ctx]);
                 if last != 0 {
                     found_last = true;
                     break;
@@ -430,7 +459,6 @@ impl CabacReader<'_> {
             }
         }
         if !found_last {
-            // Last position is implicitly significant
             sig_positions.push(max_coeff - 1);
         }
 
@@ -789,7 +817,7 @@ impl CabacReader<'_> {
     /// `top_nz`: whether top neighbor has non-zero coefficients.
     pub fn decode_coded_block_flag(&mut self, state: &mut [u8; 1024],
                                     cat: usize, left_nz: bool, top_nz: bool) -> bool {
-        const CBF_BASE: [usize; 5] = [85, 89, 93, 97, 101];
+        const CBF_BASE: [usize; 6] = [85, 89, 93, 97, 101, 1012];
         let ctx = CBF_BASE[cat] + left_nz as usize + 2 * top_nz as usize;
         self.get_cabac(&mut state[ctx]) != 0
     }
