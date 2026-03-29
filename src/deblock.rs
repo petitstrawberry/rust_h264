@@ -166,11 +166,11 @@ pub fn filter_frame(
                     } else {
                         0
                     };
-                    filter_edge_v(
+                    filter_edge_v_chroma(
                         &mut frame.u, stride_c, c_edge_x, cy, 4,
                         c_bs, c_alpha, c_beta, c_tc0,
                     );
-                    filter_edge_v(
+                    filter_edge_v_chroma(
                         &mut frame.v, stride_c, c_edge_x, cy, 4,
                         c_bs, c_alpha, c_beta, c_tc0,
                     );
@@ -239,11 +239,11 @@ pub fn filter_frame(
                     } else {
                         0
                     };
-                    filter_edge_h(
+                    filter_edge_h_chroma(
                         &mut frame.u, stride_c, cx, c_edge_y, 4,
                         c_bs, c_alpha, c_beta, c_tc0,
                     );
-                    filter_edge_h(
+                    filter_edge_h_chroma(
                         &mut frame.v, stride_c, cx, c_edge_y, 4,
                         c_bs, c_alpha, c_beta, c_tc0,
                     );
@@ -376,6 +376,35 @@ fn filter_edge_v(
     beta: i32,
     tc0: i32,
 ) {
+    filter_edge_v_inner(plane, stride, x, y, count, bs, alpha, beta, tc0, false);
+}
+
+fn filter_edge_v_chroma(
+    plane: &mut [u8],
+    stride: usize,
+    x: usize,
+    y: usize,
+    count: usize,
+    bs: i32,
+    alpha: i32,
+    beta: i32,
+    tc0: i32,
+) {
+    filter_edge_v_inner(plane, stride, x, y, count, bs, alpha, beta, tc0, true);
+}
+
+fn filter_edge_v_inner(
+    plane: &mut [u8],
+    stride: usize,
+    x: usize,
+    y: usize,
+    count: usize,
+    bs: i32,
+    alpha: i32,
+    beta: i32,
+    tc0: i32,
+    is_chroma: bool,
+) {
     for i in 0..count {
         let row = y + i;
         let idx_q0 = row * stride + x;
@@ -394,14 +423,26 @@ fn filter_edge_v(
         let q2 = plane[idx_q0 + 2] as i32;
 
         if bs == 4 {
-            let (np0, np1, np2, nq0, nq1, nq2) =
-                strong_filter(p0, p1, p2, plane[idx_p0 - 3] as i32, q0, q1, q2, plane[idx_q0 + 3] as i32, alpha, beta);
-            plane[idx_p0] = np0 as u8;
-            plane[idx_p0 - 1] = np1 as u8;
-            plane[idx_p0 - 2] = np2 as u8;
-            plane[idx_q0] = nq0 as u8;
-            plane[idx_q0 + 1] = nq1 as u8;
-            plane[idx_q0 + 2] = nq2 as u8;
+            if is_chroma {
+                // Spec 8.7.2.4: chroma strong filter only modifies p0 and q0
+                plane[idx_p0] = ((2 * p1 + p0 + q1 + 2) >> 2) as u8;
+                plane[idx_q0] = ((2 * q1 + q0 + p1 + 2) >> 2) as u8;
+            } else {
+                let (np0, np1, np2, nq0, nq1, nq2) =
+                    strong_filter(p0, p1, p2, plane[idx_p0 - 3] as i32, q0, q1, q2, plane[idx_q0 + 3] as i32, alpha, beta);
+                plane[idx_p0] = np0 as u8;
+                plane[idx_p0 - 1] = np1 as u8;
+                plane[idx_p0 - 2] = np2 as u8;
+                plane[idx_q0] = nq0 as u8;
+                plane[idx_q0 + 1] = nq1 as u8;
+                plane[idx_q0 + 2] = nq2 as u8;
+            }
+        } else if is_chroma {
+            // Spec 8.7.2.3: chroma normal filter — tc = tc0 + 1, only p0/q0 modified
+            let tc = tc0 + 1;
+            let delta = ((((q0 - p0) << 2) + (p1 - q1) + 4) >> 3).clamp(-tc, tc);
+            plane[idx_p0] = (p0 + delta).clamp(0, 255) as u8;
+            plane[idx_q0] = (q0 - delta).clamp(0, 255) as u8;
         } else {
             let (np0, np1, nq0, nq1) = normal_filter(p0, p1, p2, q0, q1, q2, tc0, beta);
             plane[idx_p0] = np0 as u8;
@@ -426,6 +467,35 @@ fn filter_edge_h(
     beta: i32,
     tc0: i32,
 ) {
+    filter_edge_h_inner(plane, stride, x, y, count, bs, alpha, beta, tc0, false);
+}
+
+fn filter_edge_h_chroma(
+    plane: &mut [u8],
+    stride: usize,
+    x: usize,
+    y: usize,
+    count: usize,
+    bs: i32,
+    alpha: i32,
+    beta: i32,
+    tc0: i32,
+) {
+    filter_edge_h_inner(plane, stride, x, y, count, bs, alpha, beta, tc0, true);
+}
+
+fn filter_edge_h_inner(
+    plane: &mut [u8],
+    stride: usize,
+    x: usize,
+    y: usize,
+    count: usize,
+    bs: i32,
+    alpha: i32,
+    beta: i32,
+    tc0: i32,
+    is_chroma: bool,
+) {
     for i in 0..count {
         let col = x + i;
         let idx_q0 = y * stride + col;
@@ -444,24 +514,30 @@ fn filter_edge_h(
         let q2 = plane[idx_q0 + 2 * stride] as i32;
 
         if bs == 4 {
-            let (np0, np1, np2, nq0, nq1, nq2) = strong_filter(
-                p0,
-                p1,
-                p2,
-                plane[idx_p0 - 3 * stride] as i32,
-                q0,
-                q1,
-                q2,
-                plane[idx_q0 + 3 * stride] as i32,
-                alpha,
-                beta,
-            );
-            plane[idx_p0] = np0 as u8;
-            plane[idx_p0 - stride] = np1 as u8;
-            plane[idx_p0 - 2 * stride] = np2 as u8;
-            plane[idx_q0] = nq0 as u8;
-            plane[idx_q0 + stride] = nq1 as u8;
-            plane[idx_q0 + 2 * stride] = nq2 as u8;
+            if is_chroma {
+                // Spec 8.7.2.4: chroma strong filter only modifies p0 and q0
+                plane[idx_p0] = ((2 * p1 + p0 + q1 + 2) >> 2) as u8;
+                plane[idx_q0] = ((2 * q1 + q0 + p1 + 2) >> 2) as u8;
+            } else {
+                let (np0, np1, np2, nq0, nq1, nq2) = strong_filter(
+                    p0, p1, p2, plane[idx_p0 - 3 * stride] as i32,
+                    q0, q1, q2, plane[idx_q0 + 3 * stride] as i32,
+                    alpha, beta,
+                );
+                plane[idx_p0] = np0 as u8;
+                plane[idx_p0 - stride] = np1 as u8;
+                plane[idx_p0 - 2 * stride] = np2 as u8;
+                plane[idx_q0] = nq0 as u8;
+                plane[idx_q0 + stride] = nq1 as u8;
+                plane[idx_q0 + 2 * stride] = nq2 as u8;
+            }
+        } else if is_chroma {
+            // Spec 8.7.2.3: chroma normal filter modifies only p0 and q0
+            // with tc = tc0 + 1 (no ap/aq adjustment)
+            let tc = tc0 + 1;
+            let delta = ((((q0 - p0) << 2) + (p1 - q1) + 4) >> 3).clamp(-tc, tc);
+            plane[idx_p0] = (p0 + delta).clamp(0, 255) as u8;
+            plane[idx_q0] = (q0 - delta).clamp(0, 255) as u8;
         } else {
             let (np0, np1, nq0, nq1) = normal_filter(p0, p1, p2, q0, q1, q2, tc0, beta);
             plane[idx_p0] = np0 as u8;
