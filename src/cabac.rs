@@ -536,9 +536,13 @@ impl CabacReader<'_> {
 
     /// Decode intra mb_type (spec 9.3.3.1.1.1).
     /// Returns mb_type for I-slice: 0=I4x4, 1-24=I16x16 variants, 25=I_PCM.
+    /// `intra_slice`: true for I-slices, false for intra MBs in P/B-slices.
+    /// Context offsets differ per spec 9.3.3.1.1.3 Table 9-36: I-slices use ctxIdxInc
+    /// offset +2 after the first bin, while intra MBs in P/B-slices do not.
     pub fn decode_intra_mb_type(&mut self, state: &mut [u8; 1024],
                                  ctx_base: usize,
-                                 left_is_intra16: bool, top_is_intra16: bool) -> u32 {
+                                 left_is_intra16: bool, top_is_intra16: bool,
+                                 intra_slice: bool) -> u32 {
         let mut ctx = 0usize;
         if left_is_intra16 { ctx += 1; }
         if top_is_intra16 { ctx += 1; }
@@ -553,17 +557,22 @@ impl CabacReader<'_> {
             return 25; // I_PCM
         }
 
-        // Decode I16x16 sub-type: cbp_luma(1bit) + cbp_chroma(2bits) + pred_mode(2bits)
-        // mb_type = 1 + 12*cbp_luma_nz + 4*cbp_chroma + pred_mode
-        let cbp_luma_nz = self.get_cabac(&mut state[ctx_base + 3]);
-        let cbp_chroma_bit0 = self.get_cabac(&mut state[ctx_base + 4]);
+        // Spec 9.3.3.1.1.3 Table 9-36: for I-slices, base advances by +2 after
+        // the first bin (ctx_base used for I4x4/I16x16 decision includes neighbor
+        // context 0-2). For P/B-slices, base stays at ctx_base. The cbp_chroma
+        // and pred_mode bins share contexts when intra_slice=false.
+        let is = if intra_slice { 1usize } else { 0 };
+        let base = if intra_slice { ctx_base + 2 } else { ctx_base };
+
+        let cbp_luma_nz = self.get_cabac(&mut state[base + 1]);
+        let cbp_chroma_bit0 = self.get_cabac(&mut state[base + 2]);
         let cbp_chroma = if cbp_chroma_bit0 != 0 {
-            1 + self.get_cabac(&mut state[ctx_base + 5])
+            1 + self.get_cabac(&mut state[base + 2 + is])
         } else {
             0
         };
-        let pred_mode_bit0 = self.get_cabac(&mut state[ctx_base + 6]);
-        let pred_mode = (pred_mode_bit0 << 1) | self.get_cabac(&mut state[ctx_base + 7]);
+        let pred_mode_bit0 = self.get_cabac(&mut state[base + 3 + is]);
+        let pred_mode = (pred_mode_bit0 << 1) | self.get_cabac(&mut state[base + 3 + 2 * is]);
 
         1 + 12 * cbp_luma_nz + 4 * cbp_chroma + pred_mode
     }
@@ -581,7 +590,7 @@ impl CabacReader<'_> {
             }
         } else {
             // Intra in P-slice
-            5 + self.decode_intra_mb_type(state, 17, false, false)
+            5 + self.decode_intra_mb_type(state, 17, false, false, false)
         }
     }
 
@@ -611,7 +620,7 @@ impl CabacReader<'_> {
             bits + 3
         } else if bits == 13 {
             // Intra in B-slice
-            23 + self.decode_intra_mb_type(state, 32, false, false)
+            23 + self.decode_intra_mb_type(state, 32, false, false, false)
         } else if bits == 14 {
             11 // B_L1_L0_8x16
         } else if bits == 15 {

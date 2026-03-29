@@ -224,7 +224,7 @@ const LEVEL_SCALE_8X8: [[i32; 6]; 6] = [
 ];
 
 /// Maps (row%4)*4 + (col%4) to one of 6 position categories for 8x8 dequant.
-/// From H.264 spec Table 8-14 / FFmpeg's dequant8_coeff_init_scan.
+/// From H.264 spec Table 8-14.
 const DEQUANT_8X8_POS_CAT: [usize; 16] = [
     0, 3, 4, 3, 3, 1, 5, 1, 4, 5, 2, 5, 3, 1, 5, 1,
 ];

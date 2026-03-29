@@ -315,7 +315,7 @@ fn check_mv_diff(mb_p: &MbInfo, mb_q: &MbInfo, blk_p: usize, blk_q: usize) -> bo
 
     // B-slice: two-list comparison. The spec says bS=1 when the number
     // of reference pictures or the ref indices or the MVs differ.
-    // FFmpeg's check_mv handles the cross-list comparison:
+    // Per spec 8.7.2.1, for two-list prediction:
     // First check if L0-L0 and L1-L1 match (straight comparison).
     // If not, check if L0-L1 and L1-L0 match (swapped comparison).
     let straight_match = refs_and_mvs_match(

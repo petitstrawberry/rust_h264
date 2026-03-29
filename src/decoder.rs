@@ -923,7 +923,6 @@ impl Decoder {
                             let i16_pred = (mt % 4) as u8;
                             let cbp_chroma = ((mt / 4) % 3) as u8;
                             let cbp_luma = if mt >= 12 { 15u8 } else { 0u8 };
-
                             let left_cm = if !mb_idx.is_multiple_of(mb_width as usize) {
                                 mb_chroma_pred[mb_idx - 1]
                             } else {
@@ -2675,7 +2674,7 @@ impl Decoder {
                 let top_is_i16 = if mb_idx >= mb_width as usize {
                     is_i16x16[mb_idx - mb_width as usize]
                 } else { false };
-                let mb_type = cr.decode_intra_mb_type(st, 3, left_is_i16, top_is_i16);
+                let mb_type = cr.decode_intra_mb_type(st, 3, left_is_i16, top_is_i16, true);
 
                 // I_PCM via CABAC
                 if mb_type == 25 {
@@ -6820,9 +6819,10 @@ mod tests {
 
     #[test]
     fn test_cabac_intra_in_p() {
-        // 64x64, 3 frames: CABAC IDR + 2 P-frames with P_L0_16x16 (25%) + skip (75%),
-        // --no-deblock, --partitions none, byte-exact against FFmpeg
-        decode_multiframe_and_compare("cabac_intra_p_test", 3, 64, 64);
+        // 64x64, 2 frames: CABAC IDR + P-frame with I16x16-in-P (12.5%) +
+        // P_L0_16x16 (75%) + P_8x8 (6.25%) + skip (6.25%),
+        // --no-deblock, byte-exact against FFmpeg
+        decode_multiframe_and_compare("cabac_intra_p_test", 2, 64, 64);
     }
 
     #[test]

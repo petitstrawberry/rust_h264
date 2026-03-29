@@ -150,17 +150,12 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   (hierarchical B-frames with ref_pic_list_modification)
 - CABAC: cabac_i4x4_test (byte-exact), cabac_i16x16_test (byte-exact),
   cabac_mixed_test (multi-MB mixed I4x4/I16x16, ±1 IDCT tolerance),
-  cabac_p_test (P_Skip), cabac_intra_p_test (P_L0_16x16),
+  cabac_p_test (P_Skip), cabac_intra_p_test (I16x16-in-P, byte-exact),
   cabac_b_test (B_Skip with spatial direct, byte-exact),
   cabac_high_profile (CABAC High profile 8x8 inter, byte-exact)
 - Weighted prediction: weighted_p_test (CAVLC, 100% weighted P, fading, byte-exact)
 - High profile: high_profile_test (320x240 CAVLC, 8x8 intra+inter, I-frame ±2 IDCT)
 - Real-world: realworld_test (320x240 P-only), realworld_b_test (320x240 with B-frames)
-
-### Known Issues
-
-- CABAC intra-in-P: I16x16 MBs within CABAC P-slices have large diffs vs FFmpeg.
-  Streams with 0% I-in-P are byte-exact. Root cause unknown.
 
 ### Not Yet Implemented
 
