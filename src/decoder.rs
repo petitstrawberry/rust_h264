@@ -5090,6 +5090,7 @@ impl Decoder {
                         }
                         dequant_8x8(&mut block_8x8, qp_y, &pps.scaling_list_8x8[0]);
                         inverse_dct_8x8(&mut block_8x8);
+
                         let row_off = (i8x8 / 2) * 8;
                         let col_off = (i8x8 % 2) * 8;
                         for r in 0..8 {

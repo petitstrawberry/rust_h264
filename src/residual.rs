@@ -241,12 +241,44 @@ pub fn dequant_8x8(block: &mut [i32; 64], qp: i32, scale: &[u8; 64]) {
 
 /// Inverse 8x8 integer DCT transform (H.264 spec 8.5.12).
 /// Operates in-place on 64 coefficients in raster order (row-major, 8 per row).
-/// Horizontal pass first (columns within each row), then vertical pass.
+/// Row pass first (within each row), then column pass with >> 6 normalization.
 pub fn inverse_dct_8x8(block: &mut [i32; 64]) {
-    // Add rounding bias to DC
     block[0] += 32;
 
-    // Horizontal pass (column indices within each row)
+    // First pass: rows (for row-major data, process each row's 8 elements)
+    for i in 0..8 {
+        let s = i * 8; // row start
+        let a0 = block[s] + block[s + 4];
+        let a2 = block[s] - block[s + 4];
+        let a4 = (block[s + 2] >> 1) - block[s + 6];
+        let a6 = (block[s + 6] >> 1) + block[s + 2];
+
+        let b0 = a0 + a6;
+        let b2 = a2 + a4;
+        let b4 = a2 - a4;
+        let b6 = a0 - a6;
+
+        let a1 = -block[s + 3] + block[s + 5] - block[s + 7] - (block[s + 7] >> 1);
+        let a3 = block[s + 1] + block[s + 7] - block[s + 3] - (block[s + 3] >> 1);
+        let a5 = -block[s + 1] + block[s + 7] + block[s + 5] + (block[s + 5] >> 1);
+        let a7 = block[s + 3] + block[s + 5] + block[s + 1] + (block[s + 1] >> 1);
+
+        let b1 = (a7 >> 2) + a1;
+        let b3 = a3 + (a5 >> 2);
+        let b5 = (a3 >> 2) - a5;
+        let b7 = a7 - (a1 >> 2);
+
+        block[s] = b0 + b7;
+        block[s + 1] = b2 + b5;
+        block[s + 2] = b4 + b3;
+        block[s + 3] = b6 + b1;
+        block[s + 4] = b6 - b1;
+        block[s + 5] = b4 - b3;
+        block[s + 6] = b2 - b5;
+        block[s + 7] = b0 - b7;
+    }
+
+    // Second pass: columns, with >> 6 normalization
     for i in 0..8 {
         let a0 = block[i] + block[i + 4 * 8];
         let a2 = block[i] - block[i + 4 * 8];
@@ -272,50 +304,14 @@ pub fn inverse_dct_8x8(block: &mut [i32; 64]) {
         let b5 = (a3 >> 2) - a5;
         let b7 = a7 - (a1 >> 2);
 
-        block[i] = b0 + b7;
-        block[i + 7 * 8] = b0 - b7;
-        block[i + 8] = b2 + b5;
-        block[i + 6 * 8] = b2 - b5;
-        block[i + 2 * 8] = b4 + b3;
-        block[i + 5 * 8] = b4 - b3;
-        block[i + 3 * 8] = b6 + b1;
-        block[i + 4 * 8] = b6 - b1;
-    }
-
-    // Vertical pass (row indices within each column), with >> 6 rounding
-    for i in 0..8 {
-        let a0 = block[i * 8] + block[4 + i * 8];
-        let a2 = block[i * 8] - block[4 + i * 8];
-        let a4 = (block[2 + i * 8] >> 1) - block[6 + i * 8];
-        let a6 = (block[6 + i * 8] >> 1) + block[2 + i * 8];
-
-        let b0 = a0 + a6;
-        let b2 = a2 + a4;
-        let b4 = a2 - a4;
-        let b6 = a0 - a6;
-
-        let a1 = -block[3 + i * 8] + block[5 + i * 8]
-            - block[7 + i * 8] - (block[7 + i * 8] >> 1);
-        let a3 = block[1 + i * 8] + block[7 + i * 8]
-            - block[3 + i * 8] - (block[3 + i * 8] >> 1);
-        let a5 = -block[1 + i * 8] + block[7 + i * 8]
-            + block[5 + i * 8] + (block[5 + i * 8] >> 1);
-        let a7 = block[3 + i * 8] + block[5 + i * 8]
-            + block[1 + i * 8] + (block[1 + i * 8] >> 1);
-
-        let b1 = (a7 >> 2) + a1;
-        let b3 = a3 + (a5 >> 2);
-        let b5 = (a3 >> 2) - a5;
-        let b7 = a7 - (a1 >> 2);
-
-        block[i * 8] = (b0 + b7) >> 6;
-        block[1 + i * 8] = (b2 + b5) >> 6;
-        block[2 + i * 8] = (b4 + b3) >> 6;
-        block[3 + i * 8] = (b6 + b1) >> 6;
-        block[4 + i * 8] = (b6 - b1) >> 6;
-        block[5 + i * 8] = (b4 - b3) >> 6;
-        block[6 + i * 8] = (b2 - b5) >> 6;
-        block[7 + i * 8] = (b0 - b7) >> 6;
+        block[i] = (b0 + b7) >> 6;
+        block[i + 8] = (b2 + b5) >> 6;
+        block[i + 2 * 8] = (b4 + b3) >> 6;
+        block[i + 3 * 8] = (b6 + b1) >> 6;
+        block[i + 4 * 8] = (b6 - b1) >> 6;
+        block[i + 5 * 8] = (b4 - b3) >> 6;
+        block[i + 6 * 8] = (b2 - b5) >> 6;
+        block[i + 7 * 8] = (b0 - b7) >> 6;
     }
 }
 

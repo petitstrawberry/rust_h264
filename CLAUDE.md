@@ -31,7 +31,7 @@ This is a Rust project using Cargo:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). 27 of 28 test streams byte-exact against FFmpeg; remaining 1 has max diff of 2 (8x8 IDCT rounding in High profile). Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). 27 of 28 test streams byte-exact against FFmpeg; remaining 1 has max diff of 2 (I8x8 intra prediction rounding in High profile). Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
 
 ### Completed
 
