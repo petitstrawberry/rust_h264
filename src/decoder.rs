@@ -7074,6 +7074,21 @@ mod tests {
     }
 
     #[test]
+    fn test_cabac_deblock() {
+        // 64x64, 3 frames: CABAC Main profile with deblocking enabled,
+        // P_L0_16x16 (84.4%) + I-in-P (12.5%) + skip (3.1%), byte-exact against FFmpeg
+        decode_multiframe_and_compare("cabac_deblock_test", 3, 64, 64);
+    }
+
+    #[test]
+    fn test_deblock_b_frames() {
+        // 64x64, 9 frames: CAVLC Main profile with B-frames (bframes=2) and deblocking,
+        // B16x16 (2.5%) + B_Direct (10%) + B_Skip (87.5%) + I-in-P (31.3%),
+        // byte-exact against FFmpeg
+        decode_multiframe_and_compare("deblock_b_test", 9, 64, 64);
+    }
+
+    #[test]
     fn test_weighted_p() {
         // 32x32, 10 frames: CAVLC P with explicit weighted prediction (100% weighted,
         // 77.8% chroma weighted), fading content, --no-deblock, byte-exact against FFmpeg
