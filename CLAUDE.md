@@ -31,7 +31,7 @@ This is a Rust project using Cargo:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). All 35 test streams byte-exact against FFmpeg. Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). All 36 test streams byte-exact against FFmpeg. Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
 
 ### Completed
 
@@ -141,7 +141,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (84 tests, all byte-exact against FFmpeg)
+**Test Coverage** (85 tests, all byte-exact against FFmpeg)
 - Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
   mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
   noise_16x16, scaling_test
@@ -158,7 +158,8 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   cabac_high_profile (8x8 inter), cabac_deblock_test (deblocking enabled)
 - Deblocking: deblock_frame, deblock_b_test (B-frames + deblock),
   deblock_b_inter_test (B inter + cross-list bS)
-- Weighted prediction: weighted_p_test (CAVLC, 100% weighted P, fading)
+- Weighted prediction: weighted_p_test (CAVLC, 100% weighted P, fading),
+  weighted_b_test (CABAC, implicit weighted B idc=2)
 - High profile: high_profile_test (320x240 CAVLC, 8x8 intra+inter)
 - Real-world: realworld_test (320x240 P-only),
   realworld_b_test (320x240 with B-frames)
