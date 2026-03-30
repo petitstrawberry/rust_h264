@@ -31,7 +31,7 @@ This is a Rust project using Cargo:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). All 28 test streams byte-exact against FFmpeg. Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). All 32 test streams byte-exact against FFmpeg. Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
 
 ### Completed
 
@@ -141,7 +141,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (80 tests)
+**Test Coverage** (81 tests, all byte-exact against FFmpeg)
 - Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
   mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
   noise_16x16, scaling_test
@@ -149,15 +149,17 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - B-slice: b_l0_l1_test, b_bi_test, b_skip_test (spatial direct),
   b_temporal_test, b_parts_test (16x8/8x16/8x8), b_multi_test, b_hier_test
   (hierarchical B-frames with ref_pic_list_modification)
-- CABAC: cabac_i4x4_test (byte-exact), cabac_i16x16_test (byte-exact),
-  cabac_mixed_test (multi-MB mixed I4x4/I16x16, byte-exact),
-  cabac_p_test (P_Skip), cabac_intra_p_test (I16x16-in-P, byte-exact),
-  cabac_b_test (B_Skip with spatial direct, byte-exact),
-  cabac_high_profile (CABAC High profile 8x8 inter, byte-exact)
-- Weighted prediction: weighted_p_test (CAVLC, 100% weighted P, fading, byte-exact)
-- High profile: high_profile_test (320x240 CAVLC, 8x8 intra+inter, byte-exact)
-- Real-world: realworld_test (320x240 P-only, byte-exact),
-  realworld_b_test (320x240 with B-frames, byte-exact)
+- CABAC: cabac_i4x4_test, cabac_i16x16_test, cabac_mixed_test,
+  cabac_p_test, cabac_intra_p_test (I16x16-in-P),
+  cabac_b_test (B_Skip spatial direct),
+  cabac_b_parts_test (B16x16/16x8/8x16/8x8/Direct/Skip with L0/L1/Bi),
+  cabac_high_profile (8x8 inter), cabac_deblock_test (deblocking enabled)
+- Deblocking: deblock_frame, deblock_b_test (B-frames + deblock),
+  deblock_b_inter_test (B inter + cross-list bS)
+- Weighted prediction: weighted_p_test (CAVLC, 100% weighted P, fading)
+- High profile: high_profile_test (320x240 CAVLC, 8x8 intra+inter)
+- Real-world: realworld_test (320x240 P-only),
+  realworld_b_test (320x240 with B-frames)
 
 ### Not Yet Implemented
 

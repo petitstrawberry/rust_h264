@@ -7080,6 +7080,14 @@ mod tests {
     }
 
     #[test]
+    fn test_cabac_b_parts() {
+        // 64x64, 10 frames: CABAC B-frames with B16x16 (15.6%) + B16x8 (25%) +
+        // B8x16/8x8 (19.5%) + B_Direct spatial (18.8%) + B_Skip (21.9%),
+        // L0/L1/Bi mix, P_8x8 sub-partitions, --no-deblock, byte-exact against FFmpeg
+        decode_multiframe_and_compare("cabac_b_parts_test", 10, 64, 64);
+    }
+
+    #[test]
     fn test_cabac_high_profile() {
         // 64x64, 5 frames: CABAC High profile with 8x8 transform (43.8% inter 8x8),
         // P-only, --no-deblock, medium preset, byte-exact against FFmpeg
