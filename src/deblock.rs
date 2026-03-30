@@ -30,6 +30,10 @@ pub struct MbInfo {
     pub ref_idx_l0: [i8; 16],
     /// Per-4x4-block reference indices for L1. -1 = unused.
     pub ref_idx_l1: [i8; 16],
+    /// Per-4x4-block reference picture POC for L0. Used for cross-list comparison.
+    pub ref_poc_l0: [i32; 16],
+    /// Per-4x4-block reference picture POC for L1.
+    pub ref_poc_l1: [i32; 16],
     /// Per-4x4-block non-zero coefficient count. True if any coefficients were coded.
     pub nnz: [bool; 16],
     /// Number of reference lists used (1 for P-slice, 2 for B-slice, 0 for I-slice).
@@ -139,7 +143,6 @@ pub fn filter_frame(
                 };
                 seg_bs[seg] = derive_bs(mb_p, mb_q, blk_p, blk_q, is_mb_edge);
             }
-
             // Luma: filter each segment independently
             for seg in 0..4 {
                 if seg_bs[seg] == 0 { continue; }
@@ -298,17 +301,16 @@ fn check_mv_diff(mb_p: &MbInfo, mb_q: &MbInfo, blk_p: usize, blk_q: usize) -> bo
         return false;
     }
 
-    // B-slice: two-list comparison. The spec says bS=1 when the number
-    // of reference pictures or the ref indices or the MVs differ.
-    // Per spec 8.7.2.1, for two-list prediction:
-    // First check if L0-L0 and L1-L1 match (straight comparison).
-    // If not, check if L0-L1 and L1-L0 match (swapped comparison).
+    // B-slice: two-list comparison by actual picture identity (POC).
+    // Spec 8.7.2.1: compare reference pictures (not list indices) and MVs.
+    // First check straight (p_L0 vs q_L0, p_L1 vs q_L1).
+    // If not, check swapped (p_L0 vs q_L1, p_L1 vs q_L0).
     let straight_match = refs_and_mvs_match(
-        mb_p.ref_idx_l0[blk_p], mb_p.mv_l0[blk_p],
-        mb_q.ref_idx_l0[blk_q], mb_q.mv_l0[blk_q],
+        mb_p.ref_idx_l0[blk_p], mb_p.ref_poc_l0[blk_p], mb_p.mv_l0[blk_p],
+        mb_q.ref_idx_l0[blk_q], mb_q.ref_poc_l0[blk_q], mb_q.mv_l0[blk_q],
     ) && refs_and_mvs_match(
-        mb_p.ref_idx_l1[blk_p], mb_p.mv_l1[blk_p],
-        mb_q.ref_idx_l1[blk_q], mb_q.mv_l1[blk_q],
+        mb_p.ref_idx_l1[blk_p], mb_p.ref_poc_l1[blk_p], mb_p.mv_l1[blk_p],
+        mb_q.ref_idx_l1[blk_q], mb_q.ref_poc_l1[blk_q], mb_q.mv_l1[blk_q],
     );
 
     if straight_match {
@@ -317,24 +319,27 @@ fn check_mv_diff(mb_p: &MbInfo, mb_q: &MbInfo, blk_p: usize, blk_q: usize) -> bo
 
     // Try swapped: p_L0 vs q_L1 and p_L1 vs q_L0
     let swapped_match = refs_and_mvs_match(
-        mb_p.ref_idx_l0[blk_p], mb_p.mv_l0[blk_p],
-        mb_q.ref_idx_l1[blk_q], mb_q.mv_l1[blk_q],
+        mb_p.ref_idx_l0[blk_p], mb_p.ref_poc_l0[blk_p], mb_p.mv_l0[blk_p],
+        mb_q.ref_idx_l1[blk_q], mb_q.ref_poc_l1[blk_q], mb_q.mv_l1[blk_q],
     ) && refs_and_mvs_match(
-        mb_p.ref_idx_l1[blk_p], mb_p.mv_l1[blk_p],
-        mb_q.ref_idx_l0[blk_q], mb_q.mv_l0[blk_q],
+        mb_p.ref_idx_l1[blk_p], mb_p.ref_poc_l1[blk_p], mb_p.mv_l1[blk_p],
+        mb_q.ref_idx_l0[blk_q], mb_q.ref_poc_l0[blk_q], mb_q.mv_l0[blk_q],
     );
 
     !swapped_match
 }
 
-/// Check if ref index and MV match between two blocks (within threshold).
-fn refs_and_mvs_match(ref_a: i8, mv_a: [i16; 2], ref_b: i8, mv_b: [i16; 2]) -> bool {
-    if ref_a != ref_b {
-        return false;
+/// Check if reference picture and MV match between two blocks.
+/// Compares by POC (picture identity) rather than list index.
+fn refs_and_mvs_match(ref_a: i8, poc_a: i32, mv_a: [i16; 2], ref_b: i8, poc_b: i32, mv_b: [i16; 2]) -> bool {
+    if ref_a < 0 && ref_b < 0 {
+        return true; // both unused
     }
-    // If ref is -1 (unused), both sides agree: no prediction from this list
-    if ref_a < 0 {
-        return true;
+    if ref_a < 0 || ref_b < 0 {
+        return false; // one used, one not
+    }
+    if poc_a != poc_b {
+        return false; // different pictures
     }
     !mv_diff_ge4(mv_a, mv_b)
 }

@@ -245,6 +245,8 @@ impl Decoder {
             mv_l1: [[0; 2]; 16],
             ref_idx_l0: [-1; 16],
             ref_idx_l1: [-1; 16],
+            ref_poc_l0: [-1; 16],
+            ref_poc_l1: [-1; 16],
             nnz: [false; 16],
             list_count: if is_b_slice { 2 } else if is_p_slice { 1 } else { 0 },
         };
@@ -5578,6 +5580,15 @@ impl Decoder {
                 info.mv_l1[blk] = mv_store_l1[base + blk];
                 info.ref_idx_l1[blk] = ref_idx_store_l1[base + blk];
                 info.nnz[blk] = nc_luma[base + blk] > 0;
+                // Store reference picture POC for cross-list deblock comparison
+                let ri_l0 = ref_idx_store_l0[base + blk];
+                info.ref_poc_l0[blk] = if ri_l0 >= 0 {
+                    _ref_pic_list_l0.get(ri_l0 as usize).map(|p| p.pic_order_cnt).unwrap_or(-1)
+                } else { -1 };
+                let ri_l1 = ref_idx_store_l1[base + blk];
+                info.ref_poc_l1[blk] = if ri_l1 >= 0 {
+                    _ref_pic_list_l1.get(ri_l1 as usize).map(|p| p.pic_order_cnt).unwrap_or(-1)
+                } else { -1 };
             }
         }
 
@@ -7086,6 +7097,14 @@ mod tests {
         // B16x16 (2.5%) + B_Direct (10%) + B_Skip (87.5%) + I-in-P (31.3%),
         // byte-exact against FFmpeg
         decode_multiframe_and_compare("deblock_b_test", 9, 64, 64);
+    }
+
+    #[test]
+    fn test_deblock_b_inter() {
+        // 64x64, 5 frames: CAVLC Main profile B-frames with deblocking,
+        // B16x16 L0/L1/Bi (78.1%) + B_Direct (12.5%) + B_Skip (9.4%),
+        // exercises cross-list deblock bS comparison, byte-exact against FFmpeg
+        decode_multiframe_and_compare("deblock_b_inter_test", 5, 64, 64);
     }
 
     #[test]
