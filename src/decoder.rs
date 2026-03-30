@@ -7121,6 +7121,14 @@ mod tests {
     }
 
     #[test]
+    fn test_cabac_b_temporal() {
+        // 64x64, 10 frames: CABAC B-frames with temporal direct mode (20.3%) +
+        // B16x16 (59.4%) + B_Skip (20.3%), L0/L1/Bi mix, --no-deblock,
+        // byte-exact against FFmpeg
+        decode_multiframe_and_compare("cabac_b_temporal_test", 10, 64, 64);
+    }
+
+    #[test]
     fn test_cabac_high_profile() {
         // 64x64, 5 frames: CABAC High profile with 8x8 transform (43.8% inter 8x8),
         // P-only, --no-deblock, medium preset, byte-exact against FFmpeg

@@ -31,7 +31,7 @@ This is a Rust project using Cargo:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). All 34 test streams byte-exact against FFmpeg. Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). All 35 test streams byte-exact against FFmpeg. Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
 
 ### Completed
 
@@ -141,7 +141,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (83 tests, all byte-exact against FFmpeg)
+**Test Coverage** (84 tests, all byte-exact against FFmpeg)
 - Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
   mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
   noise_16x16, scaling_test
@@ -154,7 +154,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   cabac_intra_p_test (I16x16-in-P),
   cabac_b_test (B_Skip spatial direct),
   cabac_b_parts_test (B16x16/16x8/8x16/8x8/Direct/Skip with L0/L1/Bi),
-  cabac_intra_b_test (I16x16-in-B),
+  cabac_intra_b_test (I16x16-in-B), cabac_b_temporal_test (temporal direct),
   cabac_high_profile (8x8 inter), cabac_deblock_test (deblocking enabled)
 - Deblocking: deblock_frame, deblock_b_test (B-frames + deblock),
   deblock_b_inter_test (B inter + cross-list bS)
