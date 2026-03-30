@@ -85,8 +85,10 @@ impl Dpb {
         self.remove_unused();
     }
 
-    /// Get the list of short-term reference pictures, sorted by descending frame_num.
+    /// Get the list of short-term reference pictures, sorted by descending PicNum.
     /// Used to build ref_pic_list_0 for P slices (spec 8.2.4.2.1).
+    /// PicNum = FrameNumWrap = frame_num when frame_num hasn't wrapped, but after
+    /// wraparound we sort by POC (descending) which correctly orders by recency.
     pub fn short_term_ref_list(&self) -> Vec<Rc<DecodedPicture>> {
         let mut refs: Vec<_> = self
             .entries
@@ -94,7 +96,8 @@ impl Dpb {
             .filter(|e| e.reference == ReferenceStatus::ShortTerm)
             .map(|e| e.pic.clone())
             .collect();
-        refs.sort_by(|a, b| b.frame_num.cmp(&a.frame_num));
+        // Sort by descending POC as a proxy for recency (handles frame_num wraparound).
+        refs.sort_by(|a, b| b.pic_order_cnt.cmp(&a.pic_order_cnt));
         refs
     }
 
@@ -330,14 +333,13 @@ impl Dpb {
             if short_term_count < max {
                 break;
             }
-            // Find the short-term ref with the smallest frame_num
+            // Evict the oldest short-term reference (first in insertion order).
+            // Using insertion order handles frame_num wraparound correctly
+            // (spec 8.2.5.3: evict smallest FrameNumWrap, which is the oldest).
             if let Some(idx) = self
                 .entries
                 .iter()
-                .enumerate()
-                .filter(|(_, e)| e.reference == ReferenceStatus::ShortTerm)
-                .min_by_key(|(_, e)| e.pic.frame_num)
-                .map(|(i, _)| i)
+                .position(|e| e.reference == ReferenceStatus::ShortTerm)
             {
                 self.entries[idx].reference = ReferenceStatus::Unused;
             } else {
