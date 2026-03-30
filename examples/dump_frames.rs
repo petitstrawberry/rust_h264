@@ -60,9 +60,9 @@ fn main() {
 
     // Detect POC wrap: if sorting moved non-adjacent decode orders together,
     // fall back to decode order within each IDR period to avoid interleaving.
-    let has_poc_wrap = frames.windows(2).any(|w| {
-        w[0].0 == w[1].0 && w[0].1 == w[1].1 && w[0].2 + 1 != w[1].2
-    });
+    let has_poc_wrap = frames
+        .windows(2)
+        .any(|w| w[0].0 == w[1].0 && w[0].1 == w[1].1 && w[0].2 + 1 != w[1].2);
     if has_poc_wrap {
         // POC wraps detected — sort by decode order within each IDR period
         frames.sort_by_key(|&(idr, _poc, order, _)| (idr, order));

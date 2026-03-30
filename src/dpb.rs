@@ -202,7 +202,11 @@ impl Dpb {
             } else {
                 // Add
                 let sum = pred_pic_num + abs_diff;
-                if sum >= max_pic_num { sum - max_pic_num } else { sum }
+                if sum >= max_pic_num {
+                    sum - max_pic_num
+                } else {
+                    sum
+                }
             };
             pred_pic_num = pic_num;
 
@@ -253,9 +257,7 @@ impl Dpb {
             && (self.prev_poc_lsb - poc_lsb) >= max_poc_lsb / 2
         {
             self.prev_poc_msb + max_poc_lsb as i32
-        } else if poc_lsb > self.prev_poc_lsb
-            && (poc_lsb - self.prev_poc_lsb) > max_poc_lsb / 2
-        {
+        } else if poc_lsb > self.prev_poc_lsb && (poc_lsb - self.prev_poc_lsb) > max_poc_lsb / 2 {
             self.prev_poc_msb - max_poc_lsb as i32
         } else {
             self.prev_poc_msb

@@ -3,15 +3,20 @@ use rust_h264::nal::{parse_annex_b, NalUnitType};
 fn main() {
     let data = std::fs::read("/tmp/bars.h264").unwrap();
     let nals = parse_annex_b(&data);
-    let idr = nals.iter().find(|n| n.nal_unit_type == NalUnitType::SliceIdr).unwrap();
-    
+    let idr = nals
+        .iter()
+        .find(|n| n.nal_unit_type == NalUnitType::SliceIdr)
+        .unwrap();
+
     println!("IDR RBSP bytes 0-20:");
     for i in 0..20.min(idr.rbsp.len()) {
         print!("{:02x} ", idr.rbsp[i]);
-        if (i + 1) % 10 == 0 { println!(); }
+        if (i + 1) % 10 == 0 {
+            println!();
+        }
     }
     println!();
-    
+
     // Position (3, 7) is bit 0 of byte 3
     println!("\nBits starting from (3, 7):");
     let mut bits = Vec::new();
@@ -23,17 +28,19 @@ fn main() {
             }
         }
     }
-    
+
     // Print bits grouped by byte
     for (i, b) in bits.iter().enumerate() {
         print!("{}", b);
-        if (i + 1) % 8 == 0 { print!(" "); }
+        if (i + 1) % 8 == 0 {
+            print!(" ");
+        }
     }
     println!();
-    
+
     // Starting from bit 7 of byte 3 (after slice header + mb_type)
     println!("\nBits from position (3, 7) specifically:");
-    let start_bit = 7;  // bit 0 (LSB) of byte 3
+    let start_bit = 7; // bit 0 (LSB) of byte 3
     let mut idx = 0;
     for byte_idx in 3..13 {
         let byte = idr.rbsp[byte_idx];
@@ -41,11 +48,13 @@ fn main() {
             let b = (byte >> (7 - bit_idx)) & 1;
             print!("{}", b);
             idx += 1;
-            if idx % 8 == 0 { print!(" "); }
+            if idx % 8 == 0 {
+                print!(" ");
+            }
         }
     }
     println!();
-    
+
     // Parse coeff_token manually
     println!("\nManual coeff_token parse (nc=0):");
     // Starting from (3, 7), first bit is byte 3 bit 0 = LSB

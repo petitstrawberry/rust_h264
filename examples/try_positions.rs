@@ -24,7 +24,7 @@ static COEFF_TOKEN_NC0: [(u32, u8, u8, u8); 62] = [
 fn try_match(bits: &[u8]) -> Option<(u8, u8, usize)> {
     let mut code = 0u32;
     for len in 1..=16.min(bits.len()) {
-        code = (code << 1) | (bits[len-1] as u32);
+        code = (code << 1) | (bits[len - 1] as u32);
         for &(cw, cwlen, tc, to) in &COEFF_TOKEN_NC0 {
             if cwlen as usize == len && cw == code {
                 return Some((tc, to, len));
@@ -37,32 +37,39 @@ fn try_match(bits: &[u8]) -> Option<(u8, u8, usize)> {
 fn main() {
     let data = std::fs::read("testdata/i4x4_frame.h264").unwrap();
     let nals = parse_annex_b(&data);
-    let idr = nals.iter().find(|n| n.nal_unit_type == NalUnitType::SliceIdr).unwrap();
+    let idr = nals
+        .iter()
+        .find(|n| n.nal_unit_type == NalUnitType::SliceIdr)
+        .unwrap();
     let rbsp = &idr.rbsp;
-    
+
     println!("RBSP length: {}", rbsp.len());
-    
+
     // Print bytes 7-12
     println!("Bytes 7-12:");
-    for i in 7..=12.min(rbsp.len()-1) {
+    for i in 7..=12.min(rbsp.len() - 1) {
         println!("  byte {}: 0x{:02x} = {:08b}", i, rbsp[i], rbsp[i]);
     }
-    
+
     println!("\nTrying coeff_token match at different bit positions (around bit 71):");
-    
+
     for start_bit in 68..76 {
         let byte = start_bit / 8;
         let bit_in_byte = start_bit % 8;
-        
-        if byte >= rbsp.len() { continue; }
-        
+
+        if byte >= rbsp.len() {
+            continue;
+        }
+
         // Extract next 20 bits from this position
         let mut bits = Vec::new();
         let mut cur_byte = byte;
         let mut cur_bit = bit_in_byte;
-        
+
         for _ in 0..20 {
-            if cur_byte >= rbsp.len() { break; }
+            if cur_byte >= rbsp.len() {
+                break;
+            }
             let b = (rbsp[cur_byte] >> (7 - cur_bit)) & 1;
             bits.push(b);
             cur_bit += 1;
@@ -71,32 +78,44 @@ fn main() {
                 cur_byte += 1;
             }
         }
-        
-        let bit_str: String = bits.iter().take(16).map(|&b| if b == 1 { '1' } else { '0' }).collect();
-        
+
+        let bit_str: String = bits
+            .iter()
+            .take(16)
+            .map(|&b| if b == 1 { '1' } else { '0' })
+            .collect();
+
         if let Some((tc, to, len)) = try_match(&bits) {
-            println!("bit {:2} = ({}, {}): [{}] -> tc={}, to={}, len={}",
-                     start_bit, byte, bit_in_byte, bit_str, tc, to, len);
+            println!(
+                "bit {:2} = ({}, {}): [{}] -> tc={}, to={}, len={}",
+                start_bit, byte, bit_in_byte, bit_str, tc, to, len
+            );
         } else {
-            println!("bit {:2} = ({}, {}): [{}] -> no 16-bit match",
-                     start_bit, byte, bit_in_byte, bit_str);
+            println!(
+                "bit {:2} = ({}, {}): [{}] -> no 16-bit match",
+                start_bit, byte, bit_in_byte, bit_str
+            );
         }
     }
-    
+
     // Also try if we're 1 byte off
     println!("\nTrying positions if we're 1 byte ahead (around bit 79):");
     for start_bit in 76..84 {
         let byte = start_bit / 8;
         let bit_in_byte = start_bit % 8;
-        
-        if byte >= rbsp.len() { continue; }
-        
+
+        if byte >= rbsp.len() {
+            continue;
+        }
+
         let mut bits = Vec::new();
         let mut cur_byte = byte;
         let mut cur_bit = bit_in_byte;
-        
+
         for _ in 0..20 {
-            if cur_byte >= rbsp.len() { break; }
+            if cur_byte >= rbsp.len() {
+                break;
+            }
             let b = (rbsp[cur_byte] >> (7 - cur_bit)) & 1;
             bits.push(b);
             cur_bit += 1;
@@ -105,12 +124,18 @@ fn main() {
                 cur_byte += 1;
             }
         }
-        
-        let bit_str: String = bits.iter().take(16).map(|&b| if b == 1 { '1' } else { '0' }).collect();
-        
+
+        let bit_str: String = bits
+            .iter()
+            .take(16)
+            .map(|&b| if b == 1 { '1' } else { '0' })
+            .collect();
+
         if let Some((tc, to, len)) = try_match(&bits) {
-            println!("bit {:2} = ({}, {}): [{}] -> tc={}, to={}, len={}",
-                     start_bit, byte, bit_in_byte, bit_str, tc, to, len);
+            println!(
+                "bit {:2} = ({}, {}): [{}] -> tc={}, to={}, len={}",
+                start_bit, byte, bit_in_byte, bit_str, tc, to, len
+            );
         }
     }
 }

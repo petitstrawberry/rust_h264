@@ -63,13 +63,7 @@ fn half_pel_hv(pic: &DecodedPicture, x: i32, y: i32) -> u8 {
 /// Interpolate a single luma sample at quarter-pel position.
 /// `x`, `y` are integer-pel coordinates of the reference position.
 /// `frac_x`, `frac_y` are the fractional offsets (0..3).
-fn luma_interp(
-    pic: &DecodedPicture,
-    x: i32,
-    y: i32,
-    frac_x: i32,
-    frac_y: i32,
-) -> u8 {
+fn luma_interp(pic: &DecodedPicture, x: i32, y: i32, frac_x: i32, frac_y: i32) -> u8 {
     // Spec 8.4.2.2.1: 16 fractional positions (4x4 grid)
     match (frac_x, frac_y) {
         // Integer position
@@ -237,14 +231,10 @@ pub fn weighted_bi(
 
 /// Apply implicit weighted bi-prediction for B-slices (spec 8.4.2.3.2).
 /// Uses POC-distance-derived weights with fixed log2_denom=5.
-pub fn weighted_bi_implicit(
-    pred_l0: &[u8], pred_l1: &[u8], output: &mut [u8],
-    w0: i32, w1: i32,
-) {
+pub fn weighted_bi_implicit(pred_l0: &[u8], pred_l1: &[u8], output: &mut [u8], w0: i32, w1: i32) {
     let round = 1i32 << 5; // 1 << log2_denom where log2_denom=5
     for (o, (&a, &b)) in output.iter_mut().zip(pred_l0.iter().zip(pred_l1.iter())) {
-        *o = ((a as i32 * w0 + b as i32 * w1 + round) >> 6)
-            .clamp(0, 255) as u8;
+        *o = ((a as i32 * w0 + b as i32 * w1 + round) >> 6).clamp(0, 255) as u8;
     }
 }
 

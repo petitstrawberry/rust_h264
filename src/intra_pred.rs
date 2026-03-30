@@ -4,8 +4,8 @@
 /// with value 128 is valid.
 pub fn predict_intra_16x16(
     mode: u8,
-    above: Option<&[u8]>,  // 16 pixels from row above
-    left: Option<&[u8]>,   // 16 pixels from column to left
+    above: Option<&[u8]>, // 16 pixels from row above
+    left: Option<&[u8]>,  // 16 pixels from column to left
     above_left: Option<u8>,
     output: &mut [u8; 256],
 ) {
@@ -56,7 +56,11 @@ pub fn predict_intra_16x16(
             let mut v: i32 = 0;
             for i in 0..8 {
                 // p[6-i, -1] and p[-1, 6-i]: when i==7, index -1 = above_left pixel
-                let above_neg = if i < 7 { above[6 - i] as i32 } else { _p as i32 };
+                let above_neg = if i < 7 {
+                    above[6 - i] as i32
+                } else {
+                    _p as i32
+                };
                 let left_neg = if i < 7 { left[6 - i] as i32 } else { _p as i32 };
                 h += (i as i32 + 1) * (above[8 + i] as i32 - above_neg);
                 v += (i as i32 + 1) * (left[8 + i] as i32 - left_neg);
@@ -67,8 +71,7 @@ pub fn predict_intra_16x16(
 
             for y in 0..16 {
                 for x in 0..16 {
-                    let val =
-                        (a_val + b_val * (x as i32 - 7) + c_val * (y as i32 - 7) + 16) >> 5;
+                    let val = (a_val + b_val * (x as i32 - 7) + c_val * (y as i32 - 7) + 16) >> 5;
                     output[y * 16 + x] = val.clamp(0, 255) as u8;
                 }
             }
@@ -135,13 +138,11 @@ pub fn predict_intra_4x4(
             for y in 0..4 {
                 for x in 0..4 {
                     if x == 3 && y == 3 {
-                        output[y * 4 + x] =
-                            ((a[6] as u16 + 3 * a[7] as u16 + 2) >> 2) as u8;
+                        output[y * 4 + x] = ((a[6] as u16 + 3 * a[7] as u16 + 2) >> 2) as u8;
                     } else {
                         let i = x + y;
-                        output[y * 4 + x] = ((a[i] as u16 + 2 * a[i + 1] as u16
-                            + a[i + 2] as u16 + 2)
-                            >> 2) as u8;
+                        output[y * 4 + x] =
+                            ((a[i] as u16 + 2 * a[i + 1] as u16 + a[i + 2] as u16 + 2) >> 2) as u8;
                     }
                 }
             }
@@ -155,9 +156,15 @@ pub fn predict_intra_4x4(
             let l = left.unwrap_or(&[128; 4]);
             let p = above_left.unwrap_or(128);
             let r = [
-                l[3] as u16, l[2] as u16, l[1] as u16, l[0] as u16,
+                l[3] as u16,
+                l[2] as u16,
+                l[1] as u16,
+                l[0] as u16,
                 p as u16,
-                a[0] as u16, a[1] as u16, a[2] as u16, a[3] as u16,
+                a[0] as u16,
+                a[1] as u16,
+                a[2] as u16,
+                a[3] as u16,
             ];
             for y in 0..4usize {
                 for x in 0..4usize {
@@ -171,7 +178,8 @@ pub fn predict_intra_4x4(
             let a = above.unwrap_or(&[128; 8]);
             let l = left.unwrap_or(&[128; 4]);
             let p = above_left.unwrap_or(128);
-            let (lt, t0, t1, t2, t3) = (p as u16, a[0] as u16, a[1] as u16, a[2] as u16, a[3] as u16);
+            let (lt, t0, t1, t2, t3) =
+                (p as u16, a[0] as u16, a[1] as u16, a[2] as u16, a[3] as u16);
             let (l0, l1, l2) = (l[0] as u16, l[1] as u16, l[2] as u16);
             // Row 0: avg of above pairs
             output[0] = ((lt + t0 + 1) >> 1) as u8;
@@ -211,12 +219,12 @@ pub fn predict_intra_4x4(
             output[5] = ((lt + 2 * l0 + l1 + 2) >> 2) as u8;
             output[6] = output[0]; // same as (lt + l0 + 1) >> 1
             output[7] = output[1]; // same as (l0 + 2*lt + t0 + 2) >> 2
-            // Row 2
+                                   // Row 2
             output[8] = ((l1 + l2 + 1) >> 1) as u8;
             output[9] = ((l0 + 2 * l1 + l2 + 2) >> 2) as u8;
             output[10] = output[4]; // same as (l0 + l1 + 1) >> 1
             output[11] = output[5]; // same as (lt + 2*l0 + l1 + 2) >> 2
-            // Row 3
+                                    // Row 3
             output[12] = ((l2 + l3 + 1) >> 1) as u8;
             output[13] = ((l1 + 2 * l2 + l3 + 2) >> 2) as u8;
             output[14] = output[8]; // same as (l1 + l2 + 1) >> 1
@@ -247,8 +255,7 @@ pub fn predict_intra_4x4(
                         if zh % 2 == 0 {
                             ((l[i] as u16 + l[i + 1] as u16 + 1) >> 1) as u8
                         } else {
-                            ((l[i] as u16 + 2 * l[i + 1] as u16 + l[i + 2] as u16 + 2) >> 2)
-                                as u8
+                            ((l[i] as u16 + 2 * l[i + 1] as u16 + l[i + 2] as u16 + 2) >> 2) as u8
                         }
                     } else if zh == 5 {
                         ((l[2] as u16 + 3 * l[3] as u16 + 2) >> 2) as u8
@@ -268,8 +275,8 @@ pub fn predict_intra_4x4(
 /// `mode`: 0=DC, 1=horizontal, 2=vertical, 3=plane.
 pub fn predict_chroma_8x8(
     mode: u8,
-    above: Option<&[u8]>,  // 8 pixels from row above
-    left: Option<&[u8]>,   // 8 pixels from column to left
+    above: Option<&[u8]>, // 8 pixels from row above
+    left: Option<&[u8]>,  // 8 pixels from column to left
     above_left: Option<u8>,
     output: &mut [u8; 64],
 ) {
@@ -308,12 +315,20 @@ pub fn predict_chroma_8x8(
                 (None, None) => (128, 128, 128, 128),
             };
             for row in 0..4 {
-                for col in 0..4 { output[row * 8 + col] = dc_tl; }
-                for col in 4..8 { output[row * 8 + col] = dc_tr; }
+                for col in 0..4 {
+                    output[row * 8 + col] = dc_tl;
+                }
+                for col in 4..8 {
+                    output[row * 8 + col] = dc_tr;
+                }
             }
             for row in 4..8 {
-                for col in 0..4 { output[row * 8 + col] = dc_bl; }
-                for col in 4..8 { output[row * 8 + col] = dc_br; }
+                for col in 0..4 {
+                    output[row * 8 + col] = dc_bl;
+                }
+                for col in 4..8 {
+                    output[row * 8 + col] = dc_br;
+                }
             }
         }
         1 => {
@@ -342,7 +357,11 @@ pub fn predict_chroma_8x8(
             let mut v: i32 = 0;
             for i in 0..4 {
                 // p[2-i, -1] and p[-1, 2-i]: when i==3, index -1 = above_left pixel
-                let above_neg = if i < 3 { above[2 - i] as i32 } else { _p as i32 };
+                let above_neg = if i < 3 {
+                    above[2 - i] as i32
+                } else {
+                    _p as i32
+                };
                 let left_neg = if i < 3 { left[2 - i] as i32 } else { _p as i32 };
                 h += (i as i32 + 1) * (above[4 + i] as i32 - above_neg);
                 v += (i as i32 + 1) * (left[4 + i] as i32 - left_neg);
@@ -353,8 +372,7 @@ pub fn predict_chroma_8x8(
 
             for y in 0..8 {
                 for x in 0..8 {
-                    let val =
-                        (a_val + b_val * (x as i32 - 3) + c_val * (y as i32 - 3) + 16) >> 5;
+                    let val = (a_val + b_val * (x as i32 - 3) + c_val * (y as i32 - 3) + 16) >> 5;
                     output[y * 8 + x] = val.clamp(0, 255) as u8;
                 }
             }
@@ -388,8 +406,14 @@ pub fn predict_intra_8x8(
     // Filtered left samples (l0..l7)
     let mut fl = [128i32; 8];
     if let Some(l) = left {
-        fl[0] = (if above_left.is_some() { al } else { l[0] as i32 }
-            + 2 * l[0] as i32 + l[1] as i32 + 2) >> 2;
+        fl[0] = (if above_left.is_some() {
+            al
+        } else {
+            l[0] as i32
+        } + 2 * l[0] as i32
+            + l[1] as i32
+            + 2)
+            >> 2;
         for i in 1..7 {
             fl[i] = (l[i - 1] as i32 + 2 * l[i] as i32 + l[i + 1] as i32 + 2) >> 2;
         }
@@ -399,8 +423,14 @@ pub fn predict_intra_8x8(
     // Filtered top samples (t0..t7)
     let mut ft = [128i32; 8];
     if let Some(a) = above {
-        ft[0] = (if above_left.is_some() { al } else { a[0] as i32 }
-            + 2 * a[0] as i32 + a[1] as i32 + 2) >> 2;
+        ft[0] = (if above_left.is_some() {
+            al
+        } else {
+            a[0] as i32
+        } + 2 * a[0] as i32
+            + a[1] as i32
+            + 2)
+            >> 2;
         for i in 1..7 {
             ft[i] = (a[i - 1] as i32 + 2 * a[i] as i32 + a[i + 1] as i32 + 2) >> 2;
         }
@@ -426,11 +456,9 @@ pub fn predict_intra_8x8(
 
     // Filtered top-left
     let flt = match (above_left, left, above) {
-        (Some(_), Some(l), Some(a)) => {
-            (l[0] as i32 + 2 * al + a[0] as i32 + 2) >> 2
-        }
+        (Some(_), Some(l), Some(a)) => (l[0] as i32 + 2 * al + a[0] as i32 + 2) >> 2,
         (Some(_), _, _) => al,
-        _ => 128
+        _ => 128,
     };
 
     match mode {
@@ -499,7 +527,8 @@ pub fn predict_intra_8x8(
                         ((t[i] + 2 * t[i + 1] + t[i + 2] + 2) >> 2) as u8
                     } else if x < y {
                         let i = y - x - 1;
-                        ((fl[i] + 2 * fl[i + 1] + fl.get(i + 2).copied().unwrap_or(fl[7]) + 2) >> 2) as u8
+                        ((fl[i] + 2 * fl[i + 1] + fl.get(i + 2).copied().unwrap_or(fl[7]) + 2) >> 2)
+                            as u8
                     } else {
                         ((fl[0] + 2 * flt + ft[0] + 2) >> 2) as u8
                     };
@@ -514,19 +543,28 @@ pub fn predict_intra_8x8(
                     output[y * 8 + x] = if zv >= 0 {
                         let i = x - (y >> 1);
                         if zv & 1 == 0 {
-                            ((ft.get(i.wrapping_sub(1)).copied().unwrap_or(flt)
-                                + ft[i] + 1) >> 1) as u8
+                            ((ft.get(i.wrapping_sub(1)).copied().unwrap_or(flt) + ft[i] + 1) >> 1)
+                                as u8
                         } else {
-                            let p0 = if i >= 2 { ft[i - 2] } else if i == 1 { flt } else { fl[0] };
+                            let p0 = if i >= 2 {
+                                ft[i - 2]
+                            } else if i == 1 {
+                                flt
+                            } else {
+                                fl[0]
+                            };
                             ((p0 + 2 * ft.get(i.wrapping_sub(1)).copied().unwrap_or(flt)
-                                + ft[i] + 2) >> 2) as u8
+                                + ft[i]
+                                + 2)
+                                >> 2) as u8
                         }
                     } else if zv == -1 {
                         ((ft[0] + 2 * flt + fl[0] + 2) >> 2) as u8
                     } else {
                         let i = y - 2 * x - 1;
                         if zv % 2 == 0 {
-                            ((fl[i] + 2 * fl[i + 1] + fl.get(i + 2).copied().unwrap_or(fl[7]) + 2) >> 2) as u8
+                            ((fl[i] + 2 * fl[i + 1] + fl.get(i + 2).copied().unwrap_or(fl[7]) + 2)
+                                >> 2) as u8
                         } else {
                             ((fl[i - 1] + 2 * fl[i] + fl[i + 1] + 2) >> 2) as u8
                         }
@@ -542,12 +580,20 @@ pub fn predict_intra_8x8(
                     output[y * 8 + x] = if zh >= 0 {
                         let i = y - (x >> 1);
                         if zh & 1 == 0 {
-                            ((fl.get(i.wrapping_sub(1)).copied().unwrap_or(flt)
-                                + fl[i] + 1) >> 1) as u8
+                            ((fl.get(i.wrapping_sub(1)).copied().unwrap_or(flt) + fl[i] + 1) >> 1)
+                                as u8
                         } else {
-                            let p0 = if i >= 2 { fl[i - 2] } else if i == 1 { flt } else { ft[0] };
+                            let p0 = if i >= 2 {
+                                fl[i - 2]
+                            } else if i == 1 {
+                                flt
+                            } else {
+                                ft[0]
+                            };
                             ((p0 + 2 * fl.get(i.wrapping_sub(1)).copied().unwrap_or(flt)
-                                + fl[i] + 2) >> 2) as u8
+                                + fl[i]
+                                + 2)
+                                >> 2) as u8
                         }
                     } else if zh == -1 {
                         ((fl[0] + 2 * flt + ft[0] + 2) >> 2) as u8
@@ -556,7 +602,11 @@ pub fn predict_intra_8x8(
                         // ft[-1] is flt; for index -1, use flt
                         let i = x as i32 - 2 * y as i32;
                         let get_ft = |idx: i32| -> i32 {
-                            if idx < 0 { flt } else { ft[idx as usize] }
+                            if idx < 0 {
+                                flt
+                            } else {
+                                ft[idx as usize]
+                            }
                         };
                         ((get_ft(i - 3) + 2 * get_ft(i - 2) + get_ft(i - 1) + 2) >> 2) as u8
                     };
@@ -589,7 +639,8 @@ pub fn predict_intra_8x8(
                     } else if x & 1 == 0 {
                         ((fl[i] + fl[i + 1] + 1) >> 1) as u8
                     } else {
-                        ((fl[i] + 2 * fl[i + 1] + fl.get(i + 2).copied().unwrap_or(fl[7]) + 2) >> 2) as u8
+                        ((fl[i] + 2 * fl[i + 1] + fl.get(i + 2).copied().unwrap_or(fl[7]) + 2) >> 2)
+                            as u8
                     };
                 }
             }
@@ -604,17 +655,20 @@ mod tests {
 
     /// Reference implementation: compute I4x4 prediction using H.264 spec formulas
     /// with explicit p[x,-1]/p[-1,y]/p[-1,-1] indexing.
-    fn spec_predict_4x4(
-        mode: u8,
-        above: &[u8; 8],
-        left: &[u8; 4],
-        above_left: u8,
-    ) -> [u8; 16] {
+    fn spec_predict_4x4(mode: u8, above: &[u8; 8], left: &[u8; 4], above_left: u8) -> [u8; 16] {
         let pa = |x: i32| -> i32 {
-            if x == -1 { above_left as i32 } else { above[x as usize] as i32 }
+            if x == -1 {
+                above_left as i32
+            } else {
+                above[x as usize] as i32
+            }
         };
         let pl = |y: i32| -> i32 {
-            if y == -1 { above_left as i32 } else { left[y as usize] as i32 }
+            if y == -1 {
+                above_left as i32
+            } else {
+                left[y as usize] as i32
+            }
         };
 
         let mut out = [0u8; 16];
@@ -733,11 +787,18 @@ mod tests {
         let left = [128u8; 4];
         for mode in 0..9u8 {
             let mut output = [0u8; 16];
-            predict_intra_4x4(mode, Some(&above[..]), Some(&left[..]), Some(128), &mut output);
+            predict_intra_4x4(
+                mode,
+                Some(&above[..]),
+                Some(&left[..]),
+                Some(128),
+                &mut output,
+            );
             assert!(
                 output.iter().all(|&v| v == 128),
                 "Mode {} should give all 128 for uniform input, got {:?}",
-                mode, output
+                mode,
+                output
             );
         }
     }

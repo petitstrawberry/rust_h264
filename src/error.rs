@@ -29,8 +29,10 @@ impl From<&'static str> for DecodeError {
     fn from(msg: &'static str) -> Self {
         if msg == "end of bitstream" {
             DecodeError::UnexpectedEof
-        } else if msg.contains("not yet supported") || msg.contains("not supported")
-            || msg.starts_with("only ") || msg.starts_with("unsupported")
+        } else if msg.contains("not yet supported")
+            || msg.contains("not supported")
+            || msg.starts_with("only ")
+            || msg.starts_with("unsupported")
         {
             DecodeError::Unsupported(msg)
         } else {

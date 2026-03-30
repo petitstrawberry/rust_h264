@@ -7,13 +7,8 @@ pub struct SeiMessage {
 
 #[derive(Debug)]
 pub enum SeiPayload {
-    UserDataUnregistered {
-        uuid: [u8; 16],
-        data: Vec<u8>,
-    },
-    Unknown {
-        data: Vec<u8>,
-    },
+    UserDataUnregistered { uuid: [u8; 16], data: Vec<u8> },
+    Unknown { data: Vec<u8> },
 }
 
 /// Parse all SEI messages from RBSP data (NAL header byte already stripped).

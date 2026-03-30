@@ -113,7 +113,11 @@ pub fn filter_frame(
             }
 
             let is_mb_edge = edge == 0;
-            let mb_p = if is_mb_edge { &mb_info[mb_idx - 1] } else { mb_q };
+            let mb_p = if is_mb_edge {
+                &mb_info[mb_idx - 1]
+            } else {
+                mb_q
+            };
 
             let qp_q = mb_q.qp_y;
             let qp_p = mb_p.qp_y;
@@ -145,10 +149,26 @@ pub fn filter_frame(
             }
             // Luma: filter each segment independently
             for seg in 0..4 {
-                if seg_bs[seg] == 0 { continue; }
-                let tc0 = if seg_bs[seg] < 4 { TC0_TABLE[index_a][(seg_bs[seg] - 1) as usize] } else { 0 };
+                if seg_bs[seg] == 0 {
+                    continue;
+                }
+                let tc0 = if seg_bs[seg] < 4 {
+                    TC0_TABLE[index_a][(seg_bs[seg] - 1) as usize]
+                } else {
+                    0
+                };
                 let y = mb_y + seg * 4;
-                filter_edge_v(&mut frame.y, stride_y, edge_x, y, 4, seg_bs[seg], alpha, beta, tc0);
+                filter_edge_v(
+                    &mut frame.y,
+                    stride_y,
+                    edge_x,
+                    y,
+                    4,
+                    seg_bs[seg],
+                    alpha,
+                    beta,
+                    tc0,
+                );
             }
 
             // Chroma: per-pixel bS from all 4 luma segments
@@ -156,15 +176,33 @@ pub fn filter_frame(
                 let c_edge_x = mb_col * 8 + (edge / 2) * 4;
                 for cseg in 0..2 {
                     let cy = mb_row * 8 + cseg * 4;
-                    let c_bs = [seg_bs[cseg * 2], seg_bs[cseg * 2], seg_bs[cseg * 2 + 1], seg_bs[cseg * 2 + 1]];
+                    let c_bs = [
+                        seg_bs[cseg * 2],
+                        seg_bs[cseg * 2],
+                        seg_bs[cseg * 2 + 1],
+                        seg_bs[cseg * 2 + 1],
+                    ];
                     for plane in [&mut frame.u, &mut frame.v] {
                         for i in 0..4 {
                             let pbs = c_bs[i];
-                            if pbs == 0 { continue; }
-                            let ptc0 = if pbs < 4 { TC0_TABLE[c_index_a][(pbs - 1) as usize] } else { 0 };
+                            if pbs == 0 {
+                                continue;
+                            }
+                            let ptc0 = if pbs < 4 {
+                                TC0_TABLE[c_index_a][(pbs - 1) as usize]
+                            } else {
+                                0
+                            };
                             filter_edge_v_chroma(
-                                plane, stride_c, c_edge_x, cy + i, 1,
-                                pbs, c_alpha, c_beta, ptc0,
+                                plane,
+                                stride_c,
+                                c_edge_x,
+                                cy + i,
+                                1,
+                                pbs,
+                                c_alpha,
+                                c_beta,
+                                ptc0,
                             );
                         }
                     }
@@ -180,7 +218,11 @@ pub fn filter_frame(
             }
 
             let is_mb_edge = edge == 0;
-            let mb_p = if is_mb_edge { &mb_info[mb_idx - mb_width] } else { mb_q };
+            let mb_p = if is_mb_edge {
+                &mb_info[mb_idx - mb_width]
+            } else {
+                mb_q
+            };
 
             let qp_q = mb_q.qp_y;
             let qp_p = mb_p.qp_y;
@@ -212,10 +254,26 @@ pub fn filter_frame(
 
             // Luma: filter each segment independently
             for seg in 0..4 {
-                if seg_bs[seg] == 0 { continue; }
-                let tc0 = if seg_bs[seg] < 4 { TC0_TABLE[index_a][(seg_bs[seg] - 1) as usize] } else { 0 };
+                if seg_bs[seg] == 0 {
+                    continue;
+                }
+                let tc0 = if seg_bs[seg] < 4 {
+                    TC0_TABLE[index_a][(seg_bs[seg] - 1) as usize]
+                } else {
+                    0
+                };
                 let x = mb_x + seg * 4;
-                filter_edge_h(&mut frame.y, stride_y, x, edge_y, 4, seg_bs[seg], alpha, beta, tc0);
+                filter_edge_h(
+                    &mut frame.y,
+                    stride_y,
+                    x,
+                    edge_y,
+                    4,
+                    seg_bs[seg],
+                    alpha,
+                    beta,
+                    tc0,
+                );
             }
 
             // Chroma: per-pixel bS from all 4 luma segments
@@ -223,15 +281,33 @@ pub fn filter_frame(
                 let c_edge_y = mb_row * 8 + (edge / 2) * 4;
                 for cseg in 0..2 {
                     let cx = mb_col * 8 + cseg * 4;
-                    let c_bs = [seg_bs[cseg * 2], seg_bs[cseg * 2], seg_bs[cseg * 2 + 1], seg_bs[cseg * 2 + 1]];
+                    let c_bs = [
+                        seg_bs[cseg * 2],
+                        seg_bs[cseg * 2],
+                        seg_bs[cseg * 2 + 1],
+                        seg_bs[cseg * 2 + 1],
+                    ];
                     for plane in [&mut frame.u, &mut frame.v] {
                         for i in 0..4 {
                             let pbs = c_bs[i];
-                            if pbs == 0 { continue; }
-                            let ptc0 = if pbs < 4 { TC0_TABLE[c_index_a][(pbs - 1) as usize] } else { 0 };
+                            if pbs == 0 {
+                                continue;
+                            }
+                            let ptc0 = if pbs < 4 {
+                                TC0_TABLE[c_index_a][(pbs - 1) as usize]
+                            } else {
+                                0
+                            };
                             filter_edge_h_chroma(
-                                plane, stride_c, cx + i, c_edge_y, 1,
-                                pbs, c_alpha, c_beta, ptc0,
+                                plane,
+                                stride_c,
+                                cx + i,
+                                c_edge_y,
+                                1,
+                                pbs,
+                                c_alpha,
+                                c_beta,
+                                ptc0,
                             );
                         }
                     }
@@ -257,11 +333,7 @@ fn blk_idx(col: usize, row: usize) -> usize {
 /// `mb_p`/`mb_q`: macroblock info for each side of the edge.
 /// `blk_p`/`blk_q`: 4x4 block index (0-15 raster) within each MB.
 /// `is_mb_edge`: true if the edge is on a macroblock boundary.
-fn derive_bs(
-    mb_p: &MbInfo, mb_q: &MbInfo,
-    blk_p: usize, blk_q: usize,
-    is_mb_edge: bool,
-) -> i32 {
+fn derive_bs(mb_p: &MbInfo, mb_q: &MbInfo, blk_p: usize, blk_q: usize, is_mb_edge: bool) -> i32 {
     let intra_p = mb_p.mb_type == MbType::Intra || mb_p.mb_type == MbType::Ipcm;
     let intra_q = mb_q.mb_type == MbType::Intra || mb_q.mb_type == MbType::Ipcm;
 
@@ -293,9 +365,7 @@ fn check_mv_diff(mb_p: &MbInfo, mb_q: &MbInfo, blk_p: usize, blk_q: usize) -> bo
             return true;
         }
         // Only check MV if both refs are valid
-        if mb_p.ref_idx_l0[blk_p] >= 0
-            && mv_diff_ge4(mb_p.mv_l0[blk_p], mb_q.mv_l0[blk_q])
-        {
+        if mb_p.ref_idx_l0[blk_p] >= 0 && mv_diff_ge4(mb_p.mv_l0[blk_p], mb_q.mv_l0[blk_q]) {
             return true;
         }
         return false;
@@ -306,11 +376,19 @@ fn check_mv_diff(mb_p: &MbInfo, mb_q: &MbInfo, blk_p: usize, blk_q: usize) -> bo
     // First check straight (p_L0 vs q_L0, p_L1 vs q_L1).
     // If not, check swapped (p_L0 vs q_L1, p_L1 vs q_L0).
     let straight_match = refs_and_mvs_match(
-        mb_p.ref_idx_l0[blk_p], mb_p.ref_poc_l0[blk_p], mb_p.mv_l0[blk_p],
-        mb_q.ref_idx_l0[blk_q], mb_q.ref_poc_l0[blk_q], mb_q.mv_l0[blk_q],
+        mb_p.ref_idx_l0[blk_p],
+        mb_p.ref_poc_l0[blk_p],
+        mb_p.mv_l0[blk_p],
+        mb_q.ref_idx_l0[blk_q],
+        mb_q.ref_poc_l0[blk_q],
+        mb_q.mv_l0[blk_q],
     ) && refs_and_mvs_match(
-        mb_p.ref_idx_l1[blk_p], mb_p.ref_poc_l1[blk_p], mb_p.mv_l1[blk_p],
-        mb_q.ref_idx_l1[blk_q], mb_q.ref_poc_l1[blk_q], mb_q.mv_l1[blk_q],
+        mb_p.ref_idx_l1[blk_p],
+        mb_p.ref_poc_l1[blk_p],
+        mb_p.mv_l1[blk_p],
+        mb_q.ref_idx_l1[blk_q],
+        mb_q.ref_poc_l1[blk_q],
+        mb_q.mv_l1[blk_q],
     );
 
     if straight_match {
@@ -319,11 +397,19 @@ fn check_mv_diff(mb_p: &MbInfo, mb_q: &MbInfo, blk_p: usize, blk_q: usize) -> bo
 
     // Try swapped: p_L0 vs q_L1 and p_L1 vs q_L0
     let swapped_match = refs_and_mvs_match(
-        mb_p.ref_idx_l0[blk_p], mb_p.ref_poc_l0[blk_p], mb_p.mv_l0[blk_p],
-        mb_q.ref_idx_l1[blk_q], mb_q.ref_poc_l1[blk_q], mb_q.mv_l1[blk_q],
+        mb_p.ref_idx_l0[blk_p],
+        mb_p.ref_poc_l0[blk_p],
+        mb_p.mv_l0[blk_p],
+        mb_q.ref_idx_l1[blk_q],
+        mb_q.ref_poc_l1[blk_q],
+        mb_q.mv_l1[blk_q],
     ) && refs_and_mvs_match(
-        mb_p.ref_idx_l1[blk_p], mb_p.ref_poc_l1[blk_p], mb_p.mv_l1[blk_p],
-        mb_q.ref_idx_l0[blk_q], mb_q.ref_poc_l0[blk_q], mb_q.mv_l0[blk_q],
+        mb_p.ref_idx_l1[blk_p],
+        mb_p.ref_poc_l1[blk_p],
+        mb_p.mv_l1[blk_p],
+        mb_q.ref_idx_l0[blk_q],
+        mb_q.ref_poc_l0[blk_q],
+        mb_q.mv_l0[blk_q],
     );
 
     !swapped_match
@@ -331,7 +417,14 @@ fn check_mv_diff(mb_p: &MbInfo, mb_q: &MbInfo, blk_p: usize, blk_q: usize) -> bo
 
 /// Check if reference picture and MV match between two blocks.
 /// Compares by POC (picture identity) rather than list index.
-fn refs_and_mvs_match(ref_a: i8, poc_a: i32, mv_a: [i16; 2], ref_b: i8, poc_b: i32, mv_b: [i16; 2]) -> bool {
+fn refs_and_mvs_match(
+    ref_a: i8,
+    poc_a: i32,
+    mv_a: [i16; 2],
+    ref_b: i8,
+    poc_b: i32,
+    mv_b: [i16; 2],
+) -> bool {
     if ref_a < 0 && ref_b < 0 {
         return true; // both unused
     }
@@ -347,8 +440,7 @@ fn refs_and_mvs_match(ref_a: i8, poc_a: i32, mv_a: [i16; 2], ref_b: i8, poc_b: i
 /// Returns true if |mv_a - mv_b| >= 4 in either component (quarter-pel).
 #[inline]
 fn mv_diff_ge4(mv_a: [i16; 2], mv_b: [i16; 2]) -> bool {
-    (mv_a[0] - mv_b[0]).unsigned_abs() >= 4
-        || (mv_a[1] - mv_b[1]).unsigned_abs() >= 4
+    (mv_a[0] - mv_b[0]).unsigned_abs() >= 4 || (mv_a[1] - mv_b[1]).unsigned_abs() >= 4
 }
 
 /// Filter one 4-sample segment of a vertical edge.
@@ -418,8 +510,18 @@ fn filter_edge_v_inner(
                 plane[idx_p0] = ((2 * p1 + p0 + q1 + 2) >> 2) as u8;
                 plane[idx_q0] = ((2 * q1 + q0 + p1 + 2) >> 2) as u8;
             } else {
-                let (np0, np1, np2, nq0, nq1, nq2) =
-                    strong_filter(p0, p1, p2, plane[idx_p0 - 3] as i32, q0, q1, q2, plane[idx_q0 + 3] as i32, alpha, beta);
+                let (np0, np1, np2, nq0, nq1, nq2) = strong_filter(
+                    p0,
+                    p1,
+                    p2,
+                    plane[idx_p0 - 3] as i32,
+                    q0,
+                    q1,
+                    q2,
+                    plane[idx_q0 + 3] as i32,
+                    alpha,
+                    beta,
+                );
                 plane[idx_p0] = np0 as u8;
                 plane[idx_p0 - 1] = np1 as u8;
                 plane[idx_p0 - 2] = np2 as u8;
@@ -510,9 +612,16 @@ fn filter_edge_h_inner(
                 plane[idx_q0] = ((2 * q1 + q0 + p1 + 2) >> 2) as u8;
             } else {
                 let (np0, np1, np2, nq0, nq1, nq2) = strong_filter(
-                    p0, p1, p2, plane[idx_p0 - 3 * stride] as i32,
-                    q0, q1, q2, plane[idx_q0 + 3 * stride] as i32,
-                    alpha, beta,
+                    p0,
+                    p1,
+                    p2,
+                    plane[idx_p0 - 3 * stride] as i32,
+                    q0,
+                    q1,
+                    q2,
+                    plane[idx_q0 + 3 * stride] as i32,
+                    alpha,
+                    beta,
                 );
                 plane[idx_p0] = np0 as u8;
                 plane[idx_p0 - stride] = np1 as u8;
@@ -668,8 +777,7 @@ mod tests {
     #[test]
     fn test_strong_filter_step_edge() {
         // Sharp step: p-side=0, q-side=255
-        let (p0, _p1, _p2, q0, _q1, _q2) =
-            strong_filter(0, 0, 0, 0, 255, 255, 255, 255, 255, 18);
+        let (p0, _p1, _p2, q0, _q1, _q2) = strong_filter(0, 0, 0, 0, 255, 255, 255, 255, 255, 18);
         // small_gap = |0-255| < (255/4 + 2) = 65 → false
         // ap = |0 - 0| = 0 < 18 → true, but small_gap is false
         // So weak path: p0' = (2*0 + 0 + 255 + 2) >> 2 = 64

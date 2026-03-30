@@ -22,7 +22,6 @@ pub fn parse_residual_block_cavlc(
         return Ok(0);
     }
 
-
     let tc = total_coeff as usize;
 
     // Levels are stored in decode order, highest frequency first:
@@ -99,10 +98,7 @@ pub fn parse_residual_block_cavlc(
     Ok(total_coeff)
 }
 
-fn parse_coeff_token(
-    reader: &mut BitstreamReader,
-    nc: i32,
-) -> Result<(u8, u8), &'static str> {
+fn parse_coeff_token(reader: &mut BitstreamReader, nc: i32) -> Result<(u8, u8), &'static str> {
     let result = if nc < 0 {
         let lut = LUT_COEFF_CHROMA_DC.get_or_init(|| build_coeff_lut(&COEFF_TOKEN_CHROMA_DC, 8));
         coeff_lut_lookup(reader, lut, 8)
@@ -277,11 +273,7 @@ fn coeff_lut_lookup(
     Ok((e.tc, e.to))
 }
 
-fn u8_lut_lookup(
-    r: &mut BitstreamReader,
-    lut: &[U8Entry],
-    bits: u8,
-) -> Result<u8, &'static str> {
+fn u8_lut_lookup(r: &mut BitstreamReader, lut: &[U8Entry], bits: u8) -> Result<u8, &'static str> {
     let e = lut[r.peek_bits(bits) as usize];
     if e.len == 0 {
         return Err("invalid VLC code");
@@ -291,9 +283,9 @@ fn u8_lut_lookup(
 }
 
 // Lazily-initialized lookup tables for each VLC table variant.
-static LUT_COEFF_NC0: OnceLock<Vec<CoeffEntry>> = OnceLock::new();       // 16 bits → 64 KiB
-static LUT_COEFF_NC2: OnceLock<Vec<CoeffEntry>> = OnceLock::new();       // 14 bits → 16 KiB
-static LUT_COEFF_NC4: OnceLock<Vec<CoeffEntry>> = OnceLock::new();       // 10 bits →  1 KiB
+static LUT_COEFF_NC0: OnceLock<Vec<CoeffEntry>> = OnceLock::new(); // 16 bits → 64 KiB
+static LUT_COEFF_NC2: OnceLock<Vec<CoeffEntry>> = OnceLock::new(); // 14 bits → 16 KiB
+static LUT_COEFF_NC4: OnceLock<Vec<CoeffEntry>> = OnceLock::new(); // 10 bits →  1 KiB
 static LUT_COEFF_CHROMA_DC: OnceLock<Vec<CoeffEntry>> = OnceLock::new(); //  8 bits → 256 B
 
 #[allow(clippy::declare_interior_mutable_const)]
@@ -593,11 +585,21 @@ fn parse_total_zeros(r: &mut BitstreamReader, total_coeff: u8) -> Result<u8, &'s
     let bits = TOTAL_ZEROS_BITS[idx];
     let lut = LUT_TOTAL_ZEROS[idx].get_or_init(|| {
         let src: &[(u32, u8, u8)] = match total_coeff {
-            1 => &TOTAL_ZEROS_1, 2 => &TOTAL_ZEROS_2, 3 => &TOTAL_ZEROS_3,
-            4 => &TOTAL_ZEROS_4, 5 => &TOTAL_ZEROS_5, 6 => &TOTAL_ZEROS_6,
-            7 => &TOTAL_ZEROS_7, 8 => &TOTAL_ZEROS_8, 9 => &TOTAL_ZEROS_9,
-            10 => &TOTAL_ZEROS_10, 11 => &TOTAL_ZEROS_11, 12 => &TOTAL_ZEROS_12,
-            13 => &TOTAL_ZEROS_13, 14 => &TOTAL_ZEROS_14, 15 => &TOTAL_ZEROS_15,
+            1 => &TOTAL_ZEROS_1,
+            2 => &TOTAL_ZEROS_2,
+            3 => &TOTAL_ZEROS_3,
+            4 => &TOTAL_ZEROS_4,
+            5 => &TOTAL_ZEROS_5,
+            6 => &TOTAL_ZEROS_6,
+            7 => &TOTAL_ZEROS_7,
+            8 => &TOTAL_ZEROS_8,
+            9 => &TOTAL_ZEROS_9,
+            10 => &TOTAL_ZEROS_10,
+            11 => &TOTAL_ZEROS_11,
+            12 => &TOTAL_ZEROS_12,
+            13 => &TOTAL_ZEROS_13,
+            14 => &TOTAL_ZEROS_14,
+            15 => &TOTAL_ZEROS_15,
             _ => unreachable!(),
         };
         build_u8_lut(src, bits)
@@ -605,7 +607,10 @@ fn parse_total_zeros(r: &mut BitstreamReader, total_coeff: u8) -> Result<u8, &'s
     u8_lut_lookup(r, lut, bits)
 }
 
-fn parse_total_zeros_chroma_dc(r: &mut BitstreamReader, total_coeff: u8) -> Result<u8, &'static str> {
+fn parse_total_zeros_chroma_dc(
+    r: &mut BitstreamReader,
+    total_coeff: u8,
+) -> Result<u8, &'static str> {
     const CHROMA_BITS: [u8; 3] = [3, 2, 1];
     let idx = (total_coeff - 1) as usize;
     let bits = CHROMA_BITS[idx];
@@ -636,8 +641,12 @@ fn parse_run_before(r: &mut BitstreamReader, zeros_left: u8) -> Result<u8, &'sta
     let bits = RUN_BEFORE_BITS[idx];
     let lut = LUT_RUN_BEFORE[idx].get_or_init(|| {
         let src: &[(u32, u8, u8)] = match zeros_left.min(7) {
-            1 => &RUN_BEFORE_1, 2 => &RUN_BEFORE_2, 3 => &RUN_BEFORE_3,
-            4 => &RUN_BEFORE_4, 5 => &RUN_BEFORE_5, 6 => &RUN_BEFORE_6,
+            1 => &RUN_BEFORE_1,
+            2 => &RUN_BEFORE_2,
+            3 => &RUN_BEFORE_3,
+            4 => &RUN_BEFORE_4,
+            5 => &RUN_BEFORE_5,
+            6 => &RUN_BEFORE_6,
             _ => &RUN_BEFORE_7PLUS,
         };
         build_u8_lut(src, bits)

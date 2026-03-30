@@ -9,8 +9,6 @@ const CABAC_BITS: u32 = 16;
 /// Mask for buffer alignment checks.
 const CABAC_MASK: u32 = (1 << CABAC_BITS) - 1;
 
-
-
 #[rustfmt::skip]
 static NORM_SHIFT: [u8; 512] = [
     9,8,7,7,6,6,6,6,5,5,5,5,5,5,5,5,
@@ -167,7 +165,6 @@ fn lps_range_lookup(range: u32, state: u8) -> u32 {
     LPS_RANGE[2 * (range & 0xC0) as usize + state as usize] as u32
 }
 
-
 /// CABAC binary arithmetic decoder context.
 pub struct CabacReader<'a> {
     low: u32,
@@ -213,7 +210,9 @@ impl<'a> CabacReader<'a> {
     /// Used after I_PCM raw data to resume CABAC decoding.
     pub fn reinit(&mut self, byte_offset: usize) {
         self.low = (self.data[byte_offset] as u32) << 18;
-        self.low = self.low.wrapping_add((self.data[byte_offset + 1] as u32) << 10);
+        self.low = self
+            .low
+            .wrapping_add((self.data[byte_offset + 1] as u32) << 10);
         self.low = self.low.wrapping_add(1 << 9);
         self.range = 0x1FE;
         self.pos = byte_offset + 2;
@@ -222,8 +221,16 @@ impl<'a> CabacReader<'a> {
     /// Refill the low register with 2 bytes from the bitstream.
     #[inline]
     fn refill(&mut self) {
-        let b0 = if self.pos < self.data.len() { self.data[self.pos] } else { 0 };
-        let b1 = if self.pos + 1 < self.data.len() { self.data[self.pos + 1] } else { 0 };
+        let b0 = if self.pos < self.data.len() {
+            self.data[self.pos]
+        } else {
+            0
+        };
+        let b1 = if self.pos + 1 < self.data.len() {
+            self.data[self.pos + 1]
+        } else {
+            0
+        };
         self.low = self.low.wrapping_add((b0 as u32) << 9);
         self.low = self.low.wrapping_add((b1 as u32) << 1);
         self.low = self.low.wrapping_sub(CABAC_MASK);
@@ -236,8 +243,16 @@ impl<'a> CabacReader<'a> {
         // Count trailing zeros to determine shift
         let i = self.low.trailing_zeros().wrapping_sub(CABAC_BITS);
 
-        let b0 = if self.pos < self.data.len() { self.data[self.pos] } else { 0 };
-        let b1 = if self.pos + 1 < self.data.len() { self.data[self.pos + 1] } else { 0 };
+        let b0 = if self.pos < self.data.len() {
+            self.data[self.pos]
+        } else {
+            0
+        };
+        let b1 = if self.pos + 1 < self.data.len() {
+            self.data[self.pos + 1]
+        } else {
+            0
+        };
         let x = (b0 as u32) << 9 | (b1 as u32) << 1;
         let x = x.wrapping_sub(CABAC_MASK);
         self.low = self.low.wrapping_add(x << i);
@@ -253,10 +268,15 @@ impl<'a> CabacReader<'a> {
 
         self.range -= range_lps;
         // Check if we're decoding the LPS (signed shift for sign extension)
-        let lps_mask = (((self.range << (CABAC_BITS + 1)).wrapping_sub(self.low)) as i32 >> 31) as u32;
+        let lps_mask =
+            (((self.range << (CABAC_BITS + 1)).wrapping_sub(self.low)) as i32 >> 31) as u32;
 
-        self.low = self.low.wrapping_sub((self.range << (CABAC_BITS + 1)) & lps_mask);
-        self.range = self.range.wrapping_add(range_lps.wrapping_sub(self.range) & lps_mask);
+        self.low = self
+            .low
+            .wrapping_sub((self.range << (CABAC_BITS + 1)) & lps_mask);
+        self.range = self
+            .range
+            .wrapping_add(range_lps.wrapping_sub(self.range) & lps_mask);
 
         let s = (s as i32) ^ (lps_mask as i32);
         *state = MLPS_STATE[(128 + s) as usize];
@@ -339,7 +359,9 @@ pub fn init_cabac_states(slice_qp: i32, is_i_slice: bool, cabac_init_idc: u32) -
         let mut pre = 2 * (((m * qp) >> 4) + n) - 127;
         // Map to state: pre ^= pre >> 31 (not abs — gives abs(x)-1 for negative x)
         pre ^= pre >> 31;
-        if pre > 124 { pre = 124 + (pre & 1); }
+        if pre > 124 {
+            pre = 124 + (pre & 1);
+        }
         // pre is now 1..126; state = pre (odd = MPS=1, even = MPS=0)
         states[i] = pre as u8;
     }
@@ -525,11 +547,20 @@ impl CabacReader<'_> {
     /// Decode mb_skip_flag (spec 9.3.3.1.1).
     /// `left_skip`, `top_skip`: whether left/top MB was skipped.
     /// `is_b_slice`: true for B-slices (uses different context base).
-    pub fn decode_mb_skip(&mut self, state: &mut [u8; 1024],
-                          left_skip: bool, top_skip: bool, is_b_slice: bool) -> bool {
+    pub fn decode_mb_skip(
+        &mut self,
+        state: &mut [u8; 1024],
+        left_skip: bool,
+        top_skip: bool,
+        is_b_slice: bool,
+    ) -> bool {
         let mut ctx = 0u32;
-        if !left_skip { ctx += 1; }
-        if !top_skip { ctx += 1; }
+        if !left_skip {
+            ctx += 1;
+        }
+        if !top_skip {
+            ctx += 1;
+        }
         let base = if is_b_slice { 24 } else { 11 };
         self.get_cabac(&mut state[(base + ctx) as usize]) != 0
     }
@@ -539,13 +570,21 @@ impl CabacReader<'_> {
     /// `intra_slice`: true for I-slices, false for intra MBs in P/B-slices.
     /// Context offsets differ per spec 9.3.3.1.1.3 Table 9-36: I-slices use ctxIdxInc
     /// offset +2 after the first bin, while intra MBs in P/B-slices do not.
-    pub fn decode_intra_mb_type(&mut self, state: &mut [u8; 1024],
-                                 ctx_base: usize,
-                                 left_is_intra16: bool, top_is_intra16: bool,
-                                 intra_slice: bool) -> u32 {
+    pub fn decode_intra_mb_type(
+        &mut self,
+        state: &mut [u8; 1024],
+        ctx_base: usize,
+        left_is_intra16: bool,
+        top_is_intra16: bool,
+        intra_slice: bool,
+    ) -> u32 {
         let mut ctx = 0usize;
-        if left_is_intra16 { ctx += 1; }
-        if top_is_intra16 { ctx += 1; }
+        if left_is_intra16 {
+            ctx += 1;
+        }
+        if top_is_intra16 {
+            ctx += 1;
+        }
 
         // First bit: I4x4 (0) vs I16x16/PCM
         if self.get_cabac(&mut state[ctx_base + ctx]) == 0 {
@@ -596,11 +635,19 @@ impl CabacReader<'_> {
 
     /// Decode B-slice mb_type.
     /// Returns: 0=B_Direct_16x16, 1-22=B inter types, 23+=intra.
-    pub fn decode_b_mb_type(&mut self, state: &mut [u8; 1024],
-                             left_not_direct: bool, top_not_direct: bool) -> u32 {
+    pub fn decode_b_mb_type(
+        &mut self,
+        state: &mut [u8; 1024],
+        left_not_direct: bool,
+        top_not_direct: bool,
+    ) -> u32 {
         let mut ctx = 27usize;
-        if left_not_direct { ctx += 1; }
-        if top_not_direct { ctx += 1; }
+        if left_not_direct {
+            ctx += 1;
+        }
+        if top_not_direct {
+            ctx += 1;
+        }
 
         if self.get_cabac(&mut state[ctx]) == 0 {
             return 0; // B_Direct_16x16
@@ -669,24 +716,35 @@ impl CabacReader<'_> {
 
     /// Decode intra4x4 prediction mode (spec 9.3.3.1.1.3).
     /// `pred_mode`: the predicted (most probable) mode.
-    pub fn decode_intra4x4_pred_mode(&mut self, state: &mut [u8; 1024],
-                                      pred_mode: u8) -> u8 {
+    pub fn decode_intra4x4_pred_mode(&mut self, state: &mut [u8; 1024], pred_mode: u8) -> u8 {
         if self.get_cabac(&mut state[68]) != 0 {
             return pred_mode;
         }
         let mut mode = self.get_cabac(&mut state[69]) as u8;
         mode |= (self.get_cabac(&mut state[69]) as u8) << 1;
         mode |= (self.get_cabac(&mut state[69]) as u8) << 2;
-        if mode >= pred_mode { mode + 1 } else { mode }
+        if mode >= pred_mode {
+            mode + 1
+        } else {
+            mode
+        }
     }
 
     /// Decode chroma intra prediction mode (spec 9.3.3.1.1.4).
     /// `left_mode`, `top_mode`: neighbor chroma prediction modes (0 = DC).
-    pub fn decode_chroma_pred_mode(&mut self, state: &mut [u8; 1024],
-                                    left_mode: u8, top_mode: u8) -> u8 {
+    pub fn decode_chroma_pred_mode(
+        &mut self,
+        state: &mut [u8; 1024],
+        left_mode: u8,
+        top_mode: u8,
+    ) -> u8 {
         let mut ctx = 64usize;
-        if left_mode != 0 { ctx += 1; }
-        if top_mode != 0 { ctx += 1; }
+        if left_mode != 0 {
+            ctx += 1;
+        }
+        if top_mode != 0 {
+            ctx += 1;
+        }
         // Note: ctx is computed from neighbor modes, not the state index offset
         let ctx_offset = ctx - 64;
 
@@ -704,8 +762,7 @@ impl CabacReader<'_> {
 
     /// Decode CBP luma (4 bits for 4 8x8 blocks) (spec 9.3.3.1.1.5).
     /// `left_cbp`, `top_cbp`: neighbor CBP values.
-    pub fn decode_cbp_luma(&mut self, state: &mut [u8; 1024],
-                            left_cbp: u8, top_cbp: u8) -> u8 {
+    pub fn decode_cbp_luma(&mut self, state: &mut [u8; 1024], left_cbp: u8, top_cbp: u8) -> u8 {
         let mut cbp = 0u8;
         // Block 0: left=bit1 of left_cbp, top=bit2 of top_cbp
         let ctx0 = (((left_cbp >> 1) & 1) == 0) as usize + 2 * (((top_cbp >> 2) & 1) == 0) as usize;
@@ -724,8 +781,12 @@ impl CabacReader<'_> {
 
     /// Decode CBP chroma (0, 1, or 2) (spec 9.3.3.1.1.5).
     /// `left_cbp_chroma`, `top_cbp_chroma`: neighbor chroma CBP (0-2).
-    pub fn decode_cbp_chroma(&mut self, state: &mut [u8; 1024],
-                              left_cbp_chroma: u8, top_cbp_chroma: u8) -> u8 {
+    pub fn decode_cbp_chroma(
+        &mut self,
+        state: &mut [u8; 1024],
+        left_cbp_chroma: u8,
+        top_cbp_chroma: u8,
+    ) -> u8 {
         let ctx0 = (left_cbp_chroma > 0) as usize + 2 * (top_cbp_chroma > 0) as usize;
         if self.get_cabac(&mut state[77 + ctx0]) == 0 {
             return 0;
@@ -736,11 +797,14 @@ impl CabacReader<'_> {
 
     /// Decode reference index (unary with context switching) (spec 9.3.3.1.1.6).
     /// `left_ref`, `top_ref`: neighbor ref indices (-1 if unavailable).
-    pub fn decode_ref_idx(&mut self, state: &mut [u8; 1024],
-                           left_ref: i8, top_ref: i8) -> i8 {
+    pub fn decode_ref_idx(&mut self, state: &mut [u8; 1024], left_ref: i8, top_ref: i8) -> i8 {
         let mut ctx = 54usize;
-        if left_ref > 0 { ctx += 1; }
-        if top_ref > 0 { ctx += 2; }
+        if left_ref > 0 {
+            ctx += 1;
+        }
+        if top_ref > 0 {
+            ctx += 2;
+        }
 
         if self.get_cabac(&mut state[ctx]) == 0 {
             return 0;
@@ -750,7 +814,9 @@ impl CabacReader<'_> {
         while self.get_cabac(&mut state[ctx]) != 0 {
             ref_idx += 1;
             ctx = 59; // stay at context 5 (54 + 5) for subsequent
-            if ref_idx >= 32 { break; }
+            if ref_idx >= 32 {
+                break;
+            }
         }
         ref_idx
     }
@@ -758,10 +824,15 @@ impl CabacReader<'_> {
     /// Decode motion vector difference component (spec 9.3.3.1.1.7).
     /// `ctx_base`: 40 for X, 47 for Y.
     /// `amvd`: sum of absolute MVD values from left and top neighbors.
-    pub fn decode_mvd_comp(&mut self, state: &mut [u8; 1024],
-                            ctx_base: usize, amvd: u32) -> i32 {
+    pub fn decode_mvd_comp(&mut self, state: &mut [u8; 1024], ctx_base: usize, amvd: u32) -> i32 {
         // Context selection based on sum of neighbor MVDs
-        let ctx_offset = if amvd < 3 { 0 } else if amvd <= 32 { 1 } else { 2 };
+        let ctx_offset = if amvd < 3 {
+            0
+        } else if amvd <= 32 {
+            1
+        } else {
+            2
+        };
         let ctx = ctx_base + ctx_offset;
 
         if self.get_cabac(&mut state[ctx]) == 0 {
@@ -797,8 +868,11 @@ impl CabacReader<'_> {
 
     /// Decode QP delta (spec 9.3.3.1.1.5).
     /// `last_qp_delta_nonzero`: whether previous MB had non-zero QP delta.
-    pub fn decode_mb_qp_delta(&mut self, state: &mut [u8; 1024],
-                               last_qp_delta_nonzero: bool) -> i32 {
+    pub fn decode_mb_qp_delta(
+        &mut self,
+        state: &mut [u8; 1024],
+        last_qp_delta_nonzero: bool,
+    ) -> i32 {
         let ctx = 60 + last_qp_delta_nonzero as usize;
         if self.get_cabac(&mut state[ctx]) == 0 {
             return 0;
@@ -809,7 +883,9 @@ impl CabacReader<'_> {
         while self.get_cabac(&mut state[uctx]) != 0 {
             uctx = 63;
             val += 1;
-            if val > 52 { break; }
+            if val > 52 {
+                break;
+            }
         }
 
         // Convert unary to signed: 1->1, 2->-1, 3->2, 4->-2, ...
@@ -824,8 +900,13 @@ impl CabacReader<'_> {
     /// `cat`: block category (0-4 for 4:2:0).
     /// `left_nz`: whether left neighbor has non-zero coefficients.
     /// `top_nz`: whether top neighbor has non-zero coefficients.
-    pub fn decode_coded_block_flag(&mut self, state: &mut [u8; 1024],
-                                    cat: usize, left_nz: bool, top_nz: bool) -> bool {
+    pub fn decode_coded_block_flag(
+        &mut self,
+        state: &mut [u8; 1024],
+        cat: usize,
+        left_nz: bool,
+        top_nz: bool,
+    ) -> bool {
         const CBF_BASE: [usize; 6] = [85, 89, 93, 97, 101, 1012];
         let ctx = CBF_BASE[cat] + left_nz as usize + 2 * top_nz as usize;
         self.get_cabac(&mut state[ctx]) != 0
@@ -881,25 +962,39 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/testdata/b_skip_test.h264"
         ));
-        if h264_data.is_err() { return; } // Skip if test file not found
+        if h264_data.is_err() {
+            return;
+        } // Skip if test file not found
         let h264_data = h264_data.unwrap();
         let nals = crate::nal::parse_annex_b(&h264_data);
         // Find first slice NAL with enough data
         for nal in &nals {
-            if nal.rbsp.len() < 20 { continue; }
+            if nal.rbsp.len() < 20 {
+                continue;
+            }
             // Try both init paths starting at byte 3
             let offset = 3.min(nal.rbsp.len() - 10);
 
             let mut low1: u32 = (nal.rbsp[offset] as u32) << 18;
             low1 = low1.wrapping_add((nal.rbsp[offset + 1] as u32) << 10);
             low1 = low1.wrapping_add(1 << 9);
-            let mut r1 = CabacReader { low: low1, range: 0x1FE, data: &nal.rbsp, pos: offset + 2 };
+            let mut r1 = CabacReader {
+                low: low1,
+                range: 0x1FE,
+                data: &nal.rbsp,
+                pos: offset + 2,
+            };
 
             let mut low2: u32 = (nal.rbsp[offset] as u32) << 18;
             low2 = low2.wrapping_add((nal.rbsp[offset + 1] as u32) << 10);
             low2 = low2.wrapping_add((nal.rbsp[offset + 2] as u32) << 2);
             low2 = low2.wrapping_add(2);
-            let mut r2 = CabacReader { low: low2, range: 0x1FE, data: &nal.rbsp, pos: offset + 3 };
+            let mut r2 = CabacReader {
+                low: low2,
+                range: 0x1FE,
+                data: &nal.rbsp,
+                pos: offset + 3,
+            };
 
             let states = super::init_cabac_states(20, true, 0);
             let mut s1 = states;
@@ -910,10 +1005,16 @@ mod tests {
                 let ctx = 3 + (i % 10); // Use various context indices
                 let b1 = r1.get_cabac(&mut s1[ctx]);
                 let b2 = r2.get_cabac(&mut s2[ctx]);
-                if b1 == b2 { match_count += 1; }
+                if b1 == b2 {
+                    match_count += 1;
+                }
             }
             // Both paths should produce identical bits
-            assert_eq!(match_count, 100, "Init paths diverged: {}/100 bits matched", match_count);
+            assert_eq!(
+                match_count, 100,
+                "Init paths diverged: {}/100 bits matched",
+                match_count
+            );
             return;
         }
     }

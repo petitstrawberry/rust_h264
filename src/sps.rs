@@ -92,7 +92,8 @@ impl Sps {
         } else {
             0
         };
-        (self.pic_height_in_map_units_minus1 + 1) * 16
+        (self.pic_height_in_map_units_minus1 + 1)
+            * 16
             * (if self.frame_mbs_only_flag { 1 } else { 2 })
             - crop_y
     }
@@ -102,7 +103,11 @@ impl Sps {
             1
         } else {
             // SubWidthC: 2 for 4:2:0 and 4:2:2, 1 for 4:4:4
-            if self.chroma_format_idc == 3 { 1 } else { 2 }
+            if self.chroma_format_idc == 3 {
+                1
+            } else {
+                2
+            }
         }
     }
 

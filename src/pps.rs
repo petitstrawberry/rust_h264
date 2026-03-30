@@ -66,9 +66,7 @@ pub fn parse_pps(rbsp: &[u8], sps: Option<&Sps>) -> Result<Pps, &'static str> {
     let mut scaling_list_4x4 = sps
         .map(|s| s.scaling_list_4x4)
         .unwrap_or([crate::sps::FLAT_SCALING_4X4; 6]);
-    let mut scaling_list_8x8 = sps
-        .map(|s| s.scaling_list_8x8)
-        .unwrap_or([[16u8; 64]; 2]);
+    let mut scaling_list_8x8 = sps.map(|s| s.scaling_list_8x8).unwrap_or([[16u8; 64]; 2]);
 
     if r.more_rbsp_data() {
         transform_8x8_mode_flag = r.read_bit()? != 0;
@@ -79,11 +77,9 @@ pub fn parse_pps(rbsp: &[u8], sps: Option<&Sps>) -> Result<Pps, &'static str> {
                 let present = r.read_bit()? != 0;
                 if present {
                     if i < 6 {
-                        scaling_list_4x4[i] =
-                            crate::sps::parse_scaling_list::<16>(&mut r, 16)?;
+                        scaling_list_4x4[i] = crate::sps::parse_scaling_list::<16>(&mut r, 16)?;
                     } else {
-                        scaling_list_8x8[i - 6] =
-                            crate::sps::parse_scaling_list::<64>(&mut r, 64)?;
+                        scaling_list_8x8[i - 6] = crate::sps::parse_scaling_list::<64>(&mut r, 64)?;
                     }
                 } else if i < 6 {
                     // Fallback: use SPS list, or default from Table 7-2

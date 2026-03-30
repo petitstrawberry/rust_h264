@@ -170,7 +170,9 @@ pub fn parse_slice_header(
         if ref_pic_list_modification_flag_l0 {
             loop {
                 let idc = r.read_ue()?;
-                if idc == 3 { break; }
+                if idc == 3 {
+                    break;
+                }
                 let val = r.read_ue()?;
                 ref_list_mod_l0.push((idc, val));
             }
@@ -180,7 +182,9 @@ pub fn parse_slice_header(
             if ref_pic_list_modification_flag_l1 {
                 loop {
                     let idc = r.read_ue()?;
-                    if idc == 3 { break; }
+                    if idc == 3 {
+                        break;
+                    }
                     let val = r.read_ue()?;
                     ref_list_mod_l1.push((idc, val));
                 }
@@ -224,8 +228,10 @@ pub fn parse_slice_header(
         if slice_type == SliceType::B {
             for _ in 0..num_ref_idx_l1_active {
                 let mut rw = RefWeight {
-                    luma_weight: luma_def, luma_offset: 0,
-                    chroma_weight: [chroma_def, chroma_def], chroma_offset: [0, 0],
+                    luma_weight: luma_def,
+                    luma_offset: 0,
+                    chroma_weight: [chroma_def, chroma_def],
+                    chroma_offset: [0, 0],
                 };
                 let luma_weight_flag = r.read_bit()? != 0;
                 if luma_weight_flag {
@@ -273,13 +279,19 @@ pub fn parse_slice_header(
                         let diff = r.read_ue()?;
                         mmco_ops.push((1, diff));
                     }
-                    2 => { let _ = r.read_ue()?; }
+                    2 => {
+                        let _ = r.read_ue()?;
+                    }
                     3 => {
                         let _ = r.read_ue()?;
                         let _ = r.read_ue()?;
                     }
-                    4 | 5 => { let _ = r.read_ue()?; }
-                    6 => { let _ = r.read_ue()?; }
+                    4 | 5 => {
+                        let _ = r.read_ue()?;
+                    }
+                    6 => {
+                        let _ = r.read_ue()?;
+                    }
                     _ => break,
                 }
             }
@@ -354,9 +366,18 @@ mod tests {
         .unwrap();
         let nals = parse_annex_b(&data);
 
-        let sps_nal = nals.iter().find(|n| n.nal_unit_type == NalUnitType::Sps).unwrap();
-        let pps_nal = nals.iter().find(|n| n.nal_unit_type == NalUnitType::Pps).unwrap();
-        let idr_nal = nals.iter().find(|n| n.nal_unit_type == NalUnitType::SliceIdr).unwrap();
+        let sps_nal = nals
+            .iter()
+            .find(|n| n.nal_unit_type == NalUnitType::Sps)
+            .unwrap();
+        let pps_nal = nals
+            .iter()
+            .find(|n| n.nal_unit_type == NalUnitType::Pps)
+            .unwrap();
+        let idr_nal = nals
+            .iter()
+            .find(|n| n.nal_unit_type == NalUnitType::SliceIdr)
+            .unwrap();
 
         let sps = parse_sps(&sps_nal.rbsp).unwrap();
         let pps = parse_pps(&pps_nal.rbsp, None).unwrap();

@@ -69,24 +69,30 @@ static COEFF_TOKEN_NC0: [(u32, u8, u8, u8); 62] = [
 
 fn main() {
     println!("Checking VLC entries for high total_coeff:");
-    
+
     for &(code, len, tc, to) in &COEFF_TOKEN_NC0 {
         if tc >= 12 {
-            let bits: String = (0..len).rev().map(|i| if (code >> i) & 1 == 1 { '1' } else { '0' }).collect();
-            println!("tc={:2}, to={}: {:2} bits, code={:5}, bits={}", tc, to, len, code, bits);
+            let bits: String = (0..len)
+                .rev()
+                .map(|i| if (code >> i) & 1 == 1 { '1' } else { '0' })
+                .collect();
+            println!(
+                "tc={:2}, to={}: {:2} bits, code={:5}, bits={}",
+                tc, to, len, code, bits
+            );
         }
     }
-    
+
     // Check our specific case: 16 bits, code=7
     println!("\nOur parsed code: 16 bits, value 0b0000000000000111 = 7");
     println!("Looking for match...");
-    
+
     for &(code, len, tc, to) in &COEFF_TOKEN_NC0 {
         if len == 16 && code == 0b0000000000000111 {
             println!("MATCH: total_coeff={}, trailing_ones={}", tc, to);
         }
     }
-    
+
     // Also check what other 16-bit codes decode to
     println!("\nAll 16-bit codes:");
     for &(code, len, tc, to) in &COEFF_TOKEN_NC0 {

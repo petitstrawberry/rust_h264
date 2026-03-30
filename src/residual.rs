@@ -1,9 +1,21 @@
 /// 4x4 zigzag scan order: maps linear index to (row, col) within a 4x4 block.
 pub const ZIGZAG_4X4: [(usize, usize); 16] = [
-    (0, 0), (0, 1), (1, 0), (2, 0),
-    (1, 1), (0, 2), (0, 3), (1, 2),
-    (2, 1), (3, 0), (3, 1), (2, 2),
-    (1, 3), (2, 3), (3, 2), (3, 3),
+    (0, 0),
+    (0, 1),
+    (1, 0),
+    (2, 0),
+    (1, 1),
+    (0, 2),
+    (0, 3),
+    (1, 2),
+    (2, 1),
+    (3, 0),
+    (3, 1),
+    (2, 2),
+    (1, 3),
+    (2, 3),
+    (3, 2),
+    (3, 3),
 ];
 
 /// Inverse 4x4 Hadamard transform for I16x16 luma DC coefficients.
@@ -163,9 +175,9 @@ pub fn dequant_chroma_dc(dc: &mut [i32; 4], qp: i32, scale_dc: u8) {
 /// qPI = clip3(0, 51, QP_Y + chroma_qp_index_offset)
 /// QP_C = QPC_TABLE[qPI]
 pub const QPC_TABLE: [i32; 52] = [
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
-    21, 22, 23, 24, 25, 26, 27, 28, 29, 29, 30, 31, 32, 32, 33, 34, 34, 35, 35,
-    36, 36, 37, 37, 37, 38, 38, 38, 39, 39, 39, 39,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+    26, 27, 28, 29, 29, 30, 31, 32, 32, 33, 34, 34, 35, 35, 36, 36, 37, 37, 37, 38, 38, 38, 39, 39,
+    39, 39,
 ];
 
 /// Compute chroma QP from luma QP and chroma_qp_index_offset.
@@ -213,9 +225,7 @@ const LEVEL_SCALE_8X8: [[i32; 6]; 6] = [
 
 /// Maps (row%4)*4 + (col%4) to one of 6 position categories for 8x8 dequant.
 /// From H.264 spec Table 8-14.
-const DEQUANT_8X8_POS_CAT: [usize; 16] = [
-    0, 3, 4, 3, 3, 1, 5, 1, 4, 5, 2, 5, 3, 1, 5, 1,
-];
+const DEQUANT_8X8_POS_CAT: [usize; 16] = [0, 3, 4, 3, 3, 1, 5, 1, 4, 5, 2, 5, 3, 1, 5, 1];
 
 /// Dequantize an 8x8 residual block in raster order.
 /// `block[r*8+c]` contains coefficients in raster positions.
@@ -290,14 +300,10 @@ pub fn inverse_dct_8x8(block: &mut [i32; 64]) {
         let b4 = a2 - a4;
         let b6 = a0 - a6;
 
-        let a1 = -block[i + 3 * 8] + block[i + 5 * 8]
-            - block[i + 7 * 8] - (block[i + 7 * 8] >> 1);
-        let a3 = block[i + 8] + block[i + 7 * 8]
-            - block[i + 3 * 8] - (block[i + 3 * 8] >> 1);
-        let a5 = -block[i + 8] + block[i + 7 * 8]
-            + block[i + 5 * 8] + (block[i + 5 * 8] >> 1);
-        let a7 = block[i + 3 * 8] + block[i + 5 * 8]
-            + block[i + 8] + (block[i + 8] >> 1);
+        let a1 = -block[i + 3 * 8] + block[i + 5 * 8] - block[i + 7 * 8] - (block[i + 7 * 8] >> 1);
+        let a3 = block[i + 8] + block[i + 7 * 8] - block[i + 3 * 8] - (block[i + 3 * 8] >> 1);
+        let a5 = -block[i + 8] + block[i + 7 * 8] + block[i + 5 * 8] + (block[i + 5 * 8] >> 1);
+        let a7 = block[i + 3 * 8] + block[i + 5 * 8] + block[i + 8] + (block[i + 8] >> 1);
 
         let b1 = (a7 >> 2) + a1;
         let b3 = a3 + (a5 >> 2);
@@ -319,10 +325,22 @@ pub fn inverse_dct_8x8(block: &mut [i32; 64]) {
 /// Block ordering within a macroblock: inverse raster scan of 8x8 blocks,
 /// then raster scan of 4x4 within each 8x8.
 pub const BLOCK_INDEX_TO_OFFSET: [(usize, usize); 16] = [
-    (0, 0), (0, 4), (4, 0), (4, 4),     // block 0-3 (top-left 8x8)
-    (0, 8), (0, 12), (4, 8), (4, 12),    // block 4-7 (top-right 8x8)
-    (8, 0), (8, 4), (12, 0), (12, 4),    // block 8-11 (bottom-left 8x8)
-    (8, 8), (8, 12), (12, 8), (12, 12),  // block 12-15 (bottom-right 8x8)
+    (0, 0),
+    (0, 4),
+    (4, 0),
+    (4, 4), // block 0-3 (top-left 8x8)
+    (0, 8),
+    (0, 12),
+    (4, 8),
+    (4, 12), // block 4-7 (top-right 8x8)
+    (8, 0),
+    (8, 4),
+    (12, 0),
+    (12, 4), // block 8-11 (bottom-left 8x8)
+    (8, 8),
+    (8, 12),
+    (12, 8),
+    (12, 12), // block 12-15 (bottom-right 8x8)
 ];
 
 /// coded_block_pattern mapping for I macroblocks (H.264 Table 9-4).
@@ -355,7 +373,10 @@ pub fn dequant_4x4_full(block: &mut [i32; 16], qp: i32, scale: &[u8; 16]) {
             if block[idx] != 0 {
                 let pc = position_category(r, c);
                 // Find the scan-order index for this raster position to look up the scale
-                let scan_idx = ZIGZAG_4X4.iter().position(|&(zr, zc)| zr == r && zc == c).unwrap();
+                let scan_idx = ZIGZAG_4X4
+                    .iter()
+                    .position(|&(zr, zc)| zr == r && zc == c)
+                    .unwrap();
                 let v = LEVEL_SCALE[qp_rem][pc] * scale[scan_idx] as i32;
                 if qp_per >= 4 {
                     block[idx] = (block[idx] * v) << (qp_per - 4);

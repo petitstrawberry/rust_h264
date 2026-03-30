@@ -3,18 +3,18 @@ use std::borrow::Cow;
 /// NAL unit types relevant to SPS/PPS parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NalUnitType {
-    Slice,          // 1
-    SliceDataA,     // 2
-    SliceDataB,     // 3
-    SliceDataC,     // 4
-    SliceIdr,       // 5
-    Sei,            // 6
-    Sps,            // 7
-    Pps,            // 8
+    Slice,               // 1
+    SliceDataA,          // 2
+    SliceDataB,          // 3
+    SliceDataC,          // 4
+    SliceIdr,            // 5
+    Sei,                 // 6
+    Sps,                 // 7
+    Pps,                 // 8
     AccessUnitDelimiter, // 9
-    EndOfSequence,  // 10
-    EndOfStream,    // 11
-    FillerData,     // 12
+    EndOfSequence,       // 10
+    EndOfStream,         // 11
+    FillerData,          // 12
     Other(u8),
 }
 
@@ -170,7 +170,10 @@ mod tests {
         let input = [0x00, 0x00, 0x03, 0x01, 0xAB];
         let rbsp = remove_emulation_prevention(&input);
         assert_eq!(&*rbsp, &[0x00, 0x00, 0x01, 0xAB]);
-        assert!(matches!(rbsp, Cow::Owned(_)), "should allocate when EPB present");
+        assert!(
+            matches!(rbsp, Cow::Owned(_)),
+            "should allocate when EPB present"
+        );
     }
 
     #[test]
@@ -179,6 +182,9 @@ mod tests {
         let input = [0x01, 0x02, 0x03, 0x04];
         let rbsp = remove_emulation_prevention(&input);
         assert_eq!(&*rbsp, &input);
-        assert!(matches!(rbsp, Cow::Borrowed(_)), "should borrow when no EPB");
+        assert!(
+            matches!(rbsp, Cow::Borrowed(_)),
+            "should borrow when no EPB"
+        );
     }
 }
