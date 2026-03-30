@@ -219,6 +219,7 @@ impl Decoder {
         };
 
         let slice_qp = header.qp_y(pps);
+        
         let mut prev_mb_qp = slice_qp;
 
         // nC tracking arrays: total_coeff for each 4x4 block
@@ -513,6 +514,7 @@ impl Decoder {
                             mb_is_direct[mb_idx] = true;
                         }
                         mb_info[mb_idx] = MbInfo { mb_type: MbType::Inter, qp_y: prev_mb_qp, ..Default::default() };
+                        last_qp_delta_nonzero = false;
                         mb_idx += 1;
                         continue;
                     }
