@@ -163,5 +163,10 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 
 ### Not Yet Implemented
 
-- MBAFF/interlaced mode
-- Long-term reference support (MMCO ops 2-6)
+- MBAFF/interlaced mode (mb_adaptive_frame_field, field pictures)
+- Long-term reference support (MMCO ops 2-6; only op=1 implemented)
+- High 10/4:2:2/4:4:4 profiles (>8-bit, non-4:2:0 chroma)
+- SP/SI slice types (parsed but not decoded)
+- Slice groups / FMO (returns error)
+- `constrained_intra_pred_flag`
+- Multi-slice frames
