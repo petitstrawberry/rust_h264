@@ -471,11 +471,6 @@ impl Decoder {
                                     ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
                                 }
                             }
-                            // Determine pred flags from block 0
-                            let ri_l0 = ref_idx_store_l0[mb_idx * 16];
-                            let ri_l1 = ref_idx_store_l1[mb_idx * 16];
-                            let pl0 = ri_l0 >= 0;
-                            let pl1 = ri_l1 >= 0;
                             // MC: per-4x4-block for luma and chroma
                             let mut luma_pred = [0u8; 256];
                             for blk in 0..16 {
@@ -555,18 +550,6 @@ impl Decoder {
                                         luma_pred[(blk_row + r) * 16 + blk_col + c] =
                                             blk_pred[r * 4 + c];
                                     }
-                                }
-                            }
-                            // Weights for uni-pred on full luma_pred (bi-pred handled per-block above)
-                            if use_weight != 0 && !(pl0 && pl1) {
-                                if use_weight == 1 {
-                                    if pl0 {
-                                        wctx.apply_uni(&mut luma_pred, 0, ri_l0 as usize, false, 0);
-                                    } else if pl1 {
-                                        wctx.apply_uni(&mut luma_pred, 1, ri_l1 as usize, false, 0);
-                                    }
-                                } else if use_weight == 2 {
-                                    // Implicit weights for uni-pred not applicable
                                 }
                             }
                             for r in 0..16 {
@@ -4772,11 +4755,6 @@ impl Decoder {
                                 ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
                             }
                         }
-                        // Determine pred flags from block 0 (all blocks share the same pred direction)
-                        let ri_l0 = ref_idx_store_l0[mb_idx * 16];
-                        let ri_l1 = ref_idx_store_l1[mb_idx * 16];
-                        let pl0 = ri_l0 >= 0;
-                        let pl1 = ri_l1 >= 0;
                         // MC: per-4x4-block for luma and chroma
                         let mut luma_pred = [0u8; 256];
                         for blk in 0..16 {
@@ -7494,30 +7472,6 @@ fn predict_mv_skip(
     )
 }
 
-/// Spatial direct mode MV derivation for B-slices (spec 8.4.1.2.2).
-/// Returns (mv_l0, mv_l1, ref_idx_l0, ref_idx_l1, pred_l0, pred_l1).
-#[allow(clippy::type_complexity)]
-fn derive_spatial_direct(
-    mv_store_l0: &[[i16; 2]],
-    ref_idx_store_l0: &[i8],
-    mv_store_l1: &[[i16; 2]],
-    ref_idx_store_l1: &[i8],
-    mb_idx: usize,
-    mb_width: usize,
-    col_pic: Option<&DecodedPicture>,
-) -> ([i16; 2], [i16; 2], i8, i8, bool, bool) {
-    derive_spatial_direct_blk(
-        mv_store_l0,
-        ref_idx_store_l0,
-        mv_store_l1,
-        ref_idx_store_l1,
-        mb_idx,
-        mb_width,
-        col_pic,
-        0,
-    )
-}
-
 /// Derive spatial direct mode MVs with per-4x4-block co-located check.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn derive_spatial_direct_blk(
@@ -7647,21 +7601,6 @@ fn derive_spatial_direct_blk(
         pred_flag[0],
         pred_flag[1],
     )
-}
-
-/// Temporal direct mode MV derivation for B-slices (spec 8.4.1.2.3).
-/// Uses co-located MB from L1[0] reference, scales MV by POC distance.
-/// Returns (mv_l0, mv_l1, ref_idx_l0, ref_idx_l1, pred_l0, pred_l1).
-#[allow(clippy::type_complexity)]
-fn derive_temporal_direct(
-    col_pic: &DecodedPicture,
-    ref_pic_list_l0: &[Rc<DecodedPicture>],
-    current_poc: i32,
-    col_poc: i32,
-    mb_idx: usize,
-) -> ([i16; 2], [i16; 2], i8, i8, bool, bool) {
-    // Use the first 4x4 block of the MB for whole-MB temporal direct
-    derive_temporal_direct_blk(col_pic, ref_pic_list_l0, current_poc, col_poc, mb_idx, 0)
 }
 
 /// Derive temporal direct mode MVs for a specific 4x4 block within an MB.
