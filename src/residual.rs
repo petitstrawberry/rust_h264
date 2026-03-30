@@ -255,9 +255,9 @@ pub fn dequant_8x8(block: &mut [i32; 64], qp: i32, scale: &[u8; 64]) {
 pub fn inverse_dct_8x8(block: &mut [i32; 64]) {
     block[0] += 32;
 
-    // First pass: rows (for row-major data, process each row's 8 elements)
+    // First pass: rows
     for i in 0..8 {
-        let s = i * 8; // row start
+        let s = i * 8;
         let a0 = block[s] + block[s + 4];
         let a2 = block[s] - block[s + 4];
         let a4 = (block[s + 2] >> 1) - block[s + 6];
@@ -300,10 +300,14 @@ pub fn inverse_dct_8x8(block: &mut [i32; 64]) {
         let b4 = a2 - a4;
         let b6 = a0 - a6;
 
-        let a1 = -block[i + 3 * 8] + block[i + 5 * 8] - block[i + 7 * 8] - (block[i + 7 * 8] >> 1);
-        let a3 = block[i + 8] + block[i + 7 * 8] - block[i + 3 * 8] - (block[i + 3 * 8] >> 1);
-        let a5 = -block[i + 8] + block[i + 7 * 8] + block[i + 5 * 8] + (block[i + 5 * 8] >> 1);
-        let a7 = block[i + 3 * 8] + block[i + 5 * 8] + block[i + 8] + (block[i + 8] >> 1);
+        let a1 = -block[i + 3 * 8] + block[i + 5 * 8] - block[i + 7 * 8]
+            - (block[i + 7 * 8] >> 1);
+        let a3 =
+            block[i + 8] + block[i + 7 * 8] - block[i + 3 * 8] - (block[i + 3 * 8] >> 1);
+        let a5 =
+            -block[i + 8] + block[i + 7 * 8] + block[i + 5 * 8] + (block[i + 5 * 8] >> 1);
+        let a7 =
+            block[i + 3 * 8] + block[i + 5 * 8] + block[i + 8] + (block[i + 8] >> 1);
 
         let b1 = (a7 >> 2) + a1;
         let b3 = a3 + (a5 >> 2);

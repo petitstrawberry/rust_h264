@@ -515,8 +515,7 @@ pub fn predict_intra_8x8(
             }
         }
         4 => {
-            // Diagonal Down-Right
-            // Build combined top reference: ft[0..7] + ftr[0..7]
+            // Diagonal Down-Right (spec 8.3.2.2.6)
             let mut t = [0i32; 16];
             t[..8].copy_from_slice(&ft);
             t[8..].copy_from_slice(&ftr);
@@ -524,10 +523,12 @@ pub fn predict_intra_8x8(
                 for x in 0..8 {
                     output[y * 8 + x] = if x > y {
                         let i = x - y - 1;
-                        ((t[i] + 2 * t[i + 1] + t[i + 2] + 2) >> 2) as u8
+                        let p0 = if i == 0 { flt } else { t[i - 1] };
+                        ((p0 + 2 * t[i] + t[i + 1] + 2) >> 2) as u8
                     } else if x < y {
                         let i = y - x - 1;
-                        ((fl[i] + 2 * fl[i + 1] + fl.get(i + 2).copied().unwrap_or(fl[7]) + 2) >> 2)
+                        let p0 = if i == 0 { flt } else { fl[i - 1] };
+                        ((p0 + 2 * fl[i] + fl.get(i + 1).copied().unwrap_or(fl[7]) + 2) >> 2)
                             as u8
                     } else {
                         ((fl[0] + 2 * flt + ft[0] + 2) >> 2) as u8
@@ -561,13 +562,18 @@ pub fn predict_intra_8x8(
                     } else if zv == -1 {
                         ((ft[0] + 2 * flt + fl[0] + 2) >> 2) as u8
                     } else {
+                        // zVR < -1: 3-tap filter toward top-left (spec 8.3.2.2.7)
                         let i = y - 2 * x - 1;
-                        if zv % 2 == 0 {
-                            ((fl[i] + 2 * fl[i + 1] + fl.get(i + 2).copied().unwrap_or(fl[7]) + 2)
-                                >> 2) as u8
+                        let p0 = fl[i];
+                        let p1 = if i >= 1 { fl[i - 1] } else { flt };
+                        let p2 = if i >= 2 {
+                            fl[i - 2]
+                        } else if i == 1 {
+                            flt
                         } else {
-                            ((fl[i - 1] + 2 * fl[i] + fl[i + 1] + 2) >> 2) as u8
-                        }
+                            ft[0]
+                        };
+                        ((p0 + 2 * p1 + p2 + 2) >> 2) as u8
                     };
                 }
             }
