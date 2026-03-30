@@ -552,12 +552,13 @@ pub fn predict_intra_8x8(
                     } else if zh == -1 {
                         ((fl[0] + 2 * flt + ft[0] + 2) >> 2) as u8
                     } else {
-                        let i = x - 2 * y - 1;
-                        if zh % 2 == 0 {
-                            ((ft[i] + 2 * ft[i + 1] + ft.get(i + 2).copied().unwrap_or(ft[7]) + 2) >> 2) as u8
-                        } else {
-                            ((ft[i - 1] + 2 * ft[i] + ft[i + 1] + 2) >> 2) as u8
-                        }
+                        // zHD < -1: use filtered above samples in descending order
+                        // ft[-1] is flt; for index -1, use flt
+                        let i = x as i32 - 2 * y as i32;
+                        let get_ft = |idx: i32| -> i32 {
+                            if idx < 0 { flt } else { ft[idx as usize] }
+                        };
+                        ((get_ft(i - 3) + 2 * get_ft(i - 2) + get_ft(i - 1) + 2) >> 2) as u8
                     };
                 }
             }
