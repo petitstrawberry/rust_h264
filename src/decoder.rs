@@ -3029,6 +3029,7 @@ impl Decoder {
                             }
                         }
                     }
+                    } // close if use_8x8_intra else (luma only)
 
                     // Chroma (simplified — reuse existing chroma decode pattern)
                     let chroma_width = (width / 2) as usize;
@@ -3206,7 +3207,6 @@ impl Decoder {
                         }
                     }
 
-                    } // close if use_8x8_intra else
                     mb_info[mb_idx] = MbInfo { mb_type: MbType::Intra, qp_y, ..Default::default() };
                     // I4x4/I8x8 is NOT I16x16 for CABAC context
                 } else if mb_type <= 24 {
@@ -7134,6 +7134,14 @@ mod tests {
         // 64x64, 5 frames: CABAC High profile with 8x8 transform (43.8% inter 8x8),
         // P-only, --no-deblock, medium preset, byte-exact against FFmpeg
         decode_multiframe_and_compare("cabac_high_test", 5, 64, 64);
+    }
+
+    #[test]
+    fn test_cabac_i8x8() {
+        // 64x64, 1 frame: CABAC High profile I-slice with 100% I8x8 (DC mode)
+        // + varied chroma (dc 6%, h 19%, v 38%, plane 38%).
+        // Validates I8x8 chroma decode in the CABAC I-slice path.
+        decode_multiframe_and_compare("cabac_i8x8_test", 1, 64, 64);
     }
 
     #[test]
