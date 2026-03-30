@@ -31,7 +31,7 @@ This is a Rust project using Cargo:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). All 32 test streams byte-exact against FFmpeg. Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). All 33 test streams byte-exact against FFmpeg. Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
 
 ### Completed
 
@@ -141,7 +141,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (81 tests, all byte-exact against FFmpeg)
+**Test Coverage** (82 tests, all byte-exact against FFmpeg)
 - Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
   mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
   noise_16x16, scaling_test
@@ -150,7 +150,8 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   b_temporal_test, b_parts_test (16x8/8x16/8x8), b_multi_test, b_hier_test
   (hierarchical B-frames with ref_pic_list_modification)
 - CABAC: cabac_i4x4_test, cabac_i16x16_test, cabac_mixed_test,
-  cabac_p_test, cabac_intra_p_test (I16x16-in-P),
+  cabac_p_test, cabac_p_parts_test (P16x8/8x16/8x8/4x4 sub-partitions),
+  cabac_intra_p_test (I16x16-in-P),
   cabac_b_test (B_Skip spatial direct),
   cabac_b_parts_test (B16x16/16x8/8x16/8x8/Direct/Skip with L0/L1/Bi),
   cabac_high_profile (8x8 inter), cabac_deblock_test (deblocking enabled)

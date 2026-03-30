@@ -6182,6 +6182,23 @@ fn get_mv_neighbor_above_right(
     if py_off > 0 {
         // Above-right within this MB
         if right_col < 16 {
+            // Per spec 6.4.11.7: the above-right 4x4 block is not available
+            // if it would be in a different 8x8 block that hasn't been decoded.
+            // Within P_8x8 / B_8x8, each 8x8 sub-MB is decoded independently.
+            // The above-right at (py_off-4, px_off+part_w) is unavailable if
+            // it crosses an 8x8 column boundary while staying in the same 8x8 row.
+            let cur_8x8_col = px_off / 8;
+            let tgt_col = right_col;
+            let tgt_8x8_col = tgt_col / 8;
+            // Also check row: above-right row is py_off-4
+            let tgt_8x8_row = (py_off - 4) / 8;
+            let cur_8x8_row = py_off / 8;
+            let cur_8x8 = cur_8x8_row * 2 + cur_8x8_col;
+            let tgt_8x8 = tgt_8x8_row * 2 + tgt_8x8_col;
+            // Target must be in an already-decoded 8x8 block (lower index in scan)
+            if tgt_8x8 > cur_8x8 {
+                return None;
+            }
             let lr = (py_off - 4) / 4;
             let lc = right_col / 4;
             let blk = BLOCK_INDEX_TO_OFFSET.iter()
@@ -7062,6 +7079,14 @@ mod tests {
     fn test_cabac_p_slice() {
         // 32x32, 3 frames: CABAC IDR + 2 P-frames (100% P_L0_16x16)
         decode_multiframe_and_compare("cabac_p_test", 3, 32, 32);
+    }
+
+    #[test]
+    fn test_cabac_p_parts() {
+        // 64x64, 5 frames: CABAC P with P16x16 (25%) + P16x8 (29.7%) + P8x16 (20.3%) +
+        // P_8x8 (6.6%) + P_4x4 sub-partitions (5.9%) + skip (10.9%),
+        // --no-deblock, byte-exact against FFmpeg
+        decode_multiframe_and_compare("cabac_p_parts_test", 5, 64, 64);
     }
 
     #[test]
