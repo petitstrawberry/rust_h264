@@ -150,7 +150,8 @@ impl Decoder {
                 // decoded MBs are valid, so we treat the error as end-of-slice.
                 match self.decode_slice(nal) {
                     Ok(()) => {}
-                    Err(_) if self.pending.is_some() => {}
+                    Err(_e) if self.pending.is_some() => {
+                    }
                     Err(e) => return Err(e),
                 }
 
@@ -517,7 +518,6 @@ impl Decoder {
                 if mb_idx > header.first_mb_in_slice as usize && cr.get_cabac_terminate() != 0 {
                     break;
                 }
-
                 // P/B-slice CABAC path
                 if is_p_slice || is_b_slice {
                     // Decode skip flag
@@ -953,7 +953,7 @@ impl Decoder {
                                     blk_idx
                                 };
                                 let predicted =
-                                    predict_i4x4_mode(&i4x4_modes, mb_idx, mb_width as usize, blk);
+                                    predict_i4x4_mode(&i4x4_modes, mb_idx, mb_width as usize, blk, &mb_slice_id, this_slice_id);
                                 let mode = cr.decode_intra4x4_pred_mode(st, predicted);
                                 if use_8x8_intra_pb {
                                     for sub in 0..4 {
@@ -964,6 +964,9 @@ impl Decoder {
                                     pred_modes[blk] = mode;
                                     i4x4_modes[mb_idx * 16 + blk] = mode;
                                 }
+                            }
+                            if mb_idx == 2 {
+                                eprintln!("MB2 pred_modes: {:?}", pred_modes);
                             }
                             let left_cm = if !mb_idx.is_multiple_of(mb_width as usize)
                                 && mb_slice_id[mb_idx - 1] == this_slice_id
@@ -4117,6 +4120,15 @@ impl Decoder {
                 };
                 let mb_type = cr.decode_intra_mb_type(st, 3, left_is_i16, top_is_i16, true);
 
+                // Cross-slice intra prediction: neighbors from other slices unavailable (spec 6.4.1)
+                let above_mb_avail_i = mb_idx >= mb_width as usize
+                    && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id;
+                let left_mb_avail_i = mb_idx % mb_width as usize != 0
+                    && mb_slice_id[mb_idx - 1] == this_slice_id;
+                let above_left_mb_avail_i = mb_idx >= mb_width as usize
+                    && mb_idx % mb_width as usize != 0
+                    && mb_slice_id[mb_idx - mb_width as usize - 1] == this_slice_id;
+
                 // I_PCM via CABAC
                 if mb_type == 25 {
                     let pcm_pos = cr.pcm_byte_position();
@@ -4193,7 +4205,7 @@ impl Decoder {
                     for blk_idx in 0..num_modes {
                         let blk = if use_8x8_intra { blk_idx * 4 } else { blk_idx };
                         let predicted =
-                            predict_i4x4_mode(&i4x4_modes, mb_idx, mb_width as usize, blk);
+                            predict_i4x4_mode(&i4x4_modes, mb_idx, mb_width as usize, blk, &mb_slice_id, this_slice_id);
                         let mode = cr.decode_intra4x4_pred_mode(st, predicted);
                         if use_8x8_intra {
                             for sub in 0..4 {
@@ -4206,7 +4218,6 @@ impl Decoder {
                         }
                     }
 
-                    // TODO: track neighbor chroma pred modes for proper context
                     let left_cm = if !mb_idx.is_multiple_of(mb_width as usize)
                         && mb_slice_id[mb_idx - 1] == this_slice_id
                     {
@@ -4252,7 +4263,6 @@ impl Decoder {
                     let top_cbp_c = ((top_cbp_raw >> 4) & 3) as u8;
                     let cbp_chroma = cr.decode_cbp_chroma(st, left_cbp_c, top_cbp_c);
                     mb_cbp[mb_idx] = (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
-
                     let qp_y = if cbp_luma != 0 || cbp_chroma != 0 {
                         let delta = cr.decode_mb_qp_delta(st, last_qp_delta_nonzero);
                         last_qp_delta_nonzero = delta != 0;
@@ -4263,7 +4273,12 @@ impl Decoder {
                     };
                     prev_mb_qp = qp_y;
                     let _qp_c = chroma_qp(qp_y, pps.chroma_qp_index_offset);
-
+                    let above_mb_avail = above_mb_avail_i;
+                    let left_mb_avail = left_mb_avail_i;
+                    let above_left_mb_avail = above_left_mb_avail_i;
+                    let above_right_mb_avail = mb_idx >= mb_width as usize
+                        && (mb_idx % mb_width as usize) + 1 < mb_width as usize
+                        && mb_slice_id[mb_idx - mb_width as usize + 1] == this_slice_id;
                     if use_8x8_intra {
                         // I8x8 via CABAC: decode 4 blocks of 64 coefficients
                         let mut luma_residual = [0i32; 256];
@@ -4303,13 +4318,21 @@ impl Decoder {
                             let col_off = (i8x8 % 2) * 8;
                             let px = mb_x + col_off;
                             let py = mb_y + row_off;
-                            let above_buf: Option<[u8; 16]> = if py > 0 {
+                            let above_avail_8 = py > 0
+                                && (row_off > 0 || above_mb_avail);
+                            let above_buf: Option<[u8; 16]> = if above_avail_8 {
                                 let mut buf = [0u8; 16];
                                 for (i, b) in buf.iter_mut().enumerate().take(8) {
                                     *b = frame.y[(py - 1) * stride + px + i];
                                 }
                                 let has_tr = if row_off == 0 {
-                                    px + 8 < stride
+                                    if px + 8 < (mb_x + 16).min(stride) {
+                                        true
+                                    } else if px + 8 < stride {
+                                        above_right_mb_avail
+                                    } else {
+                                        false
+                                    }
                                 } else {
                                     col_off == 0
                                 };
@@ -4326,7 +4349,9 @@ impl Decoder {
                             } else {
                                 None
                             };
-                            let left_buf: Option<[u8; 8]> = if px > 0 {
+                            let left_avail_8 = px > 0
+                                && (col_off > 0 || left_mb_avail);
+                            let left_buf: Option<[u8; 8]> = if left_avail_8 {
                                 let mut buf = [0u8; 8];
                                 for (i, b) in buf.iter_mut().enumerate() {
                                     *b = frame.y[(py + i) * stride + px - 1];
@@ -4335,7 +4360,13 @@ impl Decoder {
                             } else {
                                 None
                             };
-                            let above_left_val = if px > 0 && py > 0 {
+                            let al_avail_8 = px > 0 && py > 0 && (
+                                (row_off > 0 && col_off > 0) ||
+                                (row_off > 0 && col_off == 0 && left_mb_avail) ||
+                                (row_off == 0 && col_off > 0 && above_mb_avail) ||
+                                (row_off == 0 && col_off == 0 && above_left_mb_avail)
+                            );
+                            let above_left_val = if al_avail_8 {
                                 Some(frame.y[(py - 1) * stride + px - 1])
                             } else {
                                 None
@@ -4412,14 +4443,24 @@ impl Decoder {
                             inverse_dct_4x4(&mut block_coeffs);
 
                             // I4x4 prediction
-                            let above_buf: Option<[u8; 8]> = if py > 0 {
+                            let local_row = py - mb_y;
+                            let local_col = px - mb_x;
+                            // Above samples: unavailable if at picture top or cross-slice MB boundary
+                            let above_avail = py > 0
+                                && (local_row > 0 || above_mb_avail);
+                            let above_buf: Option<[u8; 8]> = if above_avail {
                                 let mut buf = [0u8; 8];
                                 for (i, b) in buf.iter_mut().enumerate().take(4) {
                                     *b = frame.y[(py - 1) * stride + px + i];
                                 }
-                                let local_row = py - mb_y;
                                 let topright_avail = if local_row == 0 {
-                                    px + 4 < stride
+                                    if px + 4 < (mb_x + 16).min(stride) {
+                                        true // within same MB
+                                    } else if px + 4 < stride {
+                                        above_right_mb_avail
+                                    } else {
+                                        false
+                                    }
                                 } else {
                                     !matches!(blk, 3 | 7 | 11 | 13 | 15)
                                 };
@@ -4436,7 +4477,10 @@ impl Decoder {
                             } else {
                                 None
                             };
-                            let left_buf: Option<[u8; 4]> = if px > 0 {
+                            // Left samples: unavailable if at picture left or cross-slice MB boundary
+                            let left_avail = px > 0
+                                && (local_col > 0 || left_mb_avail);
+                            let left_buf: Option<[u8; 4]> = if left_avail {
                                 let mut buf = [0u8; 4];
                                 for (i, b) in buf.iter_mut().enumerate() {
                                     *b = frame.y[(py + i) * stride + px - 1];
@@ -4445,7 +4489,14 @@ impl Decoder {
                             } else {
                                 None
                             };
-                            let above_left_val = if px > 0 && py > 0 {
+                            // Above-left: unavailable if cross-slice
+                            let al_avail = px > 0 && py > 0 && (
+                                (local_row > 0 && local_col > 0) ||
+                                (local_row > 0 && local_col == 0 && left_mb_avail) ||
+                                (local_row == 0 && local_col > 0 && above_mb_avail) ||
+                                (local_row == 0 && local_col == 0 && above_left_mb_avail)
+                            );
+                            let above_left_val = if al_avail {
                                 Some(frame.y[(py - 1) * stride + px - 1])
                             } else {
                                 None
@@ -4459,7 +4510,6 @@ impl Decoder {
                                 above_left_val,
                                 &mut pred,
                             );
-
                             for r in 0..4 {
                                 for c in 0..4 {
                                     let val = (pred[r * 4 + c] as i32 + block_coeffs[r * 4 + c])
@@ -4476,8 +4526,8 @@ impl Decoder {
                     let chroma_mb_x = mb_x / 2;
                     let chroma_mb_y = mb_y / 2;
 
-                    // Chroma prediction
-                    let above_chroma_u = if mb_y > 0 {
+                    // Chroma prediction (slice boundary: cross-slice neighbors unavailable)
+                    let above_chroma_u = if mb_y > 0 && above_mb_avail {
                         let mut buf = [0u8; 8];
                         buf.copy_from_slice(
                             &frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
@@ -4487,7 +4537,7 @@ impl Decoder {
                     } else {
                         None
                     };
-                    let left_chroma_u = if mb_x > 0 {
+                    let left_chroma_u = if mb_x > 0 && left_mb_avail {
                         let mut buf = [0u8; 8];
                         for (i, b) in buf.iter_mut().enumerate() {
                             *b = frame.u[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
@@ -4496,13 +4546,13 @@ impl Decoder {
                     } else {
                         None
                     };
-                    let above_left_u = if mb_x > 0 && mb_y > 0 {
+                    let above_left_u = if mb_x > 0 && mb_y > 0 && above_left_mb_avail {
                         Some(frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
                     } else {
                         None
                     };
 
-                    let above_chroma_v = if mb_y > 0 {
+                    let above_chroma_v = if mb_y > 0 && above_mb_avail {
                         let mut buf = [0u8; 8];
                         buf.copy_from_slice(
                             &frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
@@ -4512,7 +4562,7 @@ impl Decoder {
                     } else {
                         None
                     };
-                    let left_chroma_v = if mb_x > 0 {
+                    let left_chroma_v = if mb_x > 0 && left_mb_avail {
                         let mut buf = [0u8; 8];
                         for (i, b) in buf.iter_mut().enumerate() {
                             *b = frame.v[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
@@ -4521,7 +4571,7 @@ impl Decoder {
                     } else {
                         None
                     };
-                    let above_left_v = if mb_x > 0 && mb_y > 0 {
+                    let above_left_v = if mb_x > 0 && mb_y > 0 && above_left_mb_avail {
                         Some(frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
                     } else {
                         None
@@ -4851,7 +4901,7 @@ impl Decoder {
 
                     // I16x16 prediction
                     let mut luma_pred = [0u8; 256];
-                    let above: Option<Vec<u8>> = if mb_y > 0 {
+                    let above: Option<Vec<u8>> = if mb_y > 0 && above_mb_avail_i {
                         Some(
                             (0..16)
                                 .map(|x| frame.y[(mb_y - 1) * stride + mb_x + x])
@@ -4860,7 +4910,7 @@ impl Decoder {
                     } else {
                         None
                     };
-                    let left: Option<Vec<u8>> = if mb_x > 0 {
+                    let left: Option<Vec<u8>> = if mb_x > 0 && left_mb_avail_i {
                         Some(
                             (0..16)
                                 .map(|y| frame.y[(mb_y + y) * stride + mb_x - 1])
@@ -4869,7 +4919,7 @@ impl Decoder {
                     } else {
                         None
                     };
-                    let above_left = if mb_x > 0 && mb_y > 0 {
+                    let above_left = if mb_x > 0 && mb_y > 0 && above_left_mb_avail_i {
                         Some(frame.y[(mb_y - 1) * stride + mb_x - 1])
                     } else {
                         None
@@ -4896,7 +4946,7 @@ impl Decoder {
                     let chroma_mb_x = mb_x / 2;
                     let chroma_mb_y = mb_y / 2;
 
-                    let above_chroma_u = if mb_y > 0 {
+                    let above_chroma_u = if mb_y > 0 && above_mb_avail_i {
                         let mut buf = [0u8; 8];
                         buf.copy_from_slice(
                             &frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
@@ -4906,7 +4956,7 @@ impl Decoder {
                     } else {
                         None
                     };
-                    let left_chroma_u = if mb_x > 0 {
+                    let left_chroma_u = if mb_x > 0 && left_mb_avail_i {
                         let mut buf = [0u8; 8];
                         for (i, b) in buf.iter_mut().enumerate() {
                             *b = frame.u[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
@@ -4915,12 +4965,12 @@ impl Decoder {
                     } else {
                         None
                     };
-                    let above_left_u = if mb_x > 0 && mb_y > 0 {
+                    let above_left_u = if mb_x > 0 && mb_y > 0 && above_left_mb_avail_i {
                         Some(frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
                     } else {
                         None
                     };
-                    let above_chroma_v = if mb_y > 0 {
+                    let above_chroma_v = if mb_y > 0 && above_mb_avail_i {
                         let mut buf = [0u8; 8];
                         buf.copy_from_slice(
                             &frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
@@ -4930,7 +4980,7 @@ impl Decoder {
                     } else {
                         None
                     };
-                    let left_chroma_v = if mb_x > 0 {
+                    let left_chroma_v = if mb_x > 0 && left_mb_avail_i {
                         let mut buf = [0u8; 8];
                         for (i, b) in buf.iter_mut().enumerate() {
                             *b = frame.v[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
@@ -4939,7 +4989,7 @@ impl Decoder {
                     } else {
                         None
                     };
-                    let above_left_v = if mb_x > 0 && mb_y > 0 {
+                    let above_left_v = if mb_x > 0 && mb_y > 0 && above_left_mb_avail_i {
                         Some(frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
                     } else {
                         None
@@ -7207,7 +7257,7 @@ impl Decoder {
                 for blk_idx in 0..num_modes {
                     let blk = if use_8x8_intra { blk_idx * 4 } else { blk_idx };
                     let prev_flag = reader.read_bit()?;
-                    let predicted = predict_i4x4_mode(&i4x4_modes, mb_idx, mb_width as usize, blk);
+                    let predicted = predict_i4x4_mode(&i4x4_modes, mb_idx, mb_width as usize, blk, &mb_slice_id, this_slice_id);
                     let mode = if prev_flag != 0 {
                         predicted
                     } else {
@@ -8957,11 +9007,27 @@ fn cabac_neighbor_nz_chroma(
     }
 }
 
-fn predict_i4x4_mode(modes: &[u8], mb_idx: usize, mb_width: usize, blk_idx: usize) -> u8 {
+fn predict_i4x4_mode(
+    modes: &[u8],
+    mb_idx: usize,
+    mb_width: usize,
+    blk_idx: usize,
+    mb_slice_id: &[u16],
+    cur_slice_id: u16,
+) -> u8 {
     // None = neighbor unavailable (picture boundary or non-I4x4 neighbor MB that
     // doesn't exist). When either is None, predicted mode defaults to DC (2).
-    let mode_a = get_neighbor_i4x4_mode(modes, mb_idx, mb_width, blk_idx, true);
-    let mode_b = get_neighbor_i4x4_mode(modes, mb_idx, mb_width, blk_idx, false);
+    let mode_a =
+        get_neighbor_i4x4_mode(modes, mb_idx, mb_width, blk_idx, true, mb_slice_id, cur_slice_id);
+    let mode_b = get_neighbor_i4x4_mode(
+        modes,
+        mb_idx,
+        mb_width,
+        blk_idx,
+        false,
+        mb_slice_id,
+        cur_slice_id,
+    );
     match (mode_a, mode_b) {
         (Some(a), Some(b)) => a.min(b),
         _ => 2, // DC when either neighbor is unavailable
@@ -8974,6 +9040,8 @@ fn get_neighbor_i4x4_mode(
     mb_width: usize,
     blk_idx: usize,
     is_left: bool,
+    mb_slice_id: &[u16],
+    cur_slice_id: u16,
 ) -> Option<u8> {
     // Block layout:  0  1 | 4  5
     //                2  3 | 6  7
@@ -8990,7 +9058,9 @@ fn get_neighbor_i4x4_mode(
             14 => Some(modes[mb_idx * 16 + 11]),
             0 | 2 | 8 | 10 => {
                 // Left edge of MB
-                if !mb_idx.is_multiple_of(mb_width) {
+                if !mb_idx.is_multiple_of(mb_width)
+                    && mb_slice_id[mb_idx - 1] == cur_slice_id
+                {
                     let left_mb = mb_idx - 1;
                     let left_blk = match blk_idx {
                         0 => 5,
@@ -9001,7 +9071,7 @@ fn get_neighbor_i4x4_mode(
                     };
                     Some(modes[left_mb * 16 + left_blk])
                 } else {
-                    None // picture left boundary
+                    None
                 }
             }
             _ => None,
@@ -9016,7 +9086,9 @@ fn get_neighbor_i4x4_mode(
             13 => Some(modes[mb_idx * 16 + 7]),
             0 | 1 | 4 | 5 => {
                 // Top edge of MB
-                if mb_idx >= mb_width {
+                if mb_idx >= mb_width
+                    && mb_slice_id[mb_idx - mb_width] == cur_slice_id
+                {
                     let above_mb = mb_idx - mb_width;
                     let above_blk = match blk_idx {
                         0 => 10,
@@ -9760,5 +9832,19 @@ mod tests {
         // B16x16 L0/L1/Bi (16.2%) + B16x8/8x16 (7.2%) + B_Direct (2.8%) +
         // B_Skip (73.5%) + P partitions + intra-in-P/B, --no-deblock.
         decode_multiframe_and_compare("realworld_b_test", 9, 320, 240);
+    }
+
+    #[test]
+    fn test_multislice_cabac_i() {
+        // 32x32, 1 frame, 2 slices (1 MB row each): CABAC Main profile I-frame.
+        // Tests cross-slice intra prediction boundary handling (spec 6.4.1).
+        decode_and_compare("ms_cabac_i_test", 32, 32);
+    }
+
+    #[test]
+    fn test_multislice_cabac_i4() {
+        // 64x64, 1 frame, 4 slices (1 MB row each): CABAC Main profile I-frame.
+        // Tests multiple slice boundaries with I4x4 prediction.
+        decode_and_compare("ms_cabac_i4_test", 64, 64);
     }
 }
