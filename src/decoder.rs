@@ -23,7 +23,7 @@ use crate::slice::{parse_slice_header, PredWeightTable, SliceType};
 use crate::sps::{parse_sps, Sps};
 
 /// A decoded YUV 4:2:0 frame.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Frame {
     pub width: u32,
     pub height: u32,
@@ -35,6 +35,7 @@ pub struct Frame {
 }
 
 /// In-progress picture state shared across slices within the same frame.
+#[derive(Clone)]
 struct PictureState {
     frame: Frame,
     frame_num: u32,
@@ -144,13 +145,28 @@ impl Decoder {
                 };
 
                 // Decode this slice (creates or continues PictureState).
-                // Decode this slice. For CAVLC multi-slice, end-of-slice
-                // detection may fail, causing errors from reading past the
-                // slice boundary. If we have a pending picture, the already-
-                // decoded MBs are valid, so we treat the error as end-of-slice.
+                // For CAVLC multi-slice, end-of-slice detection may fail,
+                // causing errors from reading past the slice boundary. If
+                // we had a pending picture, the already-decoded MBs are
+                // valid, so we treat the error as end-of-slice.
+                //
+                // Since decode_slice takes self.pending via take(), we must
+                // save a backup for continuation slices so we can restore it
+                // if the decode fails mid-slice.
+                let had_pending = !is_new_picture && self.pending.is_some();
+                let pending_backup = if had_pending {
+                    self.pending.clone()
+                } else {
+                    None
+                };
                 match self.decode_slice(nal) {
                     Ok(()) => {}
-                    Err(_e) if self.pending.is_some() => {
+                    Err(_e) if self.pending.is_some() => {}
+                    Err(_e) if had_pending => {
+                        // decode_slice consumed self.pending but failed before
+                        // reassembling it. Restore the backup so already-decoded
+                        // MBs from earlier slices are preserved.
+                        self.pending = pending_backup;
                     }
                     Err(e) => return Err(e),
                 }
@@ -6527,7 +6543,7 @@ impl Decoder {
                 let mut luma_residual = [0i32; 256];
                 for blk in 0..16 {
                     if cbp_luma & (1 << (blk / 4)) != 0 {
-                        let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16);
+                        let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16, &mb_slice_id, this_slice_id);
                         let mut block_coeffs = [0i32; 16];
                         let tc =
                             parse_residual_block_cavlc(&mut reader, &mut block_coeffs, 16, nc)?;
@@ -6639,7 +6655,7 @@ impl Decoder {
                 let mut chroma_ac_scan_cr = [[0i32; 15]; 4];
                 if cbp_chroma >= 2 {
                     for blk in 0..4 {
-                        let nc = compute_nc(&nc_cb, mb_idx, mb_width as usize, blk, 4);
+                        let nc = compute_nc(&nc_cb, mb_idx, mb_width as usize, blk, 4, &mb_slice_id, this_slice_id);
                         let tc = parse_residual_block_cavlc(
                             &mut reader,
                             &mut chroma_ac_scan_cb[blk],
@@ -6649,7 +6665,7 @@ impl Decoder {
                         nc_cb[mb_idx * 4 + blk] = tc;
                     }
                     for blk in 0..4 {
-                        let nc = compute_nc(&nc_cr, mb_idx, mb_width as usize, blk, 4);
+                        let nc = compute_nc(&nc_cr, mb_idx, mb_width as usize, blk, 4, &mb_slice_id, this_slice_id);
                         let tc = parse_residual_block_cavlc(
                             &mut reader,
                             &mut chroma_ac_scan_cr[blk],
@@ -7016,7 +7032,7 @@ impl Decoder {
                         // Decode 4 groups of 16 coefficients via CAVLC
                         for i4x4 in 0..4 {
                             let blk = i8x8 * 4 + i4x4;
-                            let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16);
+                            let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16, &mb_slice_id, this_slice_id);
                             let mut quad_coeffs = [0i32; 16];
                             let tc =
                                 parse_residual_block_cavlc(&mut reader, &mut quad_coeffs, 16, nc)?;
@@ -7045,7 +7061,7 @@ impl Decoder {
                     // 4x4 transform (existing path)
                     for blk in 0..16 {
                         if cbp_luma & (1 << (blk / 4)) != 0 {
-                            let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16);
+                            let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16, &mb_slice_id, this_slice_id);
                             let mut block_coeffs = [0i32; 16];
                             let tc =
                                 parse_residual_block_cavlc(&mut reader, &mut block_coeffs, 16, nc)?;
@@ -7108,7 +7124,7 @@ impl Decoder {
                 let mut chroma_ac_scan_cr = [[0i32; 15]; 4];
                 if cbp_chroma >= 2 {
                     for blk in 0..4 {
-                        let nc = compute_nc(&nc_cb, mb_idx, mb_width as usize, blk, 4);
+                        let nc = compute_nc(&nc_cb, mb_idx, mb_width as usize, blk, 4, &mb_slice_id, this_slice_id);
                         let tc = parse_residual_block_cavlc(
                             &mut reader,
                             &mut chroma_ac_scan_cb[blk],
@@ -7118,7 +7134,7 @@ impl Decoder {
                         nc_cb[mb_idx * 4 + blk] = tc;
                     }
                     for blk in 0..4 {
-                        let nc = compute_nc(&nc_cr, mb_idx, mb_width as usize, blk, 4);
+                        let nc = compute_nc(&nc_cr, mb_idx, mb_width as usize, blk, 4, &mb_slice_id, this_slice_id);
                         let tc = parse_residual_block_cavlc(
                             &mut reader,
                             &mut chroma_ac_scan_cr[blk],
@@ -7239,6 +7255,18 @@ impl Decoder {
             }
 
             // === Intra macroblock (I4x4, I16x16, I_PCM) ===
+            // Cross-slice intra prediction: neighbors from other slices unavailable (spec 6.4.1)
+            let above_mb_avail = mb_idx >= mb_width as usize
+                && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id;
+            let left_mb_avail = mb_idx % mb_width as usize != 0
+                && mb_slice_id[mb_idx - 1] == this_slice_id;
+            let above_left_mb_avail = mb_idx >= mb_width as usize
+                && mb_idx % mb_width as usize != 0
+                && mb_slice_id[mb_idx - mb_width as usize - 1] == this_slice_id;
+            let above_right_mb_avail = mb_idx >= mb_width as usize
+                && (mb_idx % mb_width as usize) + 1 < mb_width as usize
+                && mb_slice_id[mb_idx - mb_width as usize + 1] == this_slice_id;
+
             // Variables shared between I4x4/I16x16 for chroma reconstruction
             let intra_chroma_pred_mode;
             let cbp_chroma: u8;
@@ -7309,7 +7337,7 @@ impl Decoder {
                         let mut block_8x8 = [0i32; 64];
                         for i4x4 in 0..4 {
                             let blk = i8x8 * 4 + i4x4;
-                            let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16);
+                            let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16, &mb_slice_id, this_slice_id);
                             let mut quad_coeffs = [0i32; 16];
                             let tc =
                                 parse_residual_block_cavlc(&mut reader, &mut quad_coeffs, 16, nc)?;
@@ -7341,14 +7369,22 @@ impl Decoder {
                         let py = mb_y + row_off;
 
                         // Gather reference samples: 16 above (8 + 8 above-right)
-                        let above_buf: Option<[u8; 16]> = if py > 0 {
+                        let above_avail_8 = py > 0
+                            && (row_off > 0 || above_mb_avail);
+                        let above_buf: Option<[u8; 16]> = if above_avail_8 {
                             let mut buf = [0u8; 16];
                             for (i, b) in buf.iter_mut().enumerate().take(8) {
                                 *b = frame.y[(py - 1) * stride + px + i];
                             }
                             // Above-right: available if at top of MB or from MB above
                             let has_tr = if row_off == 0 {
-                                px + 8 < stride
+                                if px + 8 < (mb_x + 16).min(stride) {
+                                    true
+                                } else if px + 8 < stride {
+                                    above_right_mb_avail
+                                } else {
+                                    false
+                                }
                             } else {
                                 col_off == 0 // only top-left 8x8 has above-right within MB
                             };
@@ -7366,7 +7402,9 @@ impl Decoder {
                             None
                         };
 
-                        let left_buf: Option<[u8; 8]> = if px > 0 {
+                        let left_avail_8 = px > 0
+                            && (col_off > 0 || left_mb_avail);
+                        let left_buf: Option<[u8; 8]> = if left_avail_8 {
                             let mut buf = [0u8; 8];
                             for (i, b) in buf.iter_mut().enumerate() {
                                 *b = frame.y[(py + i) * stride + px - 1];
@@ -7376,7 +7414,13 @@ impl Decoder {
                             None
                         };
 
-                        let above_left_val = if px > 0 && py > 0 {
+                        let al_avail_8 = px > 0 && py > 0 && (
+                            (row_off > 0 && col_off > 0) ||
+                            (row_off > 0 && col_off == 0 && left_mb_avail) ||
+                            (row_off == 0 && col_off > 0 && above_mb_avail) ||
+                            (row_off == 0 && col_off == 0 && above_left_mb_avail)
+                        );
+                        let above_left_val = if al_avail_8 {
                             Some(frame.y[(py - 1) * stride + px - 1])
                         } else {
                             None
@@ -7416,7 +7460,7 @@ impl Decoder {
                         // Parse residual
                         let mut block_coeffs = [0i32; 16];
                         if cbp_luma & (1 << (blk / 4)) != 0 {
-                            let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16);
+                            let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16, &mb_slice_id, this_slice_id);
                             let tc =
                                 parse_residual_block_cavlc(&mut reader, &mut block_coeffs, 16, nc)?;
                             nc_luma[mb_idx * 16 + blk] = tc;
@@ -7433,26 +7477,24 @@ impl Decoder {
                         }
                         inverse_dct_4x4(&mut block_coeffs);
                         // Gather neighbor samples for I4x4 prediction
-                        let above_buf: Option<[u8; 8]> = if py > 0 {
+                        let local_row = py - mb_y;
+                        let local_col = px - mb_x;
+                        let above_avail = py > 0
+                            && (local_row > 0 || above_mb_avail);
+                        let above_buf: Option<[u8; 8]> = if above_avail {
                             let mut buf = [0u8; 8];
-                            // Read 4 above pixels
                             for (i, b) in buf.iter_mut().enumerate().take(4) {
                                 *b = frame.y[(py - 1) * stride + px + i];
                             }
-                            // Above-right pixels (4 more): available only if the 4x4 block
-                            // containing those pixels has already been decoded.
-                            // Per H.264 spec 6.4.12, blocks 3,7,11,13,15 within the MB
-                            // have above-right unavailable (the source block is decoded later).
-                            // Also unavailable if at the right edge of the picture, or at the
-                            // right edge of the MB when above is within the current MB.
-                            let local_row = py - mb_y;
                             let topright_avail = if local_row == 0 {
-                                // Above row is in the MB above (fully decoded).
-                                // Above-right is available unless beyond picture width.
-                                px + 4 < stride
+                                if px + 4 < (mb_x + 16).min(stride) {
+                                    true // within same MB's above neighbor
+                                } else if px + 4 < stride {
+                                    above_right_mb_avail
+                                } else {
+                                    false
+                                }
                             } else {
-                                // Above row is within current MB; above-right block may
-                                // not be decoded yet.
                                 !matches!(blk, 3 | 7 | 11 | 13 | 15)
                             };
                             if topright_avail {
@@ -7461,7 +7503,6 @@ impl Decoder {
                                     *b = frame.y[(py - 1) * stride + col];
                                 }
                             } else {
-                                // Replicate the last above pixel (spec 8.3.1.2.1)
                                 let last = buf[3];
                                 buf[4..8].fill(last);
                             }
@@ -7469,7 +7510,9 @@ impl Decoder {
                         } else {
                             None
                         };
-                        let left_buf: Option<[u8; 4]> = if px > 0 {
+                        let left_avail = px > 0
+                            && (local_col > 0 || left_mb_avail);
+                        let left_buf: Option<[u8; 4]> = if left_avail {
                             let mut buf = [0u8; 4];
                             for (i, b) in buf.iter_mut().enumerate() {
                                 *b = frame.y[(py + i) * stride + px - 1];
@@ -7478,7 +7521,13 @@ impl Decoder {
                         } else {
                             None
                         };
-                        let above_left_val = if px > 0 && py > 0 {
+                        let al_avail = px > 0 && py > 0 && (
+                            (local_row > 0 && local_col > 0) ||
+                            (local_row > 0 && local_col == 0 && left_mb_avail) ||
+                            (local_row == 0 && local_col > 0 && above_mb_avail) ||
+                            (local_row == 0 && local_col == 0 && above_left_mb_avail)
+                        );
+                        let above_left_val = if al_avail {
                             Some(frame.y[(py - 1) * stride + px - 1])
                         } else {
                             None
@@ -7519,14 +7568,14 @@ impl Decoder {
 
                 // Parse luma DC
                 let mut luma_dc = [0i32; 16];
-                let nc_dc = compute_nc(&nc_luma, mb_idx, mb_width as usize, 0, 16);
+                let nc_dc = compute_nc(&nc_luma, mb_idx, mb_width as usize, 0, 16, &mb_slice_id, this_slice_id);
                 parse_residual_block_cavlc(&mut reader, &mut luma_dc, 16, nc_dc)?;
 
                 // Parse luma AC
                 let mut luma_ac_scan = [[0i32; 15]; 16];
                 if cbp_luma != 0 {
                     for blk in 0..16 {
-                        let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16);
+                        let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16, &mb_slice_id, this_slice_id);
                         let tc = parse_residual_block_cavlc(
                             &mut reader,
                             &mut luma_ac_scan[blk],
@@ -7576,7 +7625,7 @@ impl Decoder {
 
                 // I16x16 prediction
                 let mut luma_pred = [0u8; 256];
-                let above: Option<Vec<u8>> = if mb_y > 0 {
+                let above: Option<Vec<u8>> = if mb_y > 0 && above_mb_avail {
                     Some(
                         (0..16)
                             .map(|x| frame.y[(mb_y - 1) * stride + mb_x + x])
@@ -7585,7 +7634,7 @@ impl Decoder {
                 } else {
                     None
                 };
-                let left: Option<Vec<u8>> = if mb_x > 0 {
+                let left: Option<Vec<u8>> = if mb_x > 0 && left_mb_avail {
                     Some(
                         (0..16)
                             .map(|y| frame.y[(mb_y + y) * stride + mb_x - 1])
@@ -7594,7 +7643,7 @@ impl Decoder {
                 } else {
                     None
                 };
-                let above_left = if mb_x > 0 && mb_y > 0 {
+                let above_left = if mb_x > 0 && mb_y > 0 && above_left_mb_avail {
                     Some(frame.y[(mb_y - 1) * stride + mb_x - 1])
                 } else {
                     None
@@ -7676,7 +7725,7 @@ impl Decoder {
             let mut chroma_ac_scan_cr = [[0i32; 15]; 4];
             if cbp_chroma >= 2 {
                 for blk in 0..4 {
-                    let nc = compute_nc(&nc_cb, mb_idx, mb_width as usize, blk, 4);
+                    let nc = compute_nc(&nc_cb, mb_idx, mb_width as usize, blk, 4, &mb_slice_id, this_slice_id);
                     let tc = parse_residual_block_cavlc(
                         &mut reader,
                         &mut chroma_ac_scan_cb[blk],
@@ -7686,7 +7735,7 @@ impl Decoder {
                     nc_cb[mb_idx * 4 + blk] = tc;
                 }
                 for blk in 0..4 {
-                    let nc = compute_nc(&nc_cr, mb_idx, mb_width as usize, blk, 4);
+                    let nc = compute_nc(&nc_cr, mb_idx, mb_width as usize, blk, 4, &mb_slice_id, this_slice_id);
                     let tc = parse_residual_block_cavlc(
                         &mut reader,
                         &mut chroma_ac_scan_cr[blk],
@@ -7738,7 +7787,7 @@ impl Decoder {
                 }
 
                 let mut chroma_pred = [0u8; 64];
-                let above_c: Option<Vec<u8>> = if chroma_mb_y > 0 {
+                let above_c: Option<Vec<u8>> = if chroma_mb_y > 0 && above_mb_avail {
                     Some(
                         (0..8)
                             .map(|x| plane_buf[(chroma_mb_y - 1) * chroma_width + chroma_mb_x + x])
@@ -7747,7 +7796,7 @@ impl Decoder {
                 } else {
                     None
                 };
-                let left_c: Option<Vec<u8>> = if chroma_mb_x > 0 {
+                let left_c: Option<Vec<u8>> = if chroma_mb_x > 0 && left_mb_avail {
                     Some(
                         (0..8)
                             .map(|y| plane_buf[(chroma_mb_y + y) * chroma_width + chroma_mb_x - 1])
@@ -7756,7 +7805,7 @@ impl Decoder {
                 } else {
                     None
                 };
-                let above_left_c = if chroma_mb_x > 0 && chroma_mb_y > 0 {
+                let above_left_c = if chroma_mb_x > 0 && chroma_mb_y > 0 && above_left_mb_avail {
                     Some(plane_buf[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
                 } else {
                     None
@@ -9115,6 +9164,8 @@ fn compute_nc(
     mb_width: usize,
     blk_idx: usize,
     blks_per_mb: usize,
+    mb_slice_id: &[u16],
+    cur_slice_id: u16,
 ) -> i32 {
     let (left_blk, left_in_mb) = if blks_per_mb == 16 {
         match blk_idx {
@@ -9148,7 +9199,9 @@ fn compute_nc(
 
     let nc_a: Option<u8> = if left_in_mb {
         Some(nc_array[mb_idx * blks_per_mb + left_blk])
-    } else if !mb_idx.is_multiple_of(mb_width) {
+    } else if !mb_idx.is_multiple_of(mb_width)
+        && mb_slice_id[mb_idx - 1] == cur_slice_id
+    {
         Some(nc_array[(mb_idx - 1) * blks_per_mb + left_blk])
     } else {
         None
@@ -9186,7 +9239,9 @@ fn compute_nc(
 
     let nc_b: Option<u8> = if above_in_mb {
         Some(nc_array[mb_idx * blks_per_mb + above_blk])
-    } else if mb_idx >= mb_width {
+    } else if mb_idx >= mb_width
+        && mb_slice_id[mb_idx - mb_width] == cur_slice_id
+    {
         Some(nc_array[(mb_idx - mb_width) * blks_per_mb + above_blk])
     } else {
         None
@@ -9846,5 +9901,12 @@ mod tests {
         // 64x64, 1 frame, 4 slices (1 MB row each): CABAC Main profile I-frame.
         // Tests multiple slice boundaries with I4x4 prediction.
         decode_and_compare("ms_cabac_i4_test", 64, 64);
+    }
+
+    #[test]
+    fn test_multislice_cavlc_i() {
+        // 32x32, 1 frame, 2 slices (1 MB row each): CAVLC Baseline profile I-frame.
+        // Tests cross-slice nC computation and intra prediction for CAVLC.
+        decode_and_compare("ms_cavlc_i_test", 32, 32);
     }
 }
