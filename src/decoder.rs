@@ -8952,13 +8952,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Known failure: CABAC multiref (ref>1) B-frames produce wrong output
     fn test_cabac_multiref() {
         // 64x64, 5 frames: CABAC Main profile with ref=2, bframes=1, me=hex,
-        // --no-deblock, --no-weightb, qp=26. Exercises CABAC B-frames with
-        // multi-reference. Currently fails: frames 3-4 have large diffs (max=225).
-        // ref=1 with same settings is byte-exact; the bug is specific to ref>1
-        // in CABAC B-slices.
+        // --no-deblock, --no-weightb, qp=26. Exercises CABAC multiref with
+        // ref_pic_list_modification and P_L0_L0_16x8 partitions using ref_idx>0.
         decode_multiframe_and_compare("cabac_multiref_test", 5, 64, 64);
     }
 

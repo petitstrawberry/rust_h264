@@ -186,21 +186,22 @@ impl Dpb {
         if ops.is_empty() {
             return;
         }
+        let num_active = ref_list.len();
         let mut pred_pic_num = frame_num;
-        for (idx, &(idc, val)) in ops.iter().enumerate() {
+        let mut ref_idx_lx = 0usize;
+
+        for &(idc, val) in ops {
             if idc > 1 {
                 continue; // Skip long-term ref ops (idc=2) for now
             }
             let abs_diff = val + 1;
             let pic_num = if idc == 0 {
-                // Subtract
                 if pred_pic_num >= abs_diff {
                     pred_pic_num - abs_diff
                 } else {
                     pred_pic_num + max_pic_num - abs_diff
                 }
             } else {
-                // Add
                 let sum = pred_pic_num + abs_diff;
                 if sum >= max_pic_num {
                     sum - max_pic_num
@@ -210,13 +211,33 @@ impl Dpb {
             };
             pred_pic_num = pic_num;
 
-            // Find the picture with this frame_num in the ref list
-            if let Some(pos) = ref_list.iter().position(|p| p.frame_num == pic_num) {
-                // Move it to position `idx`
-                let entry = ref_list.remove(pos);
-                let insert_at = idx.min(ref_list.len());
-                ref_list.insert(insert_at, entry);
+            // Spec 8.2.4.3.1: find the picture, shift entries right to make room,
+            // insert at ref_idx_lx, then remove duplicates after ref_idx_lx.
+            if let Some(found_pos) = ref_list.iter().position(|p| p.frame_num == pic_num) {
+                let pic = ref_list[found_pos].clone();
+
+                // Shift right: make room at ref_idx_lx
+                // Temporarily grow the list by 1
+                ref_list.push(ref_list.last().unwrap().clone());
+                let end = ref_list.len() - 1;
+                for c in (ref_idx_lx + 1..=end).rev() {
+                    ref_list[c] = ref_list[c - 1].clone();
+                }
+                ref_list[ref_idx_lx] = pic.clone();
+
+                // Remove duplicate: compact entries after ref_idx_lx that
+                // have the same pic_num as the inserted picture
+                let mut n = ref_idx_lx + 1;
+                for c in (ref_idx_lx + 1)..ref_list.len() {
+                    if ref_list[c].frame_num != pic_num {
+                        ref_list[n] = ref_list[c].clone();
+                        n += 1;
+                    }
+                }
+                ref_list.truncate(num_active);
             }
+
+            ref_idx_lx += 1;
         }
     }
 

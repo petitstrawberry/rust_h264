@@ -31,7 +31,7 @@ This is a Rust project using Cargo:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). All 36 test streams byte-exact against FFmpeg. Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). Multi-reference (ref>1) with ref_pic_list_modification supported. All 37 test streams byte-exact against FFmpeg. Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
 
 ### Completed
 
@@ -81,6 +81,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - P-slice L0: short-term refs sorted by descending frame_num
 - B-slice L0: refs sorted by POC (before current descending, after ascending)
 - B-slice L1: refs sorted by POC (after current ascending, before descending)
+- `ref_pic_list_modification` (spec 8.2.4.3) with shift+insert+dedup algorithm
 - Co-located picture MV/ref storage for temporal direct mode
 
 **CAVLC Entropy Decoding** (`src/cavlc.rs`)
@@ -141,7 +142,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (85 tests, all byte-exact against FFmpeg)
+**Test Coverage** (87 tests, all byte-exact against FFmpeg)
 - Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
   mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
   noise_16x16, scaling_test
@@ -155,7 +156,9 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   cabac_b_test (B_Skip spatial direct),
   cabac_b_parts_test (B16x16/16x8/8x16/8x8/Direct/Skip with L0/L1/Bi),
   cabac_intra_b_test (I16x16-in-B), cabac_b_temporal_test (temporal direct),
-  cabac_high_profile (8x8 inter), cabac_deblock_test (deblocking enabled)
+  cabac_high_profile (8x8 inter), cabac_deblock_test (deblocking enabled),
+  cabac_i8x8_test (I8x8 intra with chroma),
+  cabac_multiref_test (ref=2 with ref_pic_list_modification)
 - Deblocking: deblock_frame, deblock_b_test (B-frames + deblock),
   deblock_b_inter_test (B inter + cross-list bS)
 - Weighted prediction: weighted_p_test (CAVLC, 100% weighted P, fading),
