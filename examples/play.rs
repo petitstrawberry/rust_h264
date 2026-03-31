@@ -81,6 +81,11 @@ fn main() {
         }
     }
 
+    if let Some(f) = decoder.flush() {
+        frames.push((idr_count, f.pic_order_cnt, decode_order, f));
+        let _ = decode_order;
+    }
+
     if frames.is_empty() {
         eprintln!("No frames decoded.");
         std::process::exit(1);

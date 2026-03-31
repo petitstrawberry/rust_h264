@@ -81,12 +81,33 @@ pub fn filter_frame(
     header: &SliceHeader,
     chroma_qp_index_offset: i32,
 ) {
-    if header.disable_deblocking_filter_idc == 1 {
+    filter_frame_params(
+        frame,
+        mb_info,
+        mb_width,
+        header.disable_deblocking_filter_idc,
+        header.slice_alpha_c0_offset_div2,
+        header.slice_beta_offset_div2,
+        chroma_qp_index_offset,
+    );
+}
+
+/// Apply deblocking with explicit parameters (no SliceHeader needed).
+pub fn filter_frame_params(
+    frame: &mut Frame,
+    mb_info: &[MbInfo],
+    mb_width: usize,
+    disable_deblocking_filter_idc: u32,
+    slice_alpha_c0_offset_div2: i32,
+    slice_beta_offset_div2: i32,
+    chroma_qp_index_offset: i32,
+) {
+    if disable_deblocking_filter_idc == 1 {
         return;
     }
 
-    let filter_offset_a = header.slice_alpha_c0_offset_div2 * 2;
-    let filter_offset_b = header.slice_beta_offset_div2 * 2;
+    let filter_offset_a = slice_alpha_c0_offset_div2 * 2;
+    let filter_offset_b = slice_beta_offset_div2 * 2;
     let stride_y = frame.width as usize;
     let stride_c = (frame.width / 2) as usize;
 

@@ -52,6 +52,15 @@ fn main() {
         }
     }
 
+    if let Some(f) = decoder.flush() {
+        eprintln!(
+            "Decoded frame {}: poc={} {}x{} (flushed)",
+            decode_order, f.pic_order_cnt, f.width, f.height
+        );
+        frames.push((idr_count, f.pic_order_cnt, decode_order, f));
+        let _ = decode_order;
+    }
+
     // Sort by (idr_period, poc) for display order within each IDR period.
     // Decode order is used as a stable tiebreaker for equal POCs.
     // Note: for POC type 2, POC wraps without IDR, so decode_order is
