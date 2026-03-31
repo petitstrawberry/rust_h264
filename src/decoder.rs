@@ -60,6 +60,11 @@ struct PictureState {
     mb_skip: Vec<bool>,
     mb_is_direct: Vec<bool>,
     is_i16x16: Vec<bool>,
+    /// Per-MB slice ID for slice boundary detection. MBs from different
+    /// slices are treated as unavailable for CABAC context and MV prediction.
+    mb_slice_id: Vec<u16>,
+    /// Current slice ID counter (incremented for each new slice).
+    current_slice_id: u16,
     prev_mb_qp: i32,
     last_qp_delta_nonzero: bool,
     // Slice header info for finalization
@@ -138,8 +143,16 @@ impl Decoder {
                     None
                 };
 
-                // Decode this slice (creates or continues PictureState)
-                self.decode_slice(nal)?;
+                // Decode this slice (creates or continues PictureState).
+                // Decode this slice. For CAVLC multi-slice, end-of-slice
+                // detection may fail, causing errors from reading past the
+                // slice boundary. If we have a pending picture, the already-
+                // decoded MBs are valid, so we treat the error as end-of-slice.
+                match self.decode_slice(nal) {
+                    Ok(()) => {}
+                    Err(_) if self.pending.is_some() => {}
+                    Err(e) => return Err(e),
+                }
 
                 Ok(prev_frame)
             }
@@ -391,6 +404,8 @@ impl Decoder {
                 mb_skip: vec![false; total_mbs],
                 mb_is_direct: vec![false; total_mbs],
                 is_i16x16: vec![false; total_mbs],
+                mb_slice_id: vec![0u16; total_mbs],
+                current_slice_id: 0,
                 prev_mb_qp: slice_qp,
                 last_qp_delta_nonzero: false,
                 mmco_ops: header.mmco_ops.clone(),
@@ -428,6 +443,8 @@ impl Decoder {
             mut mb_skip,
             mut mb_is_direct,
             mut is_i16x16,
+            mut mb_slice_id,
+            mut current_slice_id,
             mut prev_mb_qp,
             mut last_qp_delta_nonzero,
             mmco_ops: _ps_mmco_ops,
@@ -443,6 +460,12 @@ impl Decoder {
         // Each slice reinitializes its own QP from the slice header
         prev_mb_qp = slice_qp;
         last_qp_delta_nonzero = false;
+
+        // Increment slice ID for continuation slices so boundary checks work
+        if is_continuation {
+            current_slice_id += 1;
+        }
+        let this_slice_id = current_slice_id;
 
         // CABAC or CAVLC?
         let use_cabac = pps.entropy_coding_mode_flag;
@@ -473,6 +496,14 @@ impl Decoder {
 
         let mut mb_idx = header.first_mb_in_slice as usize;
         while mb_idx < total_mbs {
+            // CAVLC end-of-slice: check before reading any new syntax elements.
+            // Skip this check when counting down a skip run (no reads needed).
+            if !use_cabac && mb_skip_run <= 0 && !reader.more_rbsp_data() {
+                break;
+            }
+
+            // Stamp this MB with the current slice ID for boundary detection
+            mb_slice_id[mb_idx] = this_slice_id;
             let mb_x = (mb_idx % mb_width as usize) * 16;
             let mb_y = (mb_idx / mb_width as usize) * 16;
             let stride = width as usize;
@@ -491,12 +522,16 @@ impl Decoder {
                 if is_p_slice || is_b_slice {
                     // Decode skip flag
                     // Unavailable neighbors are treated as skipped (ctx not incremented)
-                    let left_skip = if !mb_idx.is_multiple_of(mb_width as usize) {
+                    let left_skip = if !mb_idx.is_multiple_of(mb_width as usize)
+                        && mb_slice_id[mb_idx - 1] == this_slice_id
+                    {
                         mb_skip[mb_idx - 1]
                     } else {
                         true
                     };
-                    let top_skip = if mb_idx >= mb_width as usize {
+                    let top_skip = if mb_idx >= mb_width as usize
+                        && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                    {
                         mb_skip[mb_idx - mb_width as usize]
                     } else {
                         true
@@ -511,6 +546,8 @@ impl Decoder {
                                 &ref_idx_store_l0,
                                 mb_idx,
                                 mb_width as usize,
+                                &mb_slice_id,
+                                this_slice_id,
                             );
                             if let Some(ref_pic) = ref_pic_list.first() {
                                 let mut luma_pred = [0u8; 256];
@@ -591,6 +628,8 @@ impl Decoder {
                                             mb_width as usize,
                                             _ref_pic_list_l1.first().map(|p| p.as_ref()),
                                             blk,
+                                            &mb_slice_id,
+                                            this_slice_id,
                                         );
                                     mv_store_l0[mb_idx * 16 + blk] = mv_l0;
                                     ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
@@ -852,12 +891,16 @@ impl Decoder {
                     let raw_mb_type = if is_p_slice {
                         cr.decode_p_mb_type(st)
                     } else {
-                        let left_not_direct = if !mb_idx.is_multiple_of(mb_width as usize) {
+                        let left_not_direct = if !mb_idx.is_multiple_of(mb_width as usize)
+                            && mb_slice_id[mb_idx - 1] == this_slice_id
+                        {
                             !mb_is_direct[mb_idx - 1]
                         } else {
                             false
                         };
-                        let top_not_direct = if mb_idx >= mb_width as usize {
+                        let top_not_direct = if mb_idx >= mb_width as usize
+                            && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                        {
                             !mb_is_direct[mb_idx - mb_width as usize]
                         } else {
                             false
@@ -881,12 +924,16 @@ impl Decoder {
                         if i_mb_type == 0 {
                             // I4x4/I8x8 in P/B
                             let nts = {
-                                let left = if mb_idx % mb_width as usize != 0 {
+                                let left = if mb_idx % mb_width as usize != 0
+                                    && mb_slice_id[mb_idx - 1] == this_slice_id
+                                {
                                     mb_is_8x8dct[mb_idx - 1] as usize
                                 } else {
                                     0
                                 };
-                                let top = if mb_idx >= mb_width as usize {
+                                let top = if mb_idx >= mb_width as usize
+                                    && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                                {
                                     mb_is_8x8dct[mb_idx - mb_width as usize] as usize
                                 } else {
                                     0
@@ -918,12 +965,16 @@ impl Decoder {
                                     i4x4_modes[mb_idx * 16 + blk] = mode;
                                 }
                             }
-                            let left_cm = if !mb_idx.is_multiple_of(mb_width as usize) {
+                            let left_cm = if !mb_idx.is_multiple_of(mb_width as usize)
+                                && mb_slice_id[mb_idx - 1] == this_slice_id
+                            {
                                 mb_chroma_pred[mb_idx - 1]
                             } else {
                                 0
                             };
-                            let top_cm = if mb_idx >= mb_width as usize {
+                            let top_cm = if mb_idx >= mb_width as usize
+                                && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                            {
                                 mb_chroma_pred[mb_idx - mb_width as usize]
                             } else {
                                 0
@@ -933,12 +984,16 @@ impl Decoder {
                             mb_chroma_pred[mb_idx] = intra_chroma_pred_mode;
 
                             let unavail_cbp: u16 = 0x00F; // inter unavailable default
-                            let left_cbp_raw = if !mb_idx.is_multiple_of(mb_width as usize) {
+                            let left_cbp_raw = if !mb_idx.is_multiple_of(mb_width as usize)
+                                && mb_slice_id[mb_idx - 1] == this_slice_id
+                            {
                                 mb_cbp[mb_idx - 1]
                             } else {
                                 unavail_cbp
                             };
-                            let top_cbp_raw = if mb_idx >= mb_width as usize {
+                            let top_cbp_raw = if mb_idx >= mb_width as usize
+                                && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                            {
                                 mb_cbp[mb_idx - mb_width as usize]
                             } else {
                                 unavail_cbp
@@ -1072,6 +1127,8 @@ impl Decoder {
                                             blk,
                                             true,
                                             true,
+                                            &mb_slice_id,
+                                            this_slice_id,
                                         );
                                         let top_nz = cabac_neighbor_nz_luma(
                                             &nc_luma,
@@ -1080,6 +1137,8 @@ impl Decoder {
                                             blk,
                                             false,
                                             true,
+                                            &mb_slice_id,
+                                            this_slice_id,
                                         );
                                         if cr.decode_coded_block_flag(st, 2, left_nz, top_nz) {
                                             let (coeffs, tc) = cr.decode_residual_cabac(st, 2, 16);
@@ -1233,12 +1292,16 @@ impl Decoder {
                             let mut chroma_dc_cb = [0i32; 4];
                             let mut chroma_dc_cr = [0i32; 4];
                             if cbp_chroma >= 1 {
-                                let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize) {
+                                let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize)
+                                    && mb_slice_id[mb_idx - 1] == this_slice_id
+                                {
                                     (mb_cbp[mb_idx - 1] >> 6) & 1 != 0
                                 } else {
                                     true
                                 };
-                                let top_dc_nz = if mb_idx >= mb_width as usize {
+                                let top_dc_nz = if mb_idx >= mb_width as usize
+                                    && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                                {
                                     (mb_cbp[mb_idx - mb_width as usize] >> 6) & 1 != 0
                                 } else {
                                     true
@@ -1251,12 +1314,16 @@ impl Decoder {
                                     mb_cbp[mb_idx] |= 0x40;
                                 }
 
-                                let left_dc_nz_cr = if !mb_idx.is_multiple_of(mb_width as usize) {
+                                let left_dc_nz_cr = if !mb_idx.is_multiple_of(mb_width as usize)
+                                    && mb_slice_id[mb_idx - 1] == this_slice_id
+                                {
                                     (mb_cbp[mb_idx - 1] >> 7) & 1 != 0
                                 } else {
                                     true
                                 };
-                                let top_dc_nz_cr = if mb_idx >= mb_width as usize {
+                                let top_dc_nz_cr = if mb_idx >= mb_width as usize
+                                    && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                                {
                                     (mb_cbp[mb_idx - mb_width as usize] >> 7) & 1 != 0
                                 } else {
                                     true
@@ -1282,6 +1349,8 @@ impl Decoder {
                                         blk,
                                         true,
                                         true,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let top_nz = cabac_neighbor_nz_chroma(
                                         &nc_cb,
@@ -1290,6 +1359,8 @@ impl Decoder {
                                         blk,
                                         false,
                                         true,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                         let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -1307,6 +1378,8 @@ impl Decoder {
                                         blk,
                                         true,
                                         true,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let top_nz = cabac_neighbor_nz_chroma(
                                         &nc_cr,
@@ -1315,6 +1388,8 @@ impl Decoder {
                                         blk,
                                         false,
                                         true,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                         let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -1397,12 +1472,16 @@ impl Decoder {
                             let i16_pred = (mt % 4) as u8;
                             let cbp_chroma = ((mt / 4) % 3) as u8;
                             let cbp_luma = if mt >= 12 { 15u8 } else { 0u8 };
-                            let left_cm = if !mb_idx.is_multiple_of(mb_width as usize) {
+                            let left_cm = if !mb_idx.is_multiple_of(mb_width as usize)
+                                && mb_slice_id[mb_idx - 1] == this_slice_id
+                            {
                                 mb_chroma_pred[mb_idx - 1]
                             } else {
                                 0
                             };
-                            let top_cm = if mb_idx >= mb_width as usize {
+                            let top_cm = if mb_idx >= mb_width as usize
+                                && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                            {
                                 mb_chroma_pred[mb_idx - mb_width as usize]
                             } else {
                                 0
@@ -1419,12 +1498,16 @@ impl Decoder {
 
                             // Luma DC (cat=0, 16 coefficients)
                             let mut luma_dc = [0i32; 16];
-                            let dc_left_nz = if !mb_idx.is_multiple_of(mb_width as usize) {
+                            let dc_left_nz = if !mb_idx.is_multiple_of(mb_width as usize)
+                                && mb_slice_id[mb_idx - 1] == this_slice_id
+                            {
                                 (mb_cbp[mb_idx - 1] >> 8) & 1 != 0
                             } else {
                                 true
                             };
-                            let dc_top_nz = if mb_idx >= mb_width as usize {
+                            let dc_top_nz = if mb_idx >= mb_width as usize
+                                && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                            {
                                 (mb_cbp[mb_idx - mb_width as usize] >> 8) & 1 != 0
                             } else {
                                 true
@@ -1448,6 +1531,8 @@ impl Decoder {
                                         blk,
                                         true,
                                         true,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let top_nz = cabac_neighbor_nz_luma(
                                         &nc_luma,
@@ -1456,6 +1541,8 @@ impl Decoder {
                                         blk,
                                         false,
                                         true,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     if cr.decode_coded_block_flag(st, 1, left_nz, top_nz) {
                                         let (coeffs, tc) = cr.decode_residual_cabac(st, 1, 15);
@@ -1630,12 +1717,16 @@ impl Decoder {
                             let mut chroma_dc_cb = [0i32; 4];
                             let mut chroma_dc_cr = [0i32; 4];
                             if cbp_chroma >= 1 {
-                                let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize) {
+                                let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize)
+                                    && mb_slice_id[mb_idx - 1] == this_slice_id
+                                {
                                     (mb_cbp[mb_idx - 1] >> 6) & 1 != 0
                                 } else {
                                     true
                                 };
-                                let top_dc_nz = if mb_idx >= mb_width as usize {
+                                let top_dc_nz = if mb_idx >= mb_width as usize
+                                    && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                                {
                                     (mb_cbp[mb_idx - mb_width as usize] >> 6) & 1 != 0
                                 } else {
                                     true
@@ -1647,12 +1738,16 @@ impl Decoder {
                                     }
                                     mb_cbp[mb_idx] |= 0x40;
                                 }
-                                let left_dc_nz_cr = if !mb_idx.is_multiple_of(mb_width as usize) {
+                                let left_dc_nz_cr = if !mb_idx.is_multiple_of(mb_width as usize)
+                                    && mb_slice_id[mb_idx - 1] == this_slice_id
+                                {
                                     (mb_cbp[mb_idx - 1] >> 7) & 1 != 0
                                 } else {
                                     true
                                 };
-                                let top_dc_nz_cr = if mb_idx >= mb_width as usize {
+                                let top_dc_nz_cr = if mb_idx >= mb_width as usize
+                                    && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                                {
                                     (mb_cbp[mb_idx - mb_width as usize] >> 7) & 1 != 0
                                 } else {
                                     true
@@ -1678,6 +1773,8 @@ impl Decoder {
                                         blk,
                                         true,
                                         true,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let top_nz = cabac_neighbor_nz_chroma(
                                         &nc_cb,
@@ -1686,6 +1783,8 @@ impl Decoder {
                                         blk,
                                         false,
                                         true,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                         let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -1703,6 +1802,8 @@ impl Decoder {
                                         blk,
                                         true,
                                         true,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let top_nz = cabac_neighbor_nz_chroma(
                                         &nc_cr,
@@ -1711,6 +1812,8 @@ impl Decoder {
                                         blk,
                                         false,
                                         true,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                         let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -1865,6 +1968,8 @@ impl Decoder {
                                             mb_width as usize,
                                             sy,
                                             sx,
+                                            &mb_slice_id,
+                                            this_slice_id,
                                         );
                                         *sr = cr.decode_ref_idx(st, left_ref, top_ref);
                                     }
@@ -1911,6 +2016,8 @@ impl Decoder {
                                         py,
                                         px,
                                         0,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let amvd_y = cabac_amvd(
                                         &mvd_store,
@@ -1919,6 +2026,8 @@ impl Decoder {
                                         py,
                                         px,
                                         1,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                                     let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
@@ -1932,6 +2041,8 @@ impl Decoder {
                                         spw,
                                         sph,
                                         ref_idx,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
                                     for r in (0..sph).step_by(4) {
@@ -2083,6 +2194,8 @@ impl Decoder {
                                         mb_width as usize,
                                         py_off,
                                         px_off,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     *ref_entry = cr.decode_ref_idx(st, left_ref, top_ref);
                                 }
@@ -2119,6 +2232,8 @@ impl Decoder {
                                     py_off,
                                     px_off,
                                     0,
+                                    &mb_slice_id,
+                                    this_slice_id,
                                 );
                                 let amvd_y = cabac_amvd(
                                     &mvd_store,
@@ -2127,6 +2242,8 @@ impl Decoder {
                                     py_off,
                                     px_off,
                                     1,
+                                    &mb_slice_id,
+                                    this_slice_id,
                                 );
                                 let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                                 let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
@@ -2139,6 +2256,8 @@ impl Decoder {
                                     part_w,
                                     part_h,
                                     part_ref[p],
+                                    &mb_slice_id,
+                                    this_slice_id,
                                 );
                                 let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
                                 // Store MV, ref, and MVD
@@ -2247,12 +2366,16 @@ impl Decoder {
                         }
 
                         // Residual (inter uses CBP_INTER_TABLE equivalent from CABAC)
-                        let left_cbp_raw = if !mb_idx.is_multiple_of(mb_width as usize) {
+                        let left_cbp_raw = if !mb_idx.is_multiple_of(mb_width as usize)
+                            && mb_slice_id[mb_idx - 1] == this_slice_id
+                        {
                             mb_cbp[mb_idx - 1]
                         } else {
                             0x00Fu16
                         };
-                        let top_cbp_raw = if mb_idx >= mb_width as usize {
+                        let top_cbp_raw = if mb_idx >= mb_width as usize
+                            && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                        {
                             mb_cbp[mb_idx - mb_width as usize]
                         } else {
                             0x00Fu16
@@ -2269,12 +2392,16 @@ impl Decoder {
                         mb_cbp[mb_idx] = (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
                         // 8x8 transform flag for inter MBs (CABAC context 399 + neighbor_transform_size)
                         let nts = {
-                            let left = if mb_idx % mb_width as usize != 0 {
+                            let left = if mb_idx % mb_width as usize != 0
+                                && mb_slice_id[mb_idx - 1] == this_slice_id
+                            {
                                 mb_is_8x8dct[mb_idx - 1] as usize
                             } else {
                                 0
                             };
-                            let top = if mb_idx >= mb_width as usize {
+                            let top = if mb_idx >= mb_width as usize
+                                && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                            {
                                 mb_is_8x8dct[mb_idx - mb_width as usize] as usize
                             } else {
                                 0
@@ -2338,6 +2465,8 @@ impl Decoder {
                                             blk,
                                             true,
                                             false,
+                                            &mb_slice_id,
+                                            this_slice_id,
                                         );
                                         let top_nz = cabac_neighbor_nz_luma(
                                             &nc_luma,
@@ -2346,8 +2475,11 @@ impl Decoder {
                                             blk,
                                             false,
                                             false,
+                                            &mb_slice_id,
+                                            this_slice_id,
                                         );
-                                        let cbf = cr.decode_coded_block_flag(st, 2, left_nz, top_nz);
+                                        let cbf =
+                                            cr.decode_coded_block_flag(st, 2, left_nz, top_nz);
                                         if cbf {
                                             let (coeffs, tc) = cr.decode_residual_cabac(st, 2, 16);
                                             nc_luma[mb_idx * 16 + blk] = tc;
@@ -2391,12 +2523,16 @@ impl Decoder {
                         if cbp_chroma >= 1 {
                             let mut chroma_dc_cb = [0i32; 4];
                             let mut chroma_dc_cr = [0i32; 4];
-                            let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize) {
+                            let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize)
+                                && mb_slice_id[mb_idx - 1] == this_slice_id
+                            {
                                 (mb_cbp[mb_idx - 1] >> 6) & 1 != 0
                             } else {
                                 false
                             };
-                            let top_dc_nz = if mb_idx >= mb_width as usize {
+                            let top_dc_nz = if mb_idx >= mb_width as usize
+                                && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                            {
                                 (mb_cbp[mb_idx - mb_width as usize] >> 6) & 1 != 0
                             } else {
                                 false
@@ -2408,12 +2544,16 @@ impl Decoder {
                                 }
                                 mb_cbp[mb_idx] |= 0x40;
                             }
-                            let left_dc_cr = if !mb_idx.is_multiple_of(mb_width as usize) {
+                            let left_dc_cr = if !mb_idx.is_multiple_of(mb_width as usize)
+                                && mb_slice_id[mb_idx - 1] == this_slice_id
+                            {
                                 (mb_cbp[mb_idx - 1] >> 7) & 1 != 0
                             } else {
                                 false
                             };
-                            let top_dc_cr = if mb_idx >= mb_width as usize {
+                            let top_dc_cr = if mb_idx >= mb_width as usize
+                                && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                            {
                                 (mb_cbp[mb_idx - mb_width as usize] >> 7) & 1 != 0
                             } else {
                                 false
@@ -2451,6 +2591,8 @@ impl Decoder {
                                             blk,
                                             true,
                                             false,
+                                            &mb_slice_id,
+                                            this_slice_id,
                                         );
                                         let top_nz = cabac_neighbor_nz_chroma(
                                             nc_arr,
@@ -2459,6 +2601,8 @@ impl Decoder {
                                             blk,
                                             false,
                                             false,
+                                            &mb_slice_id,
+                                            this_slice_id,
                                         );
                                         if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                             let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -2586,6 +2730,8 @@ impl Decoder {
                                             mb_width as usize,
                                             _ref_pic_list_l1.first().map(|p| p.as_ref()),
                                             blk,
+                                            &mb_slice_id,
+                                            this_slice_id,
                                         );
                                     mv_store_l0[mb_idx * 16 + blk] = mv_l0;
                                     ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
@@ -2675,6 +2821,8 @@ impl Decoder {
                                     mb_width as usize,
                                     0,
                                     0,
+                                    &mb_slice_id,
+                                    this_slice_id,
                                 );
                                 ref_l0 = cr.decode_ref_idx(st, left_ref, top_ref);
                             }
@@ -2685,6 +2833,8 @@ impl Decoder {
                                     mb_width as usize,
                                     0,
                                     0,
+                                    &mb_slice_id,
+                                    this_slice_id,
                                 );
                                 ref_l1 = cr.decode_ref_idx(st, left_ref, top_ref);
                             }
@@ -2693,10 +2843,26 @@ impl Decoder {
                             let mut mv_l1 = [0i16; 2];
 
                             if pred_l0 {
-                                let amvd_x =
-                                    cabac_amvd(&mvd_store, mb_idx, mb_width as usize, 0, 0, 0);
-                                let amvd_y =
-                                    cabac_amvd(&mvd_store, mb_idx, mb_width as usize, 0, 0, 1);
+                                let amvd_x = cabac_amvd(
+                                    &mvd_store,
+                                    mb_idx,
+                                    mb_width as usize,
+                                    0,
+                                    0,
+                                    0,
+                                    &mb_slice_id,
+                                    this_slice_id,
+                                );
+                                let amvd_y = cabac_amvd(
+                                    &mvd_store,
+                                    mb_idx,
+                                    mb_width as usize,
+                                    0,
+                                    0,
+                                    1,
+                                    &mb_slice_id,
+                                    this_slice_id,
+                                );
                                 let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                                 let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
                                 let (mvp_x, mvp_y) = predict_mv(
@@ -2708,6 +2874,8 @@ impl Decoder {
                                     16,
                                     16,
                                     ref_l0,
+                                    &mb_slice_id,
+                                    this_slice_id,
                                 );
                                 mv_l0 = [mvp_x + mvd_x, mvp_y + mvd_y];
                                 for blk in 0..16 {
@@ -2717,10 +2885,26 @@ impl Decoder {
                                 }
                             }
                             if pred_l1 {
-                                let amvd_x =
-                                    cabac_amvd(&mvd_store_l1, mb_idx, mb_width as usize, 0, 0, 0);
-                                let amvd_y =
-                                    cabac_amvd(&mvd_store_l1, mb_idx, mb_width as usize, 0, 0, 1);
+                                let amvd_x = cabac_amvd(
+                                    &mvd_store_l1,
+                                    mb_idx,
+                                    mb_width as usize,
+                                    0,
+                                    0,
+                                    0,
+                                    &mb_slice_id,
+                                    this_slice_id,
+                                );
+                                let amvd_y = cabac_amvd(
+                                    &mvd_store_l1,
+                                    mb_idx,
+                                    mb_width as usize,
+                                    0,
+                                    0,
+                                    1,
+                                    &mb_slice_id,
+                                    this_slice_id,
+                                );
                                 let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                                 let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
                                 let (mvp_x, mvp_y) = predict_mv(
@@ -2732,6 +2916,8 @@ impl Decoder {
                                     16,
                                     16,
                                     ref_l1,
+                                    &mb_slice_id,
+                                    this_slice_id,
                                 );
                                 mv_l1 = [mvp_x + mvd_x, mvp_y + mvd_y];
                                 for blk in 0..16 {
@@ -2785,6 +2971,8 @@ impl Decoder {
                                             mb_width as usize,
                                             py_off,
                                             px_off,
+                                            &mb_slice_id,
+                                            this_slice_id,
                                         );
                                         part_ref_l0[p] = cr.decode_ref_idx(st, left_ref, top_ref);
                                     } else {
@@ -2818,6 +3006,8 @@ impl Decoder {
                                             mb_width as usize,
                                             py_off,
                                             px_off,
+                                            &mb_slice_id,
+                                            this_slice_id,
                                         );
                                         part_ref_l1[p] = cr.decode_ref_idx(st, left_ref, top_ref);
                                     } else {
@@ -2870,6 +3060,8 @@ impl Decoder {
                                         py_off,
                                         px_off,
                                         0,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let amvd_y = cabac_amvd(
                                         &mvd_store,
@@ -2878,6 +3070,8 @@ impl Decoder {
                                         py_off,
                                         px_off,
                                         1,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                                     let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
@@ -2890,6 +3084,8 @@ impl Decoder {
                                         part_w,
                                         part_h,
                                         part_ref_l0[p],
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     mv_l0_parts[p] = [mvp_x + mvd_x, mvp_y + mvd_y];
                                     // Store MV and MVD immediately for partition 1 prediction
@@ -2950,6 +3146,8 @@ impl Decoder {
                                         py_off,
                                         px_off,
                                         0,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let amvd_y = cabac_amvd(
                                         &mvd_store_l1,
@@ -2958,6 +3156,8 @@ impl Decoder {
                                         py_off,
                                         px_off,
                                         1,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                                     let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
@@ -2970,6 +3170,8 @@ impl Decoder {
                                         part_w,
                                         part_h,
                                         part_ref_l1[p],
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     mv_l1_parts[p] = [mvp_x + mvd_x, mvp_y + mvd_y];
                                     for r in (0..part_h).step_by(4) {
@@ -3045,6 +3247,8 @@ impl Decoder {
                                                 mb_width as usize,
                                                 sy,
                                                 sx,
+                                                &mb_slice_id,
+                                                this_slice_id,
                                             );
                                             sub_ref_l0[smb] =
                                                 cr.decode_ref_idx(st, left_ref, top_ref);
@@ -3082,6 +3286,8 @@ impl Decoder {
                                                 mb_width as usize,
                                                 sy,
                                                 sx,
+                                                &mb_slice_id,
+                                                this_slice_id,
                                             );
                                             sub_ref_l1[smb] =
                                                 cr.decode_ref_idx(st, left_ref, top_ref);
@@ -3151,6 +3357,8 @@ impl Decoder {
                                                             .first()
                                                             .map(|p| p.as_ref()),
                                                         blk,
+                                                        &mb_slice_id,
+                                                        this_slice_id,
                                                     )
                                                 } else {
                                                     let col_pic = &_ref_pic_list_l1[0];
@@ -3232,6 +3440,8 @@ impl Decoder {
                                         py,
                                         px,
                                         0,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let amvd_y = cabac_amvd(
                                         &mvd_store,
@@ -3240,6 +3450,8 @@ impl Decoder {
                                         py,
                                         px,
                                         1,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                                     let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
@@ -3253,6 +3465,8 @@ impl Decoder {
                                         layout.sub_w,
                                         layout.sub_h,
                                         sub_ref_l0[layout.smb],
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
                                     for r in (0..layout.sub_h).step_by(4) {
@@ -3290,6 +3504,8 @@ impl Decoder {
                                         py,
                                         px,
                                         0,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let amvd_y = cabac_amvd(
                                         &mvd_store_l1,
@@ -3298,6 +3514,8 @@ impl Decoder {
                                         py,
                                         px,
                                         1,
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                                     let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
@@ -3311,6 +3529,8 @@ impl Decoder {
                                         layout.sub_w,
                                         layout.sub_h,
                                         sub_ref_l1[layout.smb],
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
                                     for r in (0..layout.sub_h).step_by(4) {
@@ -3593,12 +3813,16 @@ impl Decoder {
                         }
 
                         // Residual: CABAC CBP + coefficients
-                        let left_cbp_raw = if !mb_idx.is_multiple_of(mb_width as usize) {
+                        let left_cbp_raw = if !mb_idx.is_multiple_of(mb_width as usize)
+                            && mb_slice_id[mb_idx - 1] == this_slice_id
+                        {
                             mb_cbp[mb_idx - 1]
                         } else {
                             0x00Fu16
                         };
-                        let top_cbp_raw = if mb_idx >= mb_width as usize {
+                        let top_cbp_raw = if mb_idx >= mb_width as usize
+                            && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                        {
                             mb_cbp[mb_idx - mb_width as usize]
                         } else {
                             0x00Fu16
@@ -3616,12 +3840,16 @@ impl Decoder {
 
                         // 8x8 transform flag for B inter MBs (context 399 + neighbor_transform_size)
                         let nts = {
-                            let left = if mb_idx % mb_width as usize != 0 {
+                            let left = if mb_idx % mb_width as usize != 0
+                                && mb_slice_id[mb_idx - 1] == this_slice_id
+                            {
                                 mb_is_8x8dct[mb_idx - 1] as usize
                             } else {
                                 0
                             };
-                            let top = if mb_idx >= mb_width as usize {
+                            let top = if mb_idx >= mb_width as usize
+                                && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                            {
                                 mb_is_8x8dct[mb_idx - mb_width as usize] as usize
                             } else {
                                 0
@@ -3683,6 +3911,8 @@ impl Decoder {
                                             blk,
                                             true,
                                             false,
+                                            &mb_slice_id,
+                                            this_slice_id,
                                         );
                                         let top_nz = cabac_neighbor_nz_luma(
                                             &nc_luma,
@@ -3691,6 +3921,8 @@ impl Decoder {
                                             blk,
                                             false,
                                             false,
+                                            &mb_slice_id,
+                                            this_slice_id,
                                         );
                                         if cr.decode_coded_block_flag(st, 2, left_nz, top_nz) {
                                             let (coeffs, tc) = cr.decode_residual_cabac(st, 2, 16);
@@ -3734,12 +3966,16 @@ impl Decoder {
                         if cbp_chroma >= 1 {
                             let mut chroma_dc_cb = [0i32; 4];
                             let mut chroma_dc_cr = [0i32; 4];
-                            let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize) {
+                            let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize)
+                                && mb_slice_id[mb_idx - 1] == this_slice_id
+                            {
                                 (mb_cbp[mb_idx - 1] >> 6) & 1 != 0
                             } else {
                                 false
                             };
-                            let top_dc_nz = if mb_idx >= mb_width as usize {
+                            let top_dc_nz = if mb_idx >= mb_width as usize
+                                && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                            {
                                 (mb_cbp[mb_idx - mb_width as usize] >> 6) & 1 != 0
                             } else {
                                 false
@@ -3751,12 +3987,16 @@ impl Decoder {
                                 }
                                 mb_cbp[mb_idx] |= 0x40;
                             }
-                            let left_dc_cr = if !mb_idx.is_multiple_of(mb_width as usize) {
+                            let left_dc_cr = if !mb_idx.is_multiple_of(mb_width as usize)
+                                && mb_slice_id[mb_idx - 1] == this_slice_id
+                            {
                                 (mb_cbp[mb_idx - 1] >> 7) & 1 != 0
                             } else {
                                 false
                             };
-                            let top_dc_cr = if mb_idx >= mb_width as usize {
+                            let top_dc_cr = if mb_idx >= mb_width as usize
+                                && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                            {
                                 (mb_cbp[mb_idx - mb_width as usize] >> 7) & 1 != 0
                             } else {
                                 false
@@ -3794,6 +4034,8 @@ impl Decoder {
                                             blk,
                                             true,
                                             false,
+                                            &mb_slice_id,
+                                            this_slice_id,
                                         );
                                         let top_nz = cabac_neighbor_nz_chroma(
                                             nc_arr,
@@ -3802,6 +4044,8 @@ impl Decoder {
                                             blk,
                                             false,
                                             false,
+                                            &mb_slice_id,
+                                            this_slice_id,
                                         );
                                         if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                             let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -3857,12 +4101,16 @@ impl Decoder {
 
                 // I-slice CABAC: decode mb_type
                 // Context depends on whether neighbors are I16x16 (not I4x4)
-                let left_is_i16 = if !mb_idx.is_multiple_of(mb_width as usize) {
+                let left_is_i16 = if !mb_idx.is_multiple_of(mb_width as usize)
+                    && mb_slice_id[mb_idx - 1] == this_slice_id
+                {
                     is_i16x16[mb_idx - 1]
                 } else {
                     false
                 };
-                let top_is_i16 = if mb_idx >= mb_width as usize {
+                let top_is_i16 = if mb_idx >= mb_width as usize
+                    && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                {
                     is_i16x16[mb_idx - mb_width as usize]
                 } else {
                     false
@@ -3919,12 +4167,16 @@ impl Decoder {
                 if mb_type == 0 {
                     // I4x4/I8x8 via CABAC
                     let nts = {
-                        let left = if mb_idx % mb_width as usize != 0 {
+                        let left = if mb_idx % mb_width as usize != 0
+                            && mb_slice_id[mb_idx - 1] == this_slice_id
+                        {
                             mb_is_8x8dct[mb_idx - 1] as usize
                         } else {
                             0
                         };
-                        let top = if mb_idx >= mb_width as usize {
+                        let top = if mb_idx >= mb_width as usize
+                            && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                        {
                             mb_is_8x8dct[mb_idx - mb_width as usize] as usize
                         } else {
                             0
@@ -3955,12 +4207,16 @@ impl Decoder {
                     }
 
                     // TODO: track neighbor chroma pred modes for proper context
-                    let left_cm = if !mb_idx.is_multiple_of(mb_width as usize) {
+                    let left_cm = if !mb_idx.is_multiple_of(mb_width as usize)
+                        && mb_slice_id[mb_idx - 1] == this_slice_id
+                    {
                         mb_chroma_pred[mb_idx - 1]
                     } else {
                         0
                     };
-                    let top_cm = if mb_idx >= mb_width as usize {
+                    let top_cm = if mb_idx >= mb_width as usize
+                        && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                    {
                         mb_chroma_pred[mb_idx - mb_width as usize]
                     } else {
                         0
@@ -3970,12 +4226,16 @@ impl Decoder {
 
                     // CBP with proper neighbor context
                     let unavail_cbp: u16 = 0x7CF;
-                    let left_cbp_raw = if !mb_idx.is_multiple_of(mb_width as usize) {
+                    let left_cbp_raw = if !mb_idx.is_multiple_of(mb_width as usize)
+                        && mb_slice_id[mb_idx - 1] == this_slice_id
+                    {
                         mb_cbp[mb_idx - 1]
                     } else {
                         unavail_cbp
                     };
-                    let top_cbp_raw = if mb_idx >= mb_width as usize {
+                    let top_cbp_raw = if mb_idx >= mb_width as usize
+                        && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                    {
                         mb_cbp[mb_idx - mb_width as usize]
                     } else {
                         unavail_cbp
@@ -4119,6 +4379,8 @@ impl Decoder {
                                     blk,
                                     true,
                                     true,
+                                    &mb_slice_id,
+                                    this_slice_id,
                                 );
                                 let top_nz_blk = cabac_neighbor_nz_luma(
                                     &nc_luma,
@@ -4127,6 +4389,8 @@ impl Decoder {
                                     blk,
                                     false,
                                     true,
+                                    &mb_slice_id,
+                                    this_slice_id,
                                 );
 
                                 let cbf =
@@ -4285,12 +4549,16 @@ impl Decoder {
                     let mut chroma_dc_cr = [0i32; 4];
                     if cbp_chroma >= 1 {
                         // Chroma DC CBF context: uses bits 6-7 of neighbor cbp_table
-                        let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize) {
+                        let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize)
+                            && mb_slice_id[mb_idx - 1] == this_slice_id
+                        {
                             (mb_cbp[mb_idx - 1] >> 6) & 1 != 0
                         } else {
                             true
                         }; // unavailable intra: 0x7CF bit 6 = 1
-                        let top_dc_nz = if mb_idx >= mb_width as usize {
+                        let top_dc_nz = if mb_idx >= mb_width as usize
+                            && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                        {
                             (mb_cbp[mb_idx - mb_width as usize] >> 6) & 1 != 0
                         } else {
                             true
@@ -4302,12 +4570,16 @@ impl Decoder {
                             }
                             mb_cbp[mb_idx] |= 0x40; // set Cb DC coded flag
                         }
-                        let left_dc_nz_cr = if !mb_idx.is_multiple_of(mb_width as usize) {
+                        let left_dc_nz_cr = if !mb_idx.is_multiple_of(mb_width as usize)
+                            && mb_slice_id[mb_idx - 1] == this_slice_id
+                        {
                             (mb_cbp[mb_idx - 1] >> 7) & 1 != 0
                         } else {
                             true
                         };
-                        let top_dc_nz_cr = if mb_idx >= mb_width as usize {
+                        let top_dc_nz_cr = if mb_idx >= mb_width as usize
+                            && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                        {
                             (mb_cbp[mb_idx - mb_width as usize] >> 7) & 1 != 0
                         } else {
                             true
@@ -4332,6 +4604,8 @@ impl Decoder {
                                 blk,
                                 true,
                                 true,
+                                &mb_slice_id,
+                                this_slice_id,
                             );
                             let top_nz = cabac_neighbor_nz_chroma(
                                 &nc_cb,
@@ -4340,6 +4614,8 @@ impl Decoder {
                                 blk,
                                 false,
                                 true,
+                                &mb_slice_id,
+                                this_slice_id,
                             );
                             if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                 let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -4357,6 +4633,8 @@ impl Decoder {
                                 blk,
                                 true,
                                 true,
+                                &mb_slice_id,
+                                this_slice_id,
                             );
                             let top_nz = cabac_neighbor_nz_chroma(
                                 &nc_cr,
@@ -4365,6 +4643,8 @@ impl Decoder {
                                 blk,
                                 false,
                                 true,
+                                &mb_slice_id,
+                                this_slice_id,
                             );
                             if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                 let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -4446,12 +4726,16 @@ impl Decoder {
                     let cbp_chroma = ((mt / 4) % 3) as u8;
                     let cbp_luma = if mt >= 12 { 15u8 } else { 0u8 };
 
-                    let left_cm = if !mb_idx.is_multiple_of(mb_width as usize) {
+                    let left_cm = if !mb_idx.is_multiple_of(mb_width as usize)
+                        && mb_slice_id[mb_idx - 1] == this_slice_id
+                    {
                         mb_chroma_pred[mb_idx - 1]
                     } else {
                         0
                     };
-                    let top_cm = if mb_idx >= mb_width as usize {
+                    let top_cm = if mb_idx >= mb_width as usize
+                        && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                    {
                         mb_chroma_pred[mb_idx - mb_width as usize]
                     } else {
                         0
@@ -4468,12 +4752,16 @@ impl Decoder {
                     // Luma DC: cat=0, 16 coefficients
                     // CBF context uses bit 8 of neighbor cbp_table (luma DC coded flag)
                     let mut luma_dc = [0i32; 16];
-                    let dc_left_nz = if !mb_idx.is_multiple_of(mb_width as usize) {
+                    let dc_left_nz = if !mb_idx.is_multiple_of(mb_width as usize)
+                        && mb_slice_id[mb_idx - 1] == this_slice_id
+                    {
                         (mb_cbp[mb_idx - 1] >> 8) & 1 != 0
                     } else {
                         true
                     }; // unavailable intra: 0x7CF bit 8 = 1 (0x7CF = 0b0111_1100_1111)
-                    let dc_top_nz = if mb_idx >= mb_width as usize {
+                    let dc_top_nz = if mb_idx >= mb_width as usize
+                        && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                    {
                         (mb_cbp[mb_idx - mb_width as usize] >> 8) & 1 != 0
                     } else {
                         true
@@ -4497,6 +4785,8 @@ impl Decoder {
                                 blk,
                                 true,
                                 true,
+                                &mb_slice_id,
+                                this_slice_id,
                             );
                             let top_nz = cabac_neighbor_nz_luma(
                                 &nc_luma,
@@ -4505,6 +4795,8 @@ impl Decoder {
                                 blk,
                                 false,
                                 true,
+                                &mb_slice_id,
+                                this_slice_id,
                             );
                             if cr.decode_coded_block_flag(st, 1, left_nz, top_nz) {
                                 let (coeffs, tc) = cr.decode_residual_cabac(st, 1, 15);
@@ -4674,12 +4966,16 @@ impl Decoder {
                     let mut chroma_dc_cb = [0i32; 4];
                     let mut chroma_dc_cr = [0i32; 4];
                     if cbp_chroma >= 1 {
-                        let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize) {
+                        let left_dc_nz = if !mb_idx.is_multiple_of(mb_width as usize)
+                            && mb_slice_id[mb_idx - 1] == this_slice_id
+                        {
                             (mb_cbp[mb_idx - 1] >> 6) & 1 != 0
                         } else {
                             true
                         };
-                        let top_dc_nz = if mb_idx >= mb_width as usize {
+                        let top_dc_nz = if mb_idx >= mb_width as usize
+                            && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                        {
                             (mb_cbp[mb_idx - mb_width as usize] >> 6) & 1 != 0
                         } else {
                             true
@@ -4691,12 +4987,16 @@ impl Decoder {
                             }
                             mb_cbp[mb_idx] |= 0x40;
                         }
-                        let left_dc_nz_cr = if !mb_idx.is_multiple_of(mb_width as usize) {
+                        let left_dc_nz_cr = if !mb_idx.is_multiple_of(mb_width as usize)
+                            && mb_slice_id[mb_idx - 1] == this_slice_id
+                        {
                             (mb_cbp[mb_idx - 1] >> 7) & 1 != 0
                         } else {
                             true
                         };
-                        let top_dc_nz_cr = if mb_idx >= mb_width as usize {
+                        let top_dc_nz_cr = if mb_idx >= mb_width as usize
+                            && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                        {
                             (mb_cbp[mb_idx - mb_width as usize] >> 7) & 1 != 0
                         } else {
                             true
@@ -4720,6 +5020,8 @@ impl Decoder {
                                 blk,
                                 true,
                                 true,
+                                &mb_slice_id,
+                                this_slice_id,
                             );
                             let top_nz = cabac_neighbor_nz_chroma(
                                 &nc_cb,
@@ -4728,6 +5030,8 @@ impl Decoder {
                                 blk,
                                 false,
                                 true,
+                                &mb_slice_id,
+                                this_slice_id,
                             );
                             if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                 let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -4745,6 +5049,8 @@ impl Decoder {
                                 blk,
                                 true,
                                 true,
+                                &mb_slice_id,
+                                this_slice_id,
                             );
                             let top_nz = cabac_neighbor_nz_chroma(
                                 &nc_cr,
@@ -4753,6 +5059,8 @@ impl Decoder {
                                 blk,
                                 false,
                                 true,
+                                &mb_slice_id,
+                                this_slice_id,
                             );
                             if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                 let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -4887,6 +5195,8 @@ impl Decoder {
                             &ref_idx_store_l0,
                             mb_idx,
                             mb_width as usize,
+                            &mb_slice_id,
+                            this_slice_id,
                         );
                         if let Some(ref_pic) = ref_pic_list.first() {
                             let mut luma_pred = [0u8; 256];
@@ -4969,6 +5279,8 @@ impl Decoder {
                                     mb_width as usize,
                                     _ref_pic_list_l1.first().map(|p| p.as_ref()),
                                     blk,
+                                    &mb_slice_id,
+                                    this_slice_id,
                                 );
                                 mv_store_l0[mb_idx * 16 + blk] = mv_l0;
                                 ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
@@ -5409,6 +5721,8 @@ impl Decoder {
                             16,
                             16,
                             ref_idx,
+                            &mb_slice_id,
+                            this_slice_id,
                         );
                         let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
 
@@ -5449,6 +5763,8 @@ impl Decoder {
                                     mb_width as usize,
                                     _ref_pic_list_l1.first().map(|p| p.as_ref()),
                                     blk,
+                                    &mb_slice_id,
+                                    this_slice_id,
                                 );
                                 mv_store_l0[mb_idx * 16 + blk] = mv_l0;
                                 ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
@@ -5549,6 +5865,8 @@ impl Decoder {
                             16,
                             16,
                             ref_idx_l0,
+                            &mb_slice_id,
+                            this_slice_id,
                         );
                         let mv_l0 = [mvp_l0_x + mvd_l0_x, mvp_l0_y + mvd_l0_y];
 
@@ -5563,6 +5881,8 @@ impl Decoder {
                             16,
                             16,
                             ref_idx_l1,
+                            &mb_slice_id,
+                            this_slice_id,
                         );
                         let mv_l1 = [mvp_l1_x + mvd_l1_x, mvp_l1_y + mvd_l1_y];
 
@@ -5678,6 +5998,8 @@ impl Decoder {
                                     part_w,
                                     part_h,
                                     part_ref_l0[p],
+                                    &mb_slice_id,
+                                    this_slice_id,
                                 );
                                 mv_l0_parts[p] = [mvp_x + mvd_x, mvp_y + mvd_y];
                                 // Store MV immediately for partition 1 to read partition 0
@@ -5722,6 +6044,8 @@ impl Decoder {
                                     part_w,
                                     part_h,
                                     part_ref_l1[p],
+                                    &mb_slice_id,
+                                    this_slice_id,
                                 );
                                 mv_l1_parts[p] = [mvp_x + mvd_x, mvp_y + mvd_y];
                                 for r in (0..part_h).step_by(4) {
@@ -5910,6 +6234,8 @@ impl Decoder {
                                                             .first()
                                                             .map(|p| p.as_ref()),
                                                         blk,
+                                                        &mb_slice_id,
+                                                        this_slice_id,
                                                     )
                                                 } else {
                                                     let col_pic = &_ref_pic_list_l1[0];
@@ -5972,6 +6298,8 @@ impl Decoder {
                                         layout.sub_w,
                                         layout.sub_h,
                                         sub_ref_l0[layout.smb],
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
                                     sub_mvs[idx].mv_l0 = mv;
@@ -6016,6 +6344,8 @@ impl Decoder {
                                         layout.sub_w,
                                         layout.sub_h,
                                         sub_ref_l1[layout.smb],
+                                        &mb_slice_id,
+                                        this_slice_id,
                                     );
                                     let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
                                     sub_mvs[idx].mv_l1 = mv;
@@ -6502,6 +6832,8 @@ impl Decoder {
                                 spw,
                                 sph,
                                 ref_idx,
+                                &mb_slice_id,
+                                this_slice_id,
                             );
                             let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
 
@@ -6559,6 +6891,8 @@ impl Decoder {
                             part_w,
                             part_h,
                             part_ref[p],
+                            &mb_slice_id,
+                            this_slice_id,
                         );
                         let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
 
@@ -7395,6 +7729,13 @@ impl Decoder {
                 }
             }
             mb_idx += 1;
+
+            // CAVLC end-of-slice: spec says "while (more_rbsp_data())"
+            // after each MB. For single-slice, this naturally ends at
+            // total_mbs. For multi-slice, it stops at each slice boundary.
+            if !use_cabac && !reader.more_rbsp_data() {
+                break;
+            }
         }
 
         // Fill per-4x4-block MV/ref/nnz data into MbInfo for deblocking bS.
@@ -7468,6 +7809,8 @@ impl Decoder {
             mb_skip,
             mb_is_direct,
             is_i16x16,
+            mb_slice_id,
+            current_slice_id,
             prev_mb_qp,
             last_qp_delta_nonzero,
             mmco_ops: header.mmco_ops.clone(),
@@ -7498,16 +7841,54 @@ fn predict_mv_sub(
     spw: usize,
     _sph: usize,
     ref_idx: i8,
+    mb_slice_id: &[u16],
+    cur_slice_id: u16,
 ) -> (i16, i16) {
     // Reuse the general predict_mv with the sub-partition's position and size.
     // The neighbor lookup functions already handle arbitrary py_off/px_off.
-    let a = get_mv_neighbor_left(mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py, px);
-    let b = get_mv_neighbor_above(mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py, px);
-    let c =
-        get_mv_neighbor_above_right(mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py, px, spw)
-            .or_else(|| {
-                get_mv_neighbor_above_left(mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py, px)
-            });
+    let a = get_mv_neighbor_left(
+        mv_store_l0,
+        ref_idx_store_l0,
+        mb_idx,
+        mb_width,
+        py,
+        px,
+        mb_slice_id,
+        cur_slice_id,
+    );
+    let b = get_mv_neighbor_above(
+        mv_store_l0,
+        ref_idx_store_l0,
+        mb_idx,
+        mb_width,
+        py,
+        px,
+        mb_slice_id,
+        cur_slice_id,
+    );
+    let c = get_mv_neighbor_above_right(
+        mv_store_l0,
+        ref_idx_store_l0,
+        mb_idx,
+        mb_width,
+        py,
+        px,
+        spw,
+        mb_slice_id,
+        cur_slice_id,
+    )
+    .or_else(|| {
+        get_mv_neighbor_above_left(
+            mv_store_l0,
+            ref_idx_store_l0,
+            mb_idx,
+            mb_width,
+            py,
+            px,
+            mb_slice_id,
+            cur_slice_id,
+        )
+    });
 
     // match_count directional logic (same as predict_mv)
     let ref_a = a.map(|(_, r)| r).unwrap_or(-1);
@@ -7676,9 +8057,29 @@ fn predict_mv_skip(
     ref_idx_store_l0: &[i8],
     mb_idx: usize,
     mb_width: usize,
+    mb_slice_id: &[u16],
+    cur_slice_id: u16,
 ) -> (i16, i16) {
-    let a = get_mv_neighbor_left(mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, 0, 0);
-    let b = get_mv_neighbor_above(mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, 0, 0);
+    let a = get_mv_neighbor_left(
+        mv_store_l0,
+        ref_idx_store_l0,
+        mb_idx,
+        mb_width,
+        0,
+        0,
+        mb_slice_id,
+        cur_slice_id,
+    );
+    let b = get_mv_neighbor_above(
+        mv_store_l0,
+        ref_idx_store_l0,
+        mb_idx,
+        mb_width,
+        0,
+        0,
+        mb_slice_id,
+        cur_slice_id,
+    );
 
     // Spec 8.4.1.1: if A is unavailable or (refA==0 && mvA==(0,0)), OR
     // if B is unavailable or (refB==0 && mvB==(0,0)), then skip MV = (0,0).
@@ -7703,6 +8104,8 @@ fn predict_mv_skip(
         16,
         16,
         0,
+        mb_slice_id,
+        cur_slice_id,
     )
 }
 
@@ -7717,6 +8120,8 @@ fn derive_spatial_direct_blk(
     mb_width: usize,
     col_pic: Option<&DecodedPicture>,
     col_blk: usize,
+    mb_slice_id: &[u16],
+    cur_slice_id: u16,
 ) -> ([i16; 2], [i16; 2], i8, i8, bool, bool) {
     let mut ref_idx = [-1i8; 2];
     let mut mv = [[0i16; 2]; 2];
@@ -7730,10 +8135,49 @@ fn derive_spatial_direct_blk(
             (mv_store_l1, ref_idx_store_l1)
         };
 
-        let a = get_mv_neighbor_left(mv_s, ref_s, mb_idx, mb_width, 0, 0);
-        let b = get_mv_neighbor_above(mv_s, ref_s, mb_idx, mb_width, 0, 0);
-        let c = get_mv_neighbor_above_right(mv_s, ref_s, mb_idx, mb_width, 0, 0, 16)
-            .or_else(|| get_mv_neighbor_above_left(mv_s, ref_s, mb_idx, mb_width, 0, 0));
+        let a = get_mv_neighbor_left(
+            mv_s,
+            ref_s,
+            mb_idx,
+            mb_width,
+            0,
+            0,
+            mb_slice_id,
+            cur_slice_id,
+        );
+        let b = get_mv_neighbor_above(
+            mv_s,
+            ref_s,
+            mb_idx,
+            mb_width,
+            0,
+            0,
+            mb_slice_id,
+            cur_slice_id,
+        );
+        let c = get_mv_neighbor_above_right(
+            mv_s,
+            ref_s,
+            mb_idx,
+            mb_width,
+            0,
+            0,
+            16,
+            mb_slice_id,
+            cur_slice_id,
+        )
+        .or_else(|| {
+            get_mv_neighbor_above_left(
+                mv_s,
+                ref_s,
+                mb_idx,
+                mb_width,
+                0,
+                0,
+                mb_slice_id,
+                cur_slice_id,
+            )
+        });
 
         let ref_a = a.map(|(_, r)| r).unwrap_or(-1);
         let ref_b = b.map(|(_, r)| r).unwrap_or(-1);
@@ -7909,6 +8353,8 @@ fn predict_mv(
     part_w: usize,
     part_h: usize,
     ref_idx: i8,
+    mb_slice_id: &[u16],
+    cur_slice_id: u16,
 ) -> (i16, i16) {
     let py_off = if part_h == 8 && part_w == 16 {
         part_idx * 8
@@ -7929,6 +8375,8 @@ fn predict_mv(
         mb_width,
         py_off,
         px_off,
+        mb_slice_id,
+        cur_slice_id,
     );
 
     // B: above neighbor
@@ -7939,6 +8387,8 @@ fn predict_mv(
         mb_width,
         py_off,
         px_off,
+        mb_slice_id,
+        cur_slice_id,
     );
 
     // C: above-right neighbor (or D: above-left if C unavailable)
@@ -7950,6 +8400,8 @@ fn predict_mv(
         py_off,
         px_off,
         part_w,
+        mb_slice_id,
+        cur_slice_id,
     )
     .or_else(|| {
         get_mv_neighbor_above_left(
@@ -7959,6 +8411,8 @@ fn predict_mv(
             mb_width,
             py_off,
             px_off,
+            mb_slice_id,
+            cur_slice_id,
         )
     });
 
@@ -8042,6 +8496,8 @@ fn get_mv_neighbor_left(
     mb_width: usize,
     py_off: usize,
     px_off: usize,
+    mb_slice_id: &[u16],
+    cur_slice_id: u16,
 ) -> Option<([i16; 2], i8)> {
     let mb_col = mb_idx % mb_width;
     if px_off > 0 {
@@ -8058,6 +8514,9 @@ fn get_mv_neighbor_left(
     } else if mb_col > 0 {
         // Left is in the left MB (rightmost column)
         let left_mb = mb_idx - 1;
+        if mb_slice_id[left_mb] != cur_slice_id {
+            return None;
+        }
         let lr = py_off / 4;
         let lc = 3; // rightmost 4x4 column
         let blk = BLOCK_INDEX_TO_OFFSET
@@ -8080,6 +8539,8 @@ fn get_mv_neighbor_above(
     mb_width: usize,
     py_off: usize,
     px_off: usize,
+    mb_slice_id: &[u16],
+    cur_slice_id: u16,
 ) -> Option<([i16; 2], i8)> {
     let mb_row = mb_idx / mb_width;
     if py_off > 0 {
@@ -8095,6 +8556,9 @@ fn get_mv_neighbor_above(
         ))
     } else if mb_row > 0 {
         let above_mb = mb_idx - mb_width;
+        if mb_slice_id[above_mb] != cur_slice_id {
+            return None;
+        }
         let lr = 3; // bottom row
         let lc = px_off / 4;
         let blk = BLOCK_INDEX_TO_OFFSET
@@ -8118,6 +8582,8 @@ fn get_mv_neighbor_above_right(
     py_off: usize,
     px_off: usize,
     part_w: usize,
+    mb_slice_id: &[u16],
+    cur_slice_id: u16,
 ) -> Option<([i16; 2], i8)> {
     let mb_col = mb_idx % mb_width;
     let mb_row = mb_idx / mb_width;
@@ -8159,6 +8625,9 @@ fn get_mv_neighbor_above_right(
         // Above-right in the MB above (or above-right MB)
         if right_col < 16 {
             let above_mb = mb_idx - mb_width;
+            if mb_slice_id[above_mb] != cur_slice_id {
+                return None;
+            }
             let lr = 3;
             let lc = right_col / 4;
             let blk = BLOCK_INDEX_TO_OFFSET
@@ -8170,6 +8639,9 @@ fn get_mv_neighbor_above_right(
             ))
         } else if mb_col + 1 < mb_width {
             let above_right_mb = mb_idx - mb_width + 1;
+            if mb_slice_id[above_right_mb] != cur_slice_id {
+                return None;
+            }
             let blk = BLOCK_INDEX_TO_OFFSET
                 .iter()
                 .position(|&(br, bc)| br / 4 == 3 && bc / 4 == 0)?;
@@ -8193,6 +8665,8 @@ fn get_mv_neighbor_above_left(
     mb_width: usize,
     py_off: usize,
     px_off: usize,
+    mb_slice_id: &[u16],
+    cur_slice_id: u16,
 ) -> Option<([i16; 2], i8)> {
     let mb_col = mb_idx % mb_width;
     let mb_row = mb_idx / mb_width;
@@ -8210,6 +8684,9 @@ fn get_mv_neighbor_above_left(
     } else if py_off == 0 && px_off == 0 && mb_row > 0 && mb_col > 0 {
         // Above-left MB, bottom-right block
         let al_mb = mb_idx - mb_width - 1;
+        if mb_slice_id[al_mb] != cur_slice_id {
+            return None;
+        }
         let blk = BLOCK_INDEX_TO_OFFSET
             .iter()
             .position(|&(br, bc)| br / 4 == 3 && bc / 4 == 3)?;
@@ -8219,6 +8696,9 @@ fn get_mv_neighbor_above_left(
         ))
     } else if py_off == 0 && px_off > 0 && mb_row > 0 {
         let above_mb = mb_idx - mb_width;
+        if mb_slice_id[above_mb] != cur_slice_id {
+            return None;
+        }
         let lc = (px_off - 4) / 4;
         let blk = BLOCK_INDEX_TO_OFFSET
             .iter()
@@ -8229,6 +8709,9 @@ fn get_mv_neighbor_above_left(
         ))
     } else if py_off > 0 && px_off == 0 && mb_col > 0 {
         let left_mb = mb_idx - 1;
+        if mb_slice_id[left_mb] != cur_slice_id {
+            return None;
+        }
         let lr = (py_off - 4) / 4;
         let blk = BLOCK_INDEX_TO_OFFSET
             .iter()
@@ -8257,6 +8740,8 @@ fn cabac_amvd(
     py: usize,
     px: usize,
     comp: usize, // comp: 0=x, 1=y
+    mb_slice_id: &[u16],
+    cur_slice_id: u16,
 ) -> u32 {
     // Left neighbor
     let left_mvd = if px > 0 {
@@ -8270,13 +8755,17 @@ fn cabac_amvd(
             .unwrap_or(0)
     } else if !mb_idx.is_multiple_of(mb_width) {
         // Left MB: rightmost column, same row
-        let lr = py / 4;
-        let lc = 3; // col 12-15
-        BLOCK_INDEX_TO_OFFSET
-            .iter()
-            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-            .map(|blk| mvd_store[(mb_idx - 1) * 16 + blk][comp].unsigned_abs() as u32)
-            .unwrap_or(0)
+        if mb_slice_id[mb_idx - 1] != cur_slice_id {
+            0
+        } else {
+            let lr = py / 4;
+            let lc = 3; // col 12-15
+            BLOCK_INDEX_TO_OFFSET
+                .iter()
+                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                .map(|blk| mvd_store[(mb_idx - 1) * 16 + blk][comp].unsigned_abs() as u32)
+                .unwrap_or(0)
+        }
     } else {
         0
     };
@@ -8291,13 +8780,17 @@ fn cabac_amvd(
             .map(|blk| mvd_store[mb_idx * 16 + blk][comp].unsigned_abs() as u32)
             .unwrap_or(0)
     } else if mb_idx >= mb_width {
-        let lr = 3;
-        let lc = px / 4;
-        BLOCK_INDEX_TO_OFFSET
-            .iter()
-            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-            .map(|blk| mvd_store[(mb_idx - mb_width) * 16 + blk][comp].unsigned_abs() as u32)
-            .unwrap_or(0)
+        if mb_slice_id[mb_idx - mb_width] != cur_slice_id {
+            0
+        } else {
+            let lr = 3;
+            let lc = px / 4;
+            BLOCK_INDEX_TO_OFFSET
+                .iter()
+                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                .map(|blk| mvd_store[(mb_idx - mb_width) * 16 + blk][comp].unsigned_abs() as u32)
+                .unwrap_or(0)
+        }
     } else {
         0
     };
@@ -8313,6 +8806,8 @@ fn cabac_neighbor_ref(
     mb_width: usize,
     py: usize,
     px: usize,
+    mb_slice_id: &[u16],
+    cur_slice_id: u16,
 ) -> (i8, i8) {
     let left_ref = if px > 0 {
         let lr = py / 4;
@@ -8323,13 +8818,17 @@ fn cabac_neighbor_ref(
             .map(|blk| ref_idx_store[mb_idx * 16 + blk])
             .unwrap_or(-1)
     } else if !mb_idx.is_multiple_of(mb_width) {
-        let lr = py / 4;
-        let lc = 3;
-        BLOCK_INDEX_TO_OFFSET
-            .iter()
-            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-            .map(|blk| ref_idx_store[(mb_idx - 1) * 16 + blk])
-            .unwrap_or(-1)
+        if mb_slice_id[mb_idx - 1] != cur_slice_id {
+            -1
+        } else {
+            let lr = py / 4;
+            let lc = 3;
+            BLOCK_INDEX_TO_OFFSET
+                .iter()
+                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                .map(|blk| ref_idx_store[(mb_idx - 1) * 16 + blk])
+                .unwrap_or(-1)
+        }
     } else {
         -1
     };
@@ -8343,13 +8842,17 @@ fn cabac_neighbor_ref(
             .map(|blk| ref_idx_store[mb_idx * 16 + blk])
             .unwrap_or(-1)
     } else if mb_idx >= mb_width {
-        let lr = 3;
-        let lc = px / 4;
-        BLOCK_INDEX_TO_OFFSET
-            .iter()
-            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-            .map(|blk| ref_idx_store[(mb_idx - mb_width) * 16 + blk])
-            .unwrap_or(-1)
+        if mb_slice_id[mb_idx - mb_width] != cur_slice_id {
+            -1
+        } else {
+            let lr = 3;
+            let lc = px / 4;
+            BLOCK_INDEX_TO_OFFSET
+                .iter()
+                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                .map(|blk| ref_idx_store[(mb_idx - mb_width) * 16 + blk])
+                .unwrap_or(-1)
+        }
     } else {
         -1
     };
@@ -8364,6 +8867,8 @@ fn cabac_neighbor_nz_luma(
     blk: usize,
     is_left: bool,
     is_intra: bool,
+    mb_slice_id: &[u16],
+    cur_slice_id: u16,
 ) -> bool {
     // Neighbor block indices: within-MB (>=0) or cross-MB (negative, encoded as -(blk+1))
     #[rustfmt::skip]
@@ -8390,6 +8895,9 @@ fn cabac_neighbor_nz_luma(
             }
             mb_idx - mb_width
         };
+        if mb_slice_id[neighbor_mb] != cur_slice_id {
+            return is_intra;
+        }
         nc_luma[neighbor_mb * 16 + neighbor_blk] > 0
     }
 }
@@ -8402,6 +8910,8 @@ fn cabac_neighbor_nz_chroma(
     blk: usize,
     is_left: bool,
     is_intra: bool,
+    mb_slice_id: &[u16],
+    cur_slice_id: u16,
 ) -> bool {
     // Chroma block layout: 0=(0,0), 1=(0,4), 2=(4,0), 3=(4,4)
     // Left neighbors: blk0→left_mb blk1, blk1→blk0, blk2→left_mb blk3, blk3→blk2
@@ -8438,6 +8948,9 @@ fn cabac_neighbor_nz_chroma(
             }
             mb_idx - mb_width
         };
+        if mb_slice_id[neighbor_mb] != cur_slice_id {
+            return is_intra;
+        }
         nc_chroma[neighbor_mb * 4 + nb] > 0
     } else {
         false
@@ -8679,7 +9192,9 @@ mod tests {
                 frame = Some(f);
             }
         }
-        if let Some(f) = decoder.flush() { frame = Some(f); }
+        if let Some(f) = decoder.flush() {
+            frame = Some(f);
+        }
         let frame = frame.expect("should have decoded a frame");
 
         assert_eq!(frame.width, 16);
@@ -8714,7 +9229,9 @@ mod tests {
                 frame = Some(f);
             }
         }
-        if let Some(f) = decoder.flush() { frame = Some(f); }
+        if let Some(f) = decoder.flush() {
+            frame = Some(f);
+        }
         let frame = frame.expect("should have decoded a frame");
 
         assert_eq!(frame.width, 64);
@@ -8748,7 +9265,9 @@ mod tests {
                 frame = Some(f);
             }
         }
-        if let Some(f) = decoder.flush() { frame = Some(f); }
+        if let Some(f) = decoder.flush() {
+            frame = Some(f);
+        }
         let frame = frame.expect("should have decoded a frame");
 
         assert_eq!(frame.width, 16);
@@ -8777,7 +9296,9 @@ mod tests {
                 frame = Some(f);
             }
         }
-        if let Some(f) = decoder.flush() { frame = Some(f); }
+        if let Some(f) = decoder.flush() {
+            frame = Some(f);
+        }
         let frame = frame.expect("should have decoded a frame");
 
         assert_eq!(frame.width, 64);
@@ -8819,7 +9340,9 @@ mod tests {
                 frame = Some(f);
             }
         }
-        if let Some(f) = decoder.flush() { frame = Some(f); }
+        if let Some(f) = decoder.flush() {
+            frame = Some(f);
+        }
         let frame = frame.expect("should have decoded a frame");
 
         assert_eq!(frame.width, 64);
@@ -8849,7 +9372,9 @@ mod tests {
                 frame = Some(f);
             }
         }
-        if let Some(f) = decoder.flush() { frame = Some(f); }
+        if let Some(f) = decoder.flush() {
+            frame = Some(f);
+        }
         let frame = frame.expect("should have decoded a frame");
 
         assert_eq!(frame.width, expected_width);

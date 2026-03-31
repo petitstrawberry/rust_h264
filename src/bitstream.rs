@@ -12,7 +12,10 @@ pub struct BitstreamReader {
 }
 
 /// Number of zero bytes appended after RBSP data.
-const PADDING: usize = 8;
+/// Must be large enough that reading past the end during multi-slice
+/// end-of-slice detection doesn't cause index-out-of-bounds panics.
+/// 128 bytes = 1024 bits covers the worst case for any single MB decode.
+const PADDING: usize = 128;
 
 impl BitstreamReader {
     pub fn new(rbsp: &[u8]) -> Self {

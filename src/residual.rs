@@ -300,14 +300,10 @@ pub fn inverse_dct_8x8(block: &mut [i32; 64]) {
         let b4 = a2 - a4;
         let b6 = a0 - a6;
 
-        let a1 = -block[i + 3 * 8] + block[i + 5 * 8] - block[i + 7 * 8]
-            - (block[i + 7 * 8] >> 1);
-        let a3 =
-            block[i + 8] + block[i + 7 * 8] - block[i + 3 * 8] - (block[i + 3 * 8] >> 1);
-        let a5 =
-            -block[i + 8] + block[i + 7 * 8] + block[i + 5 * 8] + (block[i + 5 * 8] >> 1);
-        let a7 =
-            block[i + 3 * 8] + block[i + 5 * 8] + block[i + 8] + (block[i + 8] >> 1);
+        let a1 = -block[i + 3 * 8] + block[i + 5 * 8] - block[i + 7 * 8] - (block[i + 7 * 8] >> 1);
+        let a3 = block[i + 8] + block[i + 7 * 8] - block[i + 3 * 8] - (block[i + 3 * 8] >> 1);
+        let a5 = -block[i + 8] + block[i + 7 * 8] + block[i + 5 * 8] + (block[i + 5 * 8] >> 1);
+        let a7 = block[i + 3 * 8] + block[i + 5 * 8] + block[i + 8] + (block[i + 8] >> 1);
 
         let b1 = (a7 >> 2) + a1;
         let b3 = a3 + (a5 >> 2);

@@ -528,8 +528,7 @@ pub fn predict_intra_8x8(
                     } else if x < y {
                         let i = y - x - 1;
                         let p0 = if i == 0 { flt } else { fl[i - 1] };
-                        ((p0 + 2 * fl[i] + fl.get(i + 1).copied().unwrap_or(fl[7]) + 2) >> 2)
-                            as u8
+                        ((p0 + 2 * fl[i] + fl.get(i + 1).copied().unwrap_or(fl[7]) + 2) >> 2) as u8
                     } else {
                         ((fl[0] + 2 * flt + ft[0] + 2) >> 2) as u8
                     };

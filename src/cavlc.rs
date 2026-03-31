@@ -80,6 +80,9 @@ pub fn parse_residual_block_cavlc(
     let mut pos = (total_zeros as usize) + tc - 1;
 
     // Place highest-frequency coefficient at the highest scan position
+    if pos >= max_num_coeff {
+        return Err("CAVLC coefficient position out of range");
+    }
     coeffs[pos] = levels[0];
 
     // Place remaining coefficients toward DC, parsing run_before for each
