@@ -263,6 +263,7 @@ impl<'a> CabacReader<'a> {
     /// Returns the decoded bit (0 or 1) and updates the context state.
     #[inline]
     pub fn get_cabac(&mut self, state: &mut u8) -> u32 {
+
         let s = *state;
         let range_lps = lps_range_lookup(self.range, s);
 
@@ -295,6 +296,7 @@ impl<'a> CabacReader<'a> {
     /// Decode a bypass (equiprobable) bit — no context adaptation.
     #[inline]
     pub fn get_cabac_bypass(&mut self) -> u32 {
+
         self.low = self.low.wrapping_add(self.low);
         if self.low & CABAC_MASK == 0 {
             self.refill();
@@ -312,6 +314,7 @@ impl<'a> CabacReader<'a> {
     /// Returns +val or -val.
     #[inline]
     pub fn get_cabac_bypass_sign(&mut self, val: i32) -> i32 {
+
         self.low = self.low.wrapping_add(self.low);
         if self.low & CABAC_MASK == 0 {
             self.refill();
@@ -326,6 +329,7 @@ impl<'a> CabacReader<'a> {
     /// Decode the end-of-slice flag.
     /// Returns 0 if more data, non-zero (bytes consumed) at end of slice.
     pub fn get_cabac_terminate(&mut self) -> u32 {
+
         self.range -= 2;
         if self.low < self.range << (CABAC_BITS + 1) {
             // Renormalize once

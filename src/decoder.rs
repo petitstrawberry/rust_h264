@@ -357,7 +357,6 @@ impl Decoder {
                         true
                     };
                     let is_skip = cr.decode_mb_skip(st, left_skip, top_skip, is_b_slice);
-
                     if is_skip {
                         mb_skip[mb_idx] = true;
                         if is_p_slice {
@@ -1928,6 +1927,25 @@ impl Decoder {
                                     );
                                     *ref_entry = cr.decode_ref_idx(st, left_ref, top_ref);
                                 }
+                                // Write ref_idx to store immediately so the next
+                                // partition can see it as a neighbor.
+                                let (py_off, px_off) = match raw_mb_type {
+                                    1 => (p * 8, 0),
+                                    2 => (0, p * 8),
+                                    _ => (0, 0),
+                                };
+                                for r in (0..part_h).step_by(4) {
+                                    for c in (0..part_w).step_by(4) {
+                                        let lr = (py_off + r) / 4;
+                                        let lc = (px_off + c) / 4;
+                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                            .iter()
+                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                        {
+                                            ref_idx_store_l0[mb_idx * 16 + blk] = *ref_entry;
+                                        }
+                                    }
+                                }
                             }
                             for p in 0..num_parts {
                                 let (py_off, px_off) = match raw_mb_type {
@@ -1964,7 +1982,6 @@ impl Decoder {
                                     part_ref[p],
                                 );
                                 let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
-
                                 // Store MV, ref, and MVD
                                 for r in (0..part_h).step_by(4) {
                                     for c in (0..part_w).step_by(4) {
@@ -2091,7 +2108,6 @@ impl Decoder {
                         let top_cbp_c = ((top_cbp_raw >> 4) & 3) as u8;
                         let cbp_chroma = cr.decode_cbp_chroma(st, left_cbp_c, top_cbp_c);
                         mb_cbp[mb_idx] = (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
-
                         // 8x8 transform flag for inter MBs (CABAC context 399 + neighbor_transform_size)
                         let nts = {
                             let left = if mb_idx % mb_width as usize != 0 {
@@ -2120,7 +2136,6 @@ impl Decoder {
                             prev_mb_qp
                         };
                         prev_mb_qp = qp_y;
-
                         // Decode and add luma residual
                         if cbp_luma != 0 {
                             let mut luma_residual = [0i32; 256];
@@ -2173,7 +2188,8 @@ impl Decoder {
                                             false,
                                             false,
                                         );
-                                        if cr.decode_coded_block_flag(st, 2, left_nz, top_nz) {
+                                        let cbf = cr.decode_coded_block_flag(st, 2, left_nz, top_nz);
+                                        if cbf {
                                             let (coeffs, tc) = cr.decode_residual_cabac(st, 2, 16);
                                             nc_luma[mb_idx * 16 + blk] = tc;
                                             let mut block_coeffs = [0i32; 16];
@@ -2616,6 +2632,21 @@ impl Decoder {
                                         part_ref_l0[p] = 0;
                                     }
                                 }
+                                // Write L0 ref_idx immediately for neighbor context
+                                let (py_off, px_off) =
+                                    if part_h == 8 { (p * 8, 0) } else { (0, p * 8) };
+                                for r in (0..part_h).step_by(4) {
+                                    for c in (0..part_w).step_by(4) {
+                                        let lr = (py_off + r) / 4;
+                                        let lc = (px_off + c) / 4;
+                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                            .iter()
+                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                        {
+                                            ref_idx_store_l0[mb_idx * 16 + blk] = part_ref_l0[p];
+                                        }
+                                    }
+                                }
                             }
                             for p in 0..2 {
                                 if pred_flags[p].1 {
@@ -2632,6 +2663,21 @@ impl Decoder {
                                         part_ref_l1[p] = cr.decode_ref_idx(st, left_ref, top_ref);
                                     } else {
                                         part_ref_l1[p] = 0;
+                                    }
+                                }
+                                // Write L1 ref_idx immediately for neighbor context
+                                let (py_off, px_off) =
+                                    if part_h == 8 { (p * 8, 0) } else { (0, p * 8) };
+                                for r in (0..part_h).step_by(4) {
+                                    for c in (0..part_w).step_by(4) {
+                                        let lr = (py_off + r) / 4;
+                                        let lc = (px_off + c) / 4;
+                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                            .iter()
+                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                        {
+                                            ref_idx_store_l1[mb_idx * 16 + blk] = part_ref_l1[p];
+                                        }
                                     }
                                 }
                             }
@@ -8903,6 +8949,17 @@ mod tests {
         // + varied chroma (dc 6%, h 19%, v 38%, plane 38%).
         // Validates I8x8 chroma decode in the CABAC I-slice path.
         decode_multiframe_and_compare("cabac_i8x8_test", 1, 64, 64);
+    }
+
+    #[test]
+    #[ignore] // Known failure: CABAC multiref (ref>1) B-frames produce wrong output
+    fn test_cabac_multiref() {
+        // 64x64, 5 frames: CABAC Main profile with ref=2, bframes=1, me=hex,
+        // --no-deblock, --no-weightb, qp=26. Exercises CABAC B-frames with
+        // multi-reference. Currently fails: frames 3-4 have large diffs (max=225).
+        // ref=1 with same settings is byte-exact; the bug is specific to ref>1
+        // in CABAC B-slices.
+        decode_multiframe_and_compare("cabac_multiref_test", 5, 64, 64);
     }
 
     #[test]
