@@ -31,7 +31,7 @@ This is a Rust project using Cargo:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). Multi-reference (ref>1) with ref_pic_list_modification supported. All 39 test streams byte-exact against FFmpeg, including x264 `--preset medium` with and without deblocking (320x240, 60 frames, ref=4, bframes=3). Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). Multi-reference (ref>1) with ref_pic_list_modification supported. Multi-slice frames supported for both CABAC and CAVLC (I-frames and P-frames). All 44 test streams byte-exact against FFmpeg, including x264 `--preset medium` with and without deblocking (320x240, 60 frames, ref=4, bframes=3), and multi-slice streams with up to 4 slices per frame. Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
 
 ### Completed
 
@@ -138,11 +138,24 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   straight+swapped comparison.
 - Applied automatically after slice decode
 
+**Multi-Slice Frame Support** (`src/decoder.rs`)
+- `PictureState` accumulates decoded MBs across multiple slices of the same picture
+- Frame finalization (deblocking, DPB insert) on next picture's first slice or `flush()`
+- `mb_slice_id` array tracks which slice each MB belongs to
+- All CABAC neighbor context functions check slice boundaries (skip, mb_type, CBP,
+  chroma pred, 8x8dct, ref_idx, MVD, coded_block_flag)
+- Intra prediction sample availability gated on same-slice membership (spec 6.4.1):
+  cross-slice neighbors treated as unavailable for I4x4, I8x8, I16x16 luma and chroma
+  prediction in all code paths (CABAC I-slice, CABAC intra-in-P/B, CAVLC I-slice,
+  CAVLC intra-in-P/B)
+- CAVLC `compute_nc` checks slice boundaries for cross-MB nC derivation
+- CAVLC continuation slice error recovery: backup/restore of `PictureState`
+
 **Error Handling** (`src/error.rs`)
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (89 tests, all byte-exact against FFmpeg)
+**Test Coverage** (94 tests, all byte-exact against FFmpeg)
 - Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
   mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
   noise_16x16, scaling_test
@@ -168,6 +181,11 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   realworld_b_test (320x240 with B-frames),
   preset_medium (320x240, 60 frames, x264 --preset medium, no-deblock),
   preset_medium_deblock (same with deblocking ON)
+- Multi-slice: ms_cabac_i_test (32x32, 2-slice CABAC I-frame),
+  ms_cabac_i4_test (64x64, 4-slice CABAC I-frame),
+  ms_cavlc_i_test (32x32, 2-slice CAVLC I-frame),
+  ms_cavlc_p_test (64x64, 5-frame 4-slice CAVLC with P-frames),
+  ms_cabac_p_test (64x64, 5-frame 4-slice CABAC with P-frames)
 
 ### Not Yet Implemented
 
@@ -177,4 +195,3 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - SP/SI slice types (parsed but not decoded)
 - Slice groups / FMO (returns error)
 - `constrained_intra_pred_flag`
-- Multi-slice frames

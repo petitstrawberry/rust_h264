@@ -937,6 +937,18 @@ impl Decoder {
                             ref_idx_store_l1[mb_idx * 16 + blk] = -1;
                         }
 
+                        // Cross-slice intra prediction: neighbors from other slices unavailable (spec 6.4.1)
+                        let above_mb_avail = mb_idx >= mb_width as usize
+                            && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id;
+                        let left_mb_avail = mb_idx % mb_width as usize != 0
+                            && mb_slice_id[mb_idx - 1] == this_slice_id;
+                        let above_left_mb_avail = mb_idx >= mb_width as usize
+                            && mb_idx % mb_width as usize != 0
+                            && mb_slice_id[mb_idx - mb_width as usize - 1] == this_slice_id;
+                        let above_right_mb_avail = mb_idx >= mb_width as usize
+                            && (mb_idx % mb_width as usize) + 1 < mb_width as usize
+                            && mb_slice_id[mb_idx - mb_width as usize + 1] == this_slice_id;
+
                         if i_mb_type == 0 {
                             // I4x4/I8x8 in P/B
                             let nts = {
@@ -980,9 +992,6 @@ impl Decoder {
                                     pred_modes[blk] = mode;
                                     i4x4_modes[mb_idx * 16 + blk] = mode;
                                 }
-                            }
-                            if mb_idx == 2 {
-                                eprintln!("MB2 pred_modes: {:?}", pred_modes);
                             }
                             let left_cm = if !mb_idx.is_multiple_of(mb_width as usize)
                                 && mb_slice_id[mb_idx - 1] == this_slice_id
@@ -1072,13 +1081,21 @@ impl Decoder {
                                     let col_off = (i8x8 % 2) * 8;
                                     let px = mb_x + col_off;
                                     let py = mb_y + row_off;
-                                    let above_buf: Option<[u8; 16]> = if py > 0 {
+                                    let above_avail_8 = py > 0
+                                        && (row_off > 0 || above_mb_avail);
+                                    let above_buf: Option<[u8; 16]> = if above_avail_8 {
                                         let mut buf = [0u8; 16];
                                         for (i, b) in buf.iter_mut().enumerate().take(8) {
                                             *b = frame.y[(py - 1) * stride + px + i];
                                         }
                                         let has_tr = if row_off == 0 {
-                                            px + 8 < stride
+                                            if px + 8 < (mb_x + 16).min(stride) {
+                                                true
+                                            } else if px + 8 < stride {
+                                                above_right_mb_avail
+                                            } else {
+                                                false
+                                            }
                                         } else {
                                             col_off == 0
                                         };
@@ -1095,7 +1112,9 @@ impl Decoder {
                                     } else {
                                         None
                                     };
-                                    let left_buf: Option<[u8; 8]> = if px > 0 {
+                                    let left_avail_8 = px > 0
+                                        && (col_off > 0 || left_mb_avail);
+                                    let left_buf: Option<[u8; 8]> = if left_avail_8 {
                                         let mut buf = [0u8; 8];
                                         for (i, b) in buf.iter_mut().enumerate() {
                                             *b = frame.y[(py + i) * stride + px - 1];
@@ -1104,7 +1123,13 @@ impl Decoder {
                                     } else {
                                         None
                                     };
-                                    let al = if px > 0 && py > 0 {
+                                    let al_avail_8 = px > 0 && py > 0 && (
+                                        (row_off > 0 && col_off > 0) ||
+                                        (row_off > 0 && col_off == 0 && left_mb_avail) ||
+                                        (row_off == 0 && col_off > 0 && above_mb_avail) ||
+                                        (row_off == 0 && col_off == 0 && above_left_mb_avail)
+                                    );
+                                    let al = if al_avail_8 {
                                         Some(frame.y[(py - 1) * stride + px - 1])
                                     } else {
                                         None
@@ -1175,14 +1200,23 @@ impl Decoder {
                                     }
                                     inverse_dct_4x4(&mut block_coeffs);
 
-                                    let above_buf: Option<[u8; 8]> = if py > 0 {
+                                    let local_row = py - mb_y;
+                                    let local_col = px - mb_x;
+                                    let above_avail = py > 0
+                                        && (local_row > 0 || above_mb_avail);
+                                    let above_buf: Option<[u8; 8]> = if above_avail {
                                         let mut buf = [0u8; 8];
                                         for (i, b) in buf.iter_mut().enumerate().take(4) {
                                             *b = frame.y[(py - 1) * stride + px + i];
                                         }
-                                        let local_row = py - mb_y;
                                         let topright_avail = if local_row == 0 {
-                                            px + 4 < stride
+                                            if px + 4 < (mb_x + 16).min(stride) {
+                                                true
+                                            } else if px + 4 < stride {
+                                                above_right_mb_avail
+                                            } else {
+                                                false
+                                            }
                                         } else {
                                             !matches!(blk, 3 | 7 | 11 | 13 | 15)
                                         };
@@ -1199,7 +1233,9 @@ impl Decoder {
                                     } else {
                                         None
                                     };
-                                    let left_buf: Option<[u8; 4]> = if px > 0 {
+                                    let left_avail = px > 0
+                                        && (local_col > 0 || left_mb_avail);
+                                    let left_buf: Option<[u8; 4]> = if left_avail {
                                         let mut buf = [0u8; 4];
                                         for (i, b) in buf.iter_mut().enumerate() {
                                             *b = frame.y[(py + i) * stride + px - 1];
@@ -1208,7 +1244,13 @@ impl Decoder {
                                     } else {
                                         None
                                     };
-                                    let above_left_val = if px > 0 && py > 0 {
+                                    let al_avail = px > 0 && py > 0 && (
+                                        (local_row > 0 && local_col > 0) ||
+                                        (local_row > 0 && local_col == 0 && left_mb_avail) ||
+                                        (local_row == 0 && local_col > 0 && above_mb_avail) ||
+                                        (local_row == 0 && local_col == 0 && above_left_mb_avail)
+                                    );
+                                    let above_left_val = if al_avail {
                                         Some(frame.y[(py - 1) * stride + px - 1])
                                     } else {
                                         None
@@ -1238,7 +1280,7 @@ impl Decoder {
                             let chroma_mb_x = mb_x / 2;
                             let chroma_mb_y = mb_y / 2;
 
-                            let above_cu = if mb_y > 0 {
+                            let above_cu = if mb_y > 0 && above_mb_avail {
                                 let mut buf = [0u8; 8];
                                 buf.copy_from_slice(
                                     &frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
@@ -1248,7 +1290,7 @@ impl Decoder {
                             } else {
                                 None
                             };
-                            let left_cu = if mb_x > 0 {
+                            let left_cu = if mb_x > 0 && left_mb_avail {
                                 let mut buf = [0u8; 8];
                                 for (i, b) in buf.iter_mut().enumerate() {
                                     *b =
@@ -1258,13 +1300,13 @@ impl Decoder {
                             } else {
                                 None
                             };
-                            let above_left_u = if mb_x > 0 && mb_y > 0 {
+                            let above_left_u = if mb_x > 0 && mb_y > 0 && above_left_mb_avail {
                                 Some(frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
                             } else {
                                 None
                             };
 
-                            let above_cv = if mb_y > 0 {
+                            let above_cv = if mb_y > 0 && above_mb_avail {
                                 let mut buf = [0u8; 8];
                                 buf.copy_from_slice(
                                     &frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
@@ -1274,7 +1316,7 @@ impl Decoder {
                             } else {
                                 None
                             };
-                            let left_cv = if mb_x > 0 {
+                            let left_cv = if mb_x > 0 && left_mb_avail {
                                 let mut buf = [0u8; 8];
                                 for (i, b) in buf.iter_mut().enumerate() {
                                     *b =
@@ -1284,7 +1326,7 @@ impl Decoder {
                             } else {
                                 None
                             };
-                            let above_left_v = if mb_x > 0 && mb_y > 0 {
+                            let above_left_v = if mb_x > 0 && mb_y > 0 && above_left_mb_avail {
                                 Some(frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
                             } else {
                                 None
@@ -1619,7 +1661,7 @@ impl Decoder {
 
                             // I16x16 prediction
                             let mut luma_pred = [0u8; 256];
-                            let above: Option<Vec<u8>> = if mb_y > 0 {
+                            let above: Option<Vec<u8>> = if mb_y > 0 && above_mb_avail {
                                 Some(
                                     (0..16)
                                         .map(|x| frame.y[(mb_y - 1) * stride + mb_x + x])
@@ -1628,7 +1670,7 @@ impl Decoder {
                             } else {
                                 None
                             };
-                            let left: Option<Vec<u8>> = if mb_x > 0 {
+                            let left: Option<Vec<u8>> = if mb_x > 0 && left_mb_avail {
                                 Some(
                                     (0..16)
                                         .map(|y| frame.y[(mb_y + y) * stride + mb_x - 1])
@@ -1637,7 +1679,7 @@ impl Decoder {
                             } else {
                                 None
                             };
-                            let above_left = if mb_x > 0 && mb_y > 0 {
+                            let above_left = if mb_x > 0 && mb_y > 0 && above_left_mb_avail {
                                 Some(frame.y[(mb_y - 1) * stride + mb_x - 1])
                             } else {
                                 None
@@ -1664,7 +1706,7 @@ impl Decoder {
                             let chroma_mb_x = mb_x / 2;
                             let chroma_mb_y = mb_y / 2;
 
-                            let above_chroma_u = if mb_y > 0 {
+                            let above_chroma_u = if mb_y > 0 && above_mb_avail {
                                 let mut buf = [0u8; 8];
                                 buf.copy_from_slice(
                                     &frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
@@ -1674,7 +1716,7 @@ impl Decoder {
                             } else {
                                 None
                             };
-                            let left_chroma_u = if mb_x > 0 {
+                            let left_chroma_u = if mb_x > 0 && left_mb_avail {
                                 let mut buf = [0u8; 8];
                                 for (i, b) in buf.iter_mut().enumerate() {
                                     *b =
@@ -1684,12 +1726,12 @@ impl Decoder {
                             } else {
                                 None
                             };
-                            let above_left_u = if mb_x > 0 && mb_y > 0 {
+                            let above_left_u = if mb_x > 0 && mb_y > 0 && above_left_mb_avail {
                                 Some(frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
                             } else {
                                 None
                             };
-                            let above_chroma_v = if mb_y > 0 {
+                            let above_chroma_v = if mb_y > 0 && above_mb_avail {
                                 let mut buf = [0u8; 8];
                                 buf.copy_from_slice(
                                     &frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
@@ -1699,7 +1741,7 @@ impl Decoder {
                             } else {
                                 None
                             };
-                            let left_chroma_v = if mb_x > 0 {
+                            let left_chroma_v = if mb_x > 0 && left_mb_avail {
                                 let mut buf = [0u8; 8];
                                 for (i, b) in buf.iter_mut().enumerate() {
                                     *b =
@@ -1709,7 +1751,7 @@ impl Decoder {
                             } else {
                                 None
                             };
-                            let above_left_v = if mb_x > 0 && mb_y > 0 {
+                            let above_left_v = if mb_x > 0 && mb_y > 0 && above_left_mb_avail {
                                 Some(frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
                             } else {
                                 None
@@ -9908,5 +9950,21 @@ mod tests {
         // 32x32, 1 frame, 2 slices (1 MB row each): CAVLC Baseline profile I-frame.
         // Tests cross-slice nC computation and intra prediction for CAVLC.
         decode_and_compare("ms_cavlc_i_test", 32, 32);
+    }
+
+    #[test]
+    fn test_multislice_cavlc_p() {
+        // 64x64, 5 frames (IDR + 4 P), 4 slices per frame: CAVLC Main profile.
+        // Tests multi-slice P-frame decode with cross-slice intra prediction
+        // and nC boundary handling across both I and P slices.
+        decode_multiframe_and_compare("ms_cavlc_p_test", 5, 64, 64);
+    }
+
+    #[test]
+    fn test_multislice_cabac_p() {
+        // 64x64, 5 frames (IDR + 4 P), 4 slices per frame: CABAC Main profile,
+        // no deblocking. Tests multi-slice P-frame CABAC decode with cross-slice
+        // intra prediction and CABAC neighbor context boundary handling.
+        decode_multiframe_and_compare("ms_cabac_p_test", 5, 64, 64);
     }
 }
