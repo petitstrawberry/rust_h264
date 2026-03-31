@@ -1723,6 +1723,20 @@ impl Decoder {
                                         );
                                         *sr = cr.decode_ref_idx(st, left_ref, top_ref);
                                     }
+                                    // Write ref_idx immediately for neighbor context
+                                    let (sy, sx) = sub_mb_origins[smb];
+                                    for r in (0..8).step_by(4) {
+                                        for c in (0..8).step_by(4) {
+                                            let lr = (sy + r) / 4;
+                                            let lc = (sx + c) / 4;
+                                            if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                                .iter()
+                                                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                            {
+                                                ref_idx_store_l0[mb_idx * 16 + blk] = *sr;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             // Parse MVDs and reconstruct
@@ -2874,43 +2888,75 @@ impl Decoder {
                             let mut sub_ref_l1 = [-1i8; 4];
                             for smb in 0..4 {
                                 if sub_mb_types[smb] == 0 {
-                                    continue;
+                                    // B_Direct_8x8: don't decode ref, keep -1
+                                } else {
+                                    let (_, _, pl0, _) = B_SUB_TABLE[sub_mb_types[smb] as usize];
+                                    if pl0 {
+                                        if header.num_ref_idx_l0_active > 1 {
+                                            let (sy, sx) = sub_mb_origins[smb];
+                                            let (left_ref, top_ref) = cabac_neighbor_ref(
+                                                &ref_idx_store_l0,
+                                                mb_idx,
+                                                mb_width as usize,
+                                                sy,
+                                                sx,
+                                            );
+                                            sub_ref_l0[smb] =
+                                                cr.decode_ref_idx(st, left_ref, top_ref);
+                                        } else {
+                                            sub_ref_l0[smb] = 0;
+                                        }
+                                    }
                                 }
-                                let (_, _, pl0, _) = B_SUB_TABLE[sub_mb_types[smb] as usize];
-                                if pl0 {
-                                    if header.num_ref_idx_l0_active > 1 {
-                                        let (sy, sx) = sub_mb_origins[smb];
-                                        let (left_ref, top_ref) = cabac_neighbor_ref(
-                                            &ref_idx_store_l0,
-                                            mb_idx,
-                                            mb_width as usize,
-                                            sy,
-                                            sx,
-                                        );
-                                        sub_ref_l0[smb] = cr.decode_ref_idx(st, left_ref, top_ref);
-                                    } else {
-                                        sub_ref_l0[smb] = 0;
+                                // Write L0 ref_idx immediately for neighbor context
+                                let (sy, sx) = sub_mb_origins[smb];
+                                for r in (0..8).step_by(4) {
+                                    for c in (0..8).step_by(4) {
+                                        let lr = (sy + r) / 4;
+                                        let lc = (sx + c) / 4;
+                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                            .iter()
+                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                        {
+                                            ref_idx_store_l0[mb_idx * 16 + blk] = sub_ref_l0[smb];
+                                        }
                                     }
                                 }
                             }
                             for smb in 0..4 {
                                 if sub_mb_types[smb] == 0 {
-                                    continue;
+                                    // B_Direct_8x8: don't decode ref
+                                } else {
+                                    let (_, _, _, pl1) = B_SUB_TABLE[sub_mb_types[smb] as usize];
+                                    if pl1 {
+                                        if header.num_ref_idx_l1_active > 1 {
+                                            let (sy, sx) = sub_mb_origins[smb];
+                                            let (left_ref, top_ref) = cabac_neighbor_ref(
+                                                &ref_idx_store_l1,
+                                                mb_idx,
+                                                mb_width as usize,
+                                                sy,
+                                                sx,
+                                            );
+                                            sub_ref_l1[smb] =
+                                                cr.decode_ref_idx(st, left_ref, top_ref);
+                                        } else {
+                                            sub_ref_l1[smb] = 0;
+                                        }
+                                    }
                                 }
-                                let (_, _, _, pl1) = B_SUB_TABLE[sub_mb_types[smb] as usize];
-                                if pl1 {
-                                    if header.num_ref_idx_l1_active > 1 {
-                                        let (sy, sx) = sub_mb_origins[smb];
-                                        let (left_ref, top_ref) = cabac_neighbor_ref(
-                                            &ref_idx_store_l1,
-                                            mb_idx,
-                                            mb_width as usize,
-                                            sy,
-                                            sx,
-                                        );
-                                        sub_ref_l1[smb] = cr.decode_ref_idx(st, left_ref, top_ref);
-                                    } else {
-                                        sub_ref_l1[smb] = 0;
+                                // Write L1 ref_idx immediately for neighbor context
+                                let (sy, sx) = sub_mb_origins[smb];
+                                for r in (0..8).step_by(4) {
+                                    for c in (0..8).step_by(4) {
+                                        let lr = (sy + r) / 4;
+                                        let lc = (sx + c) / 4;
+                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                            .iter()
+                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                        {
+                                            ref_idx_store_l1[mb_idx * 16 + blk] = sub_ref_l1[smb];
+                                        }
                                     }
                                 }
                             }
@@ -8957,6 +9003,15 @@ mod tests {
         // --no-deblock, --no-weightb, qp=26. Exercises CABAC multiref with
         // ref_pic_list_modification and P_L0_L0_16x8 partitions using ref_idx>0.
         decode_multiframe_and_compare("cabac_multiref_test", 5, 64, 64);
+    }
+
+    #[test]
+    fn test_preset_medium() {
+        // 320x240, 60 frames: x264 --preset medium --profile main --no-deblock.
+        // CABAC, ref=4, bframes=3, subme=7, me=hex, all partitions.
+        // Exercises P_8x8 sub-partitions with multiref, B 16x8/8x16,
+        // ref_pic_list_modification, and hierarchical B-frames.
+        decode_multiframe_and_compare("preset_medium", 60, 320, 240);
     }
 
     #[test]
