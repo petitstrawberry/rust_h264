@@ -7269,10 +7269,16 @@ impl Decoder {
                 info.mv_l1[blk] = mv_store_l1[base + blk];
                 info.ref_idx_l1[blk] = ref_idx_store_l1[base + blk];
                 info.nnz[blk] = nc_luma[base + blk] > 0;
-                // Store reference picture POC for cross-list deblock comparison
+                // Store reference picture POC for deblock comparison.
+                // For P-slices, use ref_pic_list; for B-slices, use _ref_pic_list_l0.
                 let ri_l0 = ref_idx_store_l0[base + blk];
                 info.ref_poc_l0[blk] = if ri_l0 >= 0 {
-                    _ref_pic_list_l0
+                    let l0_list = if is_p_slice {
+                        &ref_pic_list
+                    } else {
+                        &_ref_pic_list_l0
+                    };
+                    l0_list
                         .get(ri_l0 as usize)
                         .map(|p| p.pic_order_cnt)
                         .unwrap_or(-1)
@@ -9012,6 +9018,13 @@ mod tests {
         // Exercises P_8x8 sub-partitions with multiref, B 16x8/8x16,
         // ref_pic_list_modification, and hierarchical B-frames.
         decode_multiframe_and_compare("preset_medium", 60, 320, 240);
+    }
+
+    #[test]
+    fn test_preset_medium_deblock() {
+        // 320x240, 60 frames: x264 --preset medium --profile main (deblocking ON).
+        // Full pipeline: CABAC, ref=4, bframes=3, all partitions, deblocking.
+        decode_multiframe_and_compare("preset_medium_deblock", 60, 320, 240);
     }
 
     #[test]

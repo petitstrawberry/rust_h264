@@ -360,12 +360,21 @@ fn check_mv_diff(mb_p: &MbInfo, mb_q: &MbInfo, blk_p: usize, blk_q: usize) -> bo
     let list_count = mb_p.list_count.max(mb_q.list_count);
 
     if list_count <= 1 {
-        // P-slice: single list comparison
-        if mb_p.ref_idx_l0[blk_p] != mb_q.ref_idx_l0[blk_q] {
+        // P-slice: single list comparison by picture identity (POC).
+        // With ref_pic_list_modification, different ref_idx values can map
+        // to the same reference picture (e.g., [POC4, POC4, POC0]).
+        let rp = mb_p.ref_idx_l0[blk_p];
+        let rq = mb_q.ref_idx_l0[blk_q];
+        if rp < 0 && rq < 0 {
+            return false; // both unused
+        }
+        if (rp < 0) != (rq < 0) {
+            return true; // one used, one not
+        }
+        if mb_p.ref_poc_l0[blk_p] != mb_q.ref_poc_l0[blk_q] {
             return true;
         }
-        // Only check MV if both refs are valid
-        if mb_p.ref_idx_l0[blk_p] >= 0 && mv_diff_ge4(mb_p.mv_l0[blk_p], mb_q.mv_l0[blk_q]) {
+        if mv_diff_ge4(mb_p.mv_l0[blk_p], mb_q.mv_l0[blk_q]) {
             return true;
         }
         return false;

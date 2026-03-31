@@ -31,7 +31,7 @@ This is a Rust project using Cargo:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). Multi-reference (ref>1) with ref_pic_list_modification supported. All 38 test streams byte-exact against FFmpeg, including x264 `--preset medium` (320x240, 60 frames, ref=4, bframes=3). Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). Multi-reference (ref>1) with ref_pic_list_modification supported. All 39 test streams byte-exact against FFmpeg, including x264 `--preset medium` with and without deblocking (320x240, 60 frames, ref=4, bframes=3). Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
 
 ### Completed
 
@@ -142,7 +142,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (88 tests, all byte-exact against FFmpeg)
+**Test Coverage** (89 tests, all byte-exact against FFmpeg)
 - Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
   mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
   noise_16x16, scaling_test
@@ -166,7 +166,8 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - High profile: high_profile_test (320x240 CAVLC, 8x8 intra+inter)
 - Real-world: realworld_test (320x240 P-only),
   realworld_b_test (320x240 with B-frames),
-  preset_medium (320x240, 60 frames, x264 --preset medium, ref=4, bframes=3)
+  preset_medium (320x240, 60 frames, x264 --preset medium, no-deblock),
+  preset_medium_deblock (same with deblocking ON)
 
 ### Not Yet Implemented
 
