@@ -660,6 +660,7 @@ impl Decoder {
                                             blk,
                                             &mb_slice_id,
                                             this_slice_id,
+                                            sps.direct_8x8_inference_flag,
                                         );
                                     mv_store_l0[mb_idx * 16 + blk] = mv_l0;
                                     ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
@@ -2825,6 +2826,7 @@ impl Decoder {
                                             blk,
                                             &mb_slice_id,
                                             this_slice_id,
+                                            sps.direct_8x8_inference_flag,
                                         );
                                     mv_store_l0[mb_idx * 16 + blk] = mv_l0;
                                     ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
@@ -3461,6 +3463,7 @@ impl Decoder {
                                                         blk,
                                                         &mb_slice_id,
                                                         this_slice_id,
+                                                        sps.direct_8x8_inference_flag,
                                                     )
                                                 } else {
                                                     let col_pic = &_ref_pic_list_l1[0];
@@ -5436,6 +5439,7 @@ impl Decoder {
                                     blk,
                                     &mb_slice_id,
                                     this_slice_id,
+                                    sps.direct_8x8_inference_flag,
                                 );
                                 mv_store_l0[mb_idx * 16 + blk] = mv_l0;
                                 ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
@@ -5921,6 +5925,7 @@ impl Decoder {
                                     blk,
                                     &mb_slice_id,
                                     this_slice_id,
+                                    sps.direct_8x8_inference_flag,
                                 );
                                 mv_store_l0[mb_idx * 16 + blk] = mv_l0;
                                 ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
@@ -6393,6 +6398,7 @@ impl Decoder {
                                                         blk,
                                                         &mb_slice_id,
                                                         this_slice_id,
+                                                        sps.direct_8x8_inference_flag,
                                                     )
                                                 } else {
                                                     let col_pic = &_ref_pic_list_l1[0];
@@ -8336,6 +8342,7 @@ fn derive_spatial_direct_blk(
     col_blk: usize,
     mb_slice_id: &[u16],
     cur_slice_id: u16,
+    direct_8x8_inference_flag: bool,
 ) -> ([i16; 2], [i16; 2], i8, i8, bool, bool) {
     let mut ref_idx = [-1i8; 2];
     let mut mv = [[0i16; 2]; 2];
@@ -8463,8 +8470,16 @@ fn derive_spatial_direct_blk(
     // Co-located zero-MV refinement (spec 8.4.1.2.2):
     // If the co-located block in L1[0] has near-zero MV with ref_idx=0,
     // zero out spatial MVs for lists where ref_idx == 0.
+    // When direct_8x8_inference_flag is set, use the representative 4x4 block
+    // per 8x8 group (same mapping as temporal direct).
     if let Some(col) = col_pic {
-        let col_pos = mb_idx * 16 + col_blk;
+        let effective_blk = if direct_8x8_inference_flag {
+            const INFERENCE_MAP: [usize; 4] = [0, 5, 10, 15];
+            INFERENCE_MAP[col_blk / 4]
+        } else {
+            col_blk
+        };
+        let col_pos = mb_idx * 16 + effective_blk;
         if col_pos < col.ref_idx_l0.len() && !col.is_intra {
             let col_ref = col.ref_idx_l0[col_pos];
             let col_mv = if col_pos < col.mv_l0.len() {
@@ -10085,5 +10100,14 @@ mod tests {
         // must be read from the representative 4x4 block per 8x8 group, not from
         // each individual 4x4 block.
         decode_multiframe_and_compare("b_temporal_direct_test", 4, 64, 64);
+    }
+
+    #[test]
+    fn test_high_b_slower() {
+        // 64x64, 10 frames: High profile, preset slower, ref=2, bframes=2,
+        // 8x8dct, no-deblock. Tests direct_8x8_inference_flag in BOTH temporal
+        // and spatial direct modes, noSubMbPartSizeLessThan8x8Flag for
+        // transform_size_8x8_flag, and B_8x8 with sub-partition types.
+        decode_multiframe_and_compare("high_b_slower_test", 10, 64, 64);
     }
 }
