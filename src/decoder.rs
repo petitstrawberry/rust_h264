@@ -28,6 +28,7 @@ use crate::residual::{
     ZIGZAG_8X8_CAVLC,
 };
 use crate::slice::{parse_slice_header, SliceType};
+use crate::slice_context::SliceContext;
 use crate::sps::{parse_sps, Sps};
 
 /// A decoded YUV 4:2:0 frame.
@@ -498,15 +499,15 @@ impl Decoder {
             mb_height: _ps_mb_height,
         } = ps;
 
-        // Each slice reinitializes its own QP from the slice header
-        let mut prev_mb_qp = slice_qp;
-        let mut last_qp_delta_nonzero = false;
-
         // Increment slice ID for continuation slices so boundary checks work
         if is_continuation {
             current_slice_id += 1;
         }
         let this_slice_id = current_slice_id;
+
+        // Each slice reinitializes its own QP from the slice header
+        let mut prev_mb_qp = slice_qp;
+        let mut last_qp_delta_nonzero = false;
 
         // CABAC or CAVLC?
         let use_cabac = pps.entropy_coding_mode_flag;
@@ -8186,6 +8187,41 @@ impl Decoder {
                 ref_poc_store_l0[i] = l0_list[ri as usize].pic_order_cnt;
             }
         }
+
+        // Validate SliceContext struct matches the local variables.
+        // In Phase 2, the MB loop body will move into methods on SliceContext.
+        let _ctx = SliceContext {
+            frame: &mut frame,
+            stride: width as usize,
+            width,
+            height,
+            mb_width,
+            nc_luma: &mut nc_luma,
+            nc_cb: &mut nc_cb,
+            nc_cr: &mut nc_cr,
+            mv_store_l0: &mut mv_store_l0,
+            mv_store_l1: &mut mv_store_l1,
+            ref_idx_store_l0: &mut ref_idx_store_l0,
+            ref_poc_store_l0: &mut ref_poc_store_l0,
+            ref_idx_store_l1: &mut ref_idx_store_l1,
+            mvd_store: &mut mvd_store,
+            mvd_store_l1: &mut mvd_store_l1,
+            mb_info: &mut mb_info,
+            i4x4_modes: &mut i4x4_modes,
+            mb_cbp: &mut mb_cbp,
+            mb_chroma_pred: &mut mb_chroma_pred,
+            mb_is_8x8dct: &mut mb_is_8x8dct,
+            mb_skip: &mut mb_skip,
+            mb_is_direct: &mut mb_is_direct,
+            is_i16x16: &mut is_i16x16,
+            mb_slice_id: &mut mb_slice_id,
+            this_slice_id,
+            prev_mb_qp,
+            last_qp_delta_nonzero,
+        };
+        // Release borrows so fields can be moved into PictureState
+        #[allow(clippy::drop_non_drop)]
+        drop(_ctx);
 
         // Store state back into pending PictureState.
         // Deblocking and DPB insertion happen in finalize_pending().

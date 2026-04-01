@@ -15,4 +15,5 @@ pub mod pps;
 pub mod residual;
 pub mod sei;
 pub mod slice;
+mod slice_context;
 pub mod sps;
