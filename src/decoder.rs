@@ -49,6 +49,7 @@ struct PictureState {
     mv_store_l0: Vec<[i16; 2]>,
     mv_store_l1: Vec<[i16; 2]>,
     ref_idx_store_l0: Vec<i8>,
+    ref_poc_store_l0: Vec<i32>,
     ref_idx_store_l1: Vec<i8>,
     mvd_store: Vec<[i16; 2]>,
     mvd_store_l1: Vec<[i16; 2]>,
@@ -224,6 +225,7 @@ impl Decoder {
             pic_order_cnt: ps.poc,
             mv_l0: ps.mv_store_l0,
             ref_idx_l0: ps.ref_idx_store_l0,
+            ref_poc_l0: ps.ref_poc_store_l0,
             mb_width: ps.mb_width,
             is_intra: ps.is_intra_slice,
         });
@@ -410,6 +412,7 @@ impl Decoder {
                 mv_store_l0: vec![[0i16; 2]; total_mbs * 16],
                 mv_store_l1: vec![[0i16; 2]; total_mbs * 16],
                 ref_idx_store_l0: vec![-1i8; total_mbs * 16],
+                ref_poc_store_l0: vec![-1i32; total_mbs * 16],
                 ref_idx_store_l1: vec![-1i8; total_mbs * 16],
                 mvd_store: vec![[0i16; 2]; total_mbs * 16],
                 mvd_store_l1: vec![[0i16; 2]; total_mbs * 16],
@@ -449,6 +452,7 @@ impl Decoder {
             mut mv_store_l0,
             mut mv_store_l1,
             mut ref_idx_store_l0,
+            mut ref_poc_store_l0,
             mut ref_idx_store_l1,
             mut mvd_store,
             mut mvd_store_l1,
@@ -7925,6 +7929,20 @@ impl Decoder {
             }
         }
 
+        // Build per-block ref POC table for temporal direct mode (spec 8.4.1.2.3).
+        // Maps each block's ref_idx_l0 to the POC of the referenced picture.
+        let l0_list = if is_p_slice {
+            &ref_pic_list
+        } else {
+            &_ref_pic_list_l0
+        };
+        for i in 0..ref_poc_store_l0.len() {
+            let ri = ref_idx_store_l0[i];
+            if ri >= 0 && (ri as usize) < l0_list.len() {
+                ref_poc_store_l0[i] = l0_list[ri as usize].pic_order_cnt;
+            }
+        }
+
         // Store state back into pending PictureState.
         // Deblocking and DPB insertion happen in finalize_pending().
         self.pending = Some(PictureState {
@@ -7939,6 +7957,7 @@ impl Decoder {
             mv_store_l0,
             mv_store_l1,
             ref_idx_store_l0,
+            ref_poc_store_l0,
             ref_idx_store_l1,
             mvd_store,
             mvd_store_l1,
@@ -8447,14 +8466,15 @@ fn derive_temporal_direct_blk(
     let col_mv = col_pic.mv_l0[col_base + blk];
     let col_ref_idx = col_pic.ref_idx_l0[col_base + blk];
 
-    // Map co-located ref_idx to current L0 ref_idx by matching POC
-    // For simplicity: assume col_ref_idx maps to the same index in current L0
-    // (correct when ref lists have same ordering, which is common)
-    let ref0 = if (col_ref_idx as usize) < ref_pic_list_l0.len() {
-        col_ref_idx as usize
-    } else {
-        0
-    };
+    // Map co-located ref_idx to current L0 ref_idx by matching POC (spec 8.4.1.2.3).
+    // Look up the POC that the co-located picture referenced at col_ref_idx.
+    let col_ref_poc_val = col_pic.ref_poc_l0[col_base + blk];
+
+    // Find the entry in our current L0 list with the matching POC.
+    let ref0 = ref_pic_list_l0
+        .iter()
+        .position(|p| p.pic_order_cnt == col_ref_poc_val)
+        .unwrap_or(0);
     let poc0 = ref_pic_list_l0
         .get(ref0)
         .map(|p| p.pic_order_cnt)
@@ -9966,5 +9986,13 @@ mod tests {
         // no deblocking. Tests multi-slice P-frame CABAC decode with cross-slice
         // intra prediction and CABAC neighbor context boundary handling.
         decode_multiframe_and_compare("ms_cabac_p_test", 5, 64, 64);
+    }
+
+    #[test]
+    fn test_multislice_cabac_b() {
+        // 64x64, 4 frames (IDR + B + B + P), 4 slices per frame: CABAC Main profile,
+        // no deblocking, temporal+spatial direct, B_8x8 sub-partitions.
+        // Tests multi-slice B-frame decode with cross-slice boundary handling.
+        decode_multiframe_and_compare("ms_cabac_b_test", 4, 64, 64);
     }
 }

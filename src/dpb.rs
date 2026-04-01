@@ -32,6 +32,8 @@ pub struct DecodedPicture {
     pub mv_l0: Vec<[i16; 2]>,
     /// Per-4x4-block L0 reference indices.
     pub ref_idx_l0: Vec<i8>,
+    /// Per-4x4-block POC of the L0 reference picture used (for temporal direct mode mapping).
+    pub ref_poc_l0: Vec<i32>,
     /// Width in macroblocks (for indexing into mv_l0/ref_idx_l0).
     pub mb_width: u32,
     /// Whether this picture is intra-only (all MBs are intra).
@@ -404,6 +406,7 @@ mod tests {
             pic_order_cnt: poc,
             mv_l0: vec![],
             ref_idx_l0: vec![],
+            ref_poc_l0: vec![],
             mb_width: 1,
             is_intra: false,
         })
