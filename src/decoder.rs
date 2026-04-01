@@ -2026,9 +2026,9 @@ impl Decoder {
                         };
 
                         let sub_mb_origins = [(0usize, 0usize), (0, 8), (8, 0), (8, 8)];
+                        let mut sub_mb_types = [0u32; 4];
                         if is_p8x8 {
                             // Sub-MB types
-                            let mut sub_mb_types = [0u32; 4];
                             for smt in &mut sub_mb_types {
                                 *smt = cr.decode_p_sub_mb_type(st);
                             }
@@ -2466,27 +2466,39 @@ impl Decoder {
                         let top_cbp_c = ((top_cbp_raw >> 4) & 3) as u8;
                         let cbp_chroma = cr.decode_cbp_chroma(st, left_cbp_c, top_cbp_c);
                         mb_cbp[mb_idx] = (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
-                        // 8x8 transform flag for inter MBs (CABAC context 399 + neighbor_transform_size)
-                        let nts = {
-                            let left = if mb_idx % mb_width as usize != 0
-                                && mb_slice_id[mb_idx - 1] == this_slice_id
-                            {
-                                mb_is_8x8dct[mb_idx - 1] as usize
-                            } else {
-                                0
-                            };
-                            let top = if mb_idx >= mb_width as usize
-                                && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
-                            {
-                                mb_is_8x8dct[mb_idx - mb_width as usize] as usize
-                            } else {
-                                0
-                            };
-                            left + top
+                        // 8x8 transform flag for inter MBs (spec 7.3.5).
+                        // Only present when noSubMbPartSizeLessThan8x8Flag is true.
+                        // For P_8x8, this requires all sub_mb_types to be 0 (8x8 sub-partitions).
+                        let no_sub_less_than_8x8 = if is_p8x8 {
+                            sub_mb_types.iter().all(|&smt| smt == 0)
+                        } else {
+                            true // P_16x16, P_16x8, P_8x16 always have partitions >= 8x8
                         };
-                        let use_8x8_inter = pps.transform_8x8_mode_flag
+                        let use_8x8_inter = if pps.transform_8x8_mode_flag
                             && cbp_luma != 0
-                            && cr.get_cabac(&mut st[399 + nts]) != 0;
+                            && no_sub_less_than_8x8
+                        {
+                            let nts = {
+                                let left = if mb_idx % mb_width as usize != 0
+                                    && mb_slice_id[mb_idx - 1] == this_slice_id
+                                {
+                                    mb_is_8x8dct[mb_idx - 1] as usize
+                                } else {
+                                    0
+                                };
+                                let top = if mb_idx >= mb_width as usize
+                                    && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                                {
+                                    mb_is_8x8dct[mb_idx - mb_width as usize] as usize
+                                } else {
+                                    0
+                                };
+                                left + top
+                            };
+                            cr.get_cabac(&mut st[399 + nts]) != 0
+                        } else {
+                            false
+                        };
                         mb_is_8x8dct[mb_idx] = use_8x8_inter;
 
                         let qp_y = if cbp_luma != 0 || cbp_chroma != 0 {
@@ -2736,6 +2748,8 @@ impl Decoder {
                         // 1: B_L0_16x16, 2: B_L1_16x16, 3: B_Bi_16x16
                         // 4-21: B 16x8/8x16 partition variants
                         // 22: B_8x8
+                        // Track whether all sub-partitions are >= 8x8 (for transform_size_8x8_flag)
+                        let mut no_sub_less_than_8x8_b = true;
 
                         #[rustfmt::skip]
                         #[allow(clippy::type_complexity)]
@@ -2794,6 +2808,9 @@ impl Decoder {
                         if raw_mb_type == 0 {
                             // B_Direct_16x16: derive MVs per 4x4 block
                             mb_is_direct[mb_idx] = true;
+                            if !sps.direct_8x8_inference_flag {
+                                no_sub_less_than_8x8_b = false;
+                            }
                             if header.direct_spatial_mv_pred_flag {
                                 for blk in 0..16 {
                                     let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) =
@@ -3305,6 +3322,14 @@ impl Decoder {
                             let mut sub_mb_types = [0u32; 4];
                             for smt in &mut sub_mb_types {
                                 *smt = cr.decode_b_sub_mb_type(st);
+                            }
+                            // Check if any sub-partition is smaller than 8x8
+                            // (sub_mb_types 0-3 are 8x8; 4+ are sub-8x8)
+                            // B_Direct_8x8 (smt==0) uses 4x4 when direct_8x8_inference_flag=0
+                            if sub_mb_types.iter().any(|&smt| {
+                                smt > 3 || (smt == 0 && !sps.direct_8x8_inference_flag)
+                            }) {
+                                no_sub_less_than_8x8_b = false;
                             }
 
                             // Parse ref_idx: L0 for all sub-MBs, then L1
@@ -3915,27 +3940,33 @@ impl Decoder {
                         let cbp_chroma = cr.decode_cbp_chroma(st, left_cbp_c, top_cbp_c);
                         mb_cbp[mb_idx] = (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
 
-                        // 8x8 transform flag for B inter MBs (context 399 + neighbor_transform_size)
-                        let nts = {
-                            let left = if mb_idx % mb_width as usize != 0
-                                && mb_slice_id[mb_idx - 1] == this_slice_id
-                            {
-                                mb_is_8x8dct[mb_idx - 1] as usize
-                            } else {
-                                0
-                            };
-                            let top = if mb_idx >= mb_width as usize
-                                && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
-                            {
-                                mb_is_8x8dct[mb_idx - mb_width as usize] as usize
-                            } else {
-                                0
-                            };
-                            left + top
-                        };
-                        let use_8x8_b_inter = pps.transform_8x8_mode_flag
+                        // 8x8 transform flag for B inter MBs (spec 7.3.5).
+                        // Only present when noSubMbPartSizeLessThan8x8Flag is true.
+                        let use_8x8_b_inter = if pps.transform_8x8_mode_flag
                             && cbp_luma != 0
-                            && cr.get_cabac(&mut st[399 + nts]) != 0;
+                            && no_sub_less_than_8x8_b
+                        {
+                            let nts = {
+                                let left = if mb_idx % mb_width as usize != 0
+                                    && mb_slice_id[mb_idx - 1] == this_slice_id
+                                {
+                                    mb_is_8x8dct[mb_idx - 1] as usize
+                                } else {
+                                    0
+                                };
+                                let top = if mb_idx >= mb_width as usize
+                                    && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
+                                {
+                                    mb_is_8x8dct[mb_idx - mb_width as usize] as usize
+                                } else {
+                                    0
+                                };
+                                left + top
+                            };
+                            cr.get_cabac(&mut st[399 + nts]) != 0
+                        } else {
+                            false
+                        };
                         mb_is_8x8dct[mb_idx] = use_8x8_b_inter;
 
                         let qp_y = if cbp_luma != 0 || cbp_chroma != 0 {
@@ -7064,9 +7095,17 @@ impl Decoder {
                 let cbp_luma = cbp & 0x0F;
                 let cbp_chroma = cbp >> 4;
 
-                // 8x8 transform flag (High profile inter MBs)
-                let use_8x8_dct =
-                    pps.transform_8x8_mode_flag && cbp_luma != 0 && reader.read_bit()? != 0;
+                // 8x8 transform flag (High profile inter MBs, spec 7.3.5).
+                // Only present when noSubMbPartSizeLessThan8x8Flag is true.
+                let no_sub_less_8x8 = if is_p8x8 {
+                    sub_mb_types.iter().all(|&smt| smt == 0) // P_8x8: smt=0 means 8x8 sub-partition
+                } else {
+                    true // P_16x16, P_16x8, P_8x16 always >= 8x8
+                };
+                let use_8x8_dct = pps.transform_8x8_mode_flag
+                    && cbp_luma != 0
+                    && no_sub_less_8x8
+                    && reader.read_bit()? != 0;
 
                 let qp_y = if cbp_luma != 0 || cbp_chroma != 0 {
                     let mb_qp_delta = reader.read_se()?;
@@ -10028,6 +10067,15 @@ mod tests {
         // no deblocking, temporal+spatial direct, B_8x8 sub-partitions.
         // Tests multi-slice B-frame decode with cross-slice boundary handling.
         decode_multiframe_and_compare("ms_cabac_b_test", 4, 64, 64);
+    }
+
+    #[test]
+    fn test_high_p8x8_sub4x4() {
+        // 64x64, 6 frames (I+P): High profile, preset slower with P_8x8
+        // sub-4x4 partitions + 8x8dct. Tests noSubMbPartSizeLessThan8x8Flag:
+        // transform_size_8x8_flag must NOT be read when P_8x8 has sub-4x4
+        // sub-partitions.
+        decode_multiframe_and_compare("high_p8x8_sub4x4_test", 6, 64, 64);
     }
 
     #[test]
