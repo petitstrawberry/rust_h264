@@ -67,7 +67,9 @@ struct PictureState {
     mb_slice_id: Vec<u16>,
     /// Current slice ID counter (incremented for each new slice).
     current_slice_id: u16,
+    #[allow(dead_code)]
     prev_mb_qp: i32,
+    #[allow(dead_code)]
     last_qp_delta_nonzero: bool,
     // Slice header info for finalization
     mmco_ops: Vec<(u32, u32)>,
@@ -476,8 +478,8 @@ impl Decoder {
             mut is_i16x16,
             mut mb_slice_id,
             mut current_slice_id,
-            mut prev_mb_qp,
-            mut last_qp_delta_nonzero,
+            prev_mb_qp: _,
+            last_qp_delta_nonzero: _,
             mmco_ops: _ps_mmco_ops,
             is_intra_slice: _ps_is_intra,
             disable_deblocking_filter_idc: ps_deblock_idc,
@@ -489,8 +491,8 @@ impl Decoder {
         } = ps;
 
         // Each slice reinitializes its own QP from the slice header
-        prev_mb_qp = slice_qp;
-        last_qp_delta_nonzero = false;
+        let mut prev_mb_qp = slice_qp;
+        let mut last_qp_delta_nonzero = false;
 
         // Increment slice ID for continuation slices so boundary checks work
         if is_continuation {
@@ -956,10 +958,10 @@ impl Decoder {
                         // Cross-slice intra prediction: neighbors from other slices unavailable (spec 6.4.1)
                         let above_mb_avail = mb_idx >= mb_width as usize
                             && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id;
-                        let left_mb_avail = mb_idx % mb_width as usize != 0
+                        let left_mb_avail = !mb_idx.is_multiple_of(mb_width as usize)
                             && mb_slice_id[mb_idx - 1] == this_slice_id;
                         let above_left_mb_avail = mb_idx >= mb_width as usize
-                            && mb_idx % mb_width as usize != 0
+                            && !mb_idx.is_multiple_of(mb_width as usize)
                             && mb_slice_id[mb_idx - mb_width as usize - 1] == this_slice_id;
                         let above_right_mb_avail = mb_idx >= mb_width as usize
                             && (mb_idx % mb_width as usize) + 1 < mb_width as usize
@@ -968,7 +970,7 @@ impl Decoder {
                         if i_mb_type == 0 {
                             // I4x4/I8x8 in P/B
                             let nts = {
-                                let left = if mb_idx % mb_width as usize != 0
+                                let left = if !mb_idx.is_multiple_of(mb_width as usize)
                                     && mb_slice_id[mb_idx - 1] == this_slice_id
                                 {
                                     mb_is_8x8dct[mb_idx - 1] as usize
@@ -2485,7 +2487,7 @@ impl Decoder {
                             if pps.transform_8x8_mode_flag && cbp_luma != 0 && no_sub_less_than_8x8
                             {
                                 let nts = {
-                                    let left = if mb_idx % mb_width as usize != 0
+                                    let left = if !mb_idx.is_multiple_of(mb_width as usize)
                                         && mb_slice_id[mb_idx - 1] == this_slice_id
                                     {
                                         mb_is_8x8dct[mb_idx - 1] as usize
@@ -3956,7 +3958,7 @@ impl Decoder {
                             && no_sub_less_than_8x8_b
                         {
                             let nts = {
-                                let left = if mb_idx % mb_width as usize != 0
+                                let left = if !mb_idx.is_multiple_of(mb_width as usize)
                                     && mb_slice_id[mb_idx - 1] == this_slice_id
                                 {
                                     mb_is_8x8dct[mb_idx - 1] as usize
@@ -4238,9 +4240,9 @@ impl Decoder {
                 let above_mb_avail_i = mb_idx >= mb_width as usize
                     && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id;
                 let left_mb_avail_i =
-                    mb_idx % mb_width as usize != 0 && mb_slice_id[mb_idx - 1] == this_slice_id;
+                    !mb_idx.is_multiple_of(mb_width as usize) && mb_slice_id[mb_idx - 1] == this_slice_id;
                 let above_left_mb_avail_i = mb_idx >= mb_width as usize
-                    && mb_idx % mb_width as usize != 0
+                    && !mb_idx.is_multiple_of(mb_width as usize)
                     && mb_slice_id[mb_idx - mb_width as usize - 1] == this_slice_id;
 
                 // I_PCM via CABAC
@@ -4293,7 +4295,7 @@ impl Decoder {
                 if mb_type == 0 {
                     // I4x4/I8x8 via CABAC
                     let nts = {
-                        let left = if mb_idx % mb_width as usize != 0
+                        let left = if !mb_idx.is_multiple_of(mb_width as usize)
                             && mb_slice_id[mb_idx - 1] == this_slice_id
                         {
                             mb_is_8x8dct[mb_idx - 1] as usize
@@ -6902,7 +6904,7 @@ impl Decoder {
 
                     // Chroma MC for each sub-partition
                     let mut chroma_pred = [0u8; 64];
-                    for (_sp_i, sp) in sub_parts.iter().enumerate() {
+                    for sp in sub_parts.iter() {
                         let cx_off = sp.x / 2;
                         let cy_off = sp.y / 2;
                         let cw = sp.w.max(2) / 2;
@@ -7487,9 +7489,9 @@ impl Decoder {
             let above_mb_avail = mb_idx >= mb_width as usize
                 && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id;
             let left_mb_avail =
-                mb_idx % mb_width as usize != 0 && mb_slice_id[mb_idx - 1] == this_slice_id;
+                !mb_idx.is_multiple_of(mb_width as usize) && mb_slice_id[mb_idx - 1] == this_slice_id;
             let above_left_mb_avail = mb_idx >= mb_width as usize
-                && mb_idx % mb_width as usize != 0
+                && !mb_idx.is_multiple_of(mb_width as usize)
                 && mb_slice_id[mb_idx - mb_width as usize - 1] == this_slice_id;
             let above_right_mb_avail = mb_idx >= mb_width as usize
                 && (mb_idx % mb_width as usize) + 1 < mb_width as usize
@@ -8126,6 +8128,7 @@ impl Decoder {
             0
         };
         let first_mb = header.first_mb_in_slice as usize;
+        #[allow(clippy::needless_range_loop)]
         for mi in first_mb..mb_idx.min(total_mbs) {
             let info = &mut mb_info[mi];
             let base = mi * 16;
@@ -8911,6 +8914,7 @@ fn predict_mv(
 }
 
 /// Get MV/ref of the left neighbor for a partition.
+#[allow(clippy::too_many_arguments)]
 fn get_mv_neighbor_left(
     mv_store_l0: &[[i16; 2]],
     ref_idx_store_l0: &[i8],
@@ -8954,6 +8958,7 @@ fn get_mv_neighbor_left(
 }
 
 /// Get MV/ref of the above neighbor for a partition.
+#[allow(clippy::too_many_arguments)]
 fn get_mv_neighbor_above(
     mv_store_l0: &[[i16; 2]],
     ref_idx_store_l0: &[i8],
@@ -8996,6 +9001,7 @@ fn get_mv_neighbor_above(
 }
 
 /// Get MV/ref of the above-right neighbor for a partition.
+#[allow(clippy::too_many_arguments)]
 fn get_mv_neighbor_above_right(
     mv_store_l0: &[[i16; 2]],
     ref_idx_store_l0: &[i8],
@@ -9080,6 +9086,7 @@ fn get_mv_neighbor_above_right(
 }
 
 /// Get MV/ref of the above-left neighbor for a partition (fallback for C).
+#[allow(clippy::too_many_arguments)]
 fn get_mv_neighbor_above_left(
     mv_store_l0: &[[i16; 2]],
     ref_idx_store_l0: &[i8],
@@ -9155,6 +9162,7 @@ fn get_mv_neighbor_above_left(
 /// For unavailable neighbors with intra MBs, returns true (CABAC uses NZ=64 for unavailable intra).
 /// CABAC amvd (absolute MVD sum) for MVD context selection.
 /// Returns sum of absolute MVD values from left and top neighbors for a partition.
+#[allow(clippy::too_many_arguments)]
 fn cabac_amvd(
     mvd_store: &[[i16; 2]],
     mb_idx: usize,
@@ -9282,6 +9290,7 @@ fn cabac_neighbor_ref(
     (left_ref, top_ref)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cabac_neighbor_nz_luma(
     nc_luma: &[u8],
     mb_idx: usize,
@@ -9325,6 +9334,7 @@ fn cabac_neighbor_nz_luma(
 }
 
 /// CABAC coded_block_flag neighbor lookup for chroma 4x4 blocks (4 blocks per MB).
+#[allow(clippy::too_many_arguments)]
 fn cabac_neighbor_nz_chroma(
     nc_chroma: &[u8],
     mb_idx: usize,

@@ -93,6 +93,7 @@ pub fn filter_frame(
 }
 
 /// Apply deblocking with explicit parameters (no SliceHeader needed).
+#[allow(clippy::needless_range_loop)]
 pub fn filter_frame_params(
     frame: &mut Frame,
     mb_info: &[MbInfo],
@@ -491,6 +492,7 @@ fn filter_edge_v(
     filter_edge_v_inner(plane, stride, x, y, count, bs, alpha, beta, tc0, false);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn filter_edge_v_chroma(
     plane: &mut [u8],
     stride: usize,
@@ -505,6 +507,7 @@ fn filter_edge_v_chroma(
     filter_edge_v_inner(plane, stride, x, y, count, bs, alpha, beta, tc0, true);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn filter_edge_v_inner(
     plane: &mut [u8],
     stride: usize,
@@ -592,6 +595,7 @@ fn filter_edge_h(
     filter_edge_h_inner(plane, stride, x, y, count, bs, alpha, beta, tc0, false);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn filter_edge_h_chroma(
     plane: &mut [u8],
     stride: usize,
@@ -606,6 +610,7 @@ fn filter_edge_h_chroma(
     filter_edge_h_inner(plane, stride, x, y, count, bs, alpha, beta, tc0, true);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn filter_edge_h_inner(
     plane: &mut [u8],
     stride: usize,
