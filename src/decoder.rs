@@ -12,8 +12,8 @@ use crate::intra_pred::{
     predict_chroma_8x8, predict_intra_16x16, predict_intra_4x4, predict_intra_8x8,
 };
 use crate::mv_pred::{
-    derive_spatial_direct_blk, derive_temporal_direct_blk, predict_mv, predict_mv_skip,
-    predict_mv_sub, ref_pic_safe, WeightContext,
+    derive_spatial_direct_blk, derive_temporal_direct_blk, predict_mv, predict_mv_sub,
+    ref_pic_safe, WeightContext,
 };
 use crate::nal::{NalUnit, NalUnitType};
 use crate::neighbor::{
@@ -536,6 +536,44 @@ impl Decoder {
 
         let mut mb_skip_run: i32 = -1; // -1 = not initialized for P slices
 
+        let stride = width as usize;
+
+        // Macro to construct a SliceContext from the local variables.
+        // Used at each call site that delegates to a SliceContext method.
+        macro_rules! make_ctx {
+            () => {
+                SliceContext {
+                    frame: &mut frame,
+                    stride,
+                    width,
+                    height,
+                    mb_width,
+                    nc_luma: &mut nc_luma,
+                    nc_cb: &mut nc_cb,
+                    nc_cr: &mut nc_cr,
+                    mv_store_l0: &mut mv_store_l0,
+                    mv_store_l1: &mut mv_store_l1,
+                    ref_idx_store_l0: &mut ref_idx_store_l0,
+                    ref_poc_store_l0: &mut ref_poc_store_l0,
+                    ref_idx_store_l1: &mut ref_idx_store_l1,
+                    mvd_store: &mut mvd_store,
+                    mvd_store_l1: &mut mvd_store_l1,
+                    mb_info: &mut mb_info,
+                    i4x4_modes: &mut i4x4_modes,
+                    mb_cbp: &mut mb_cbp,
+                    mb_chroma_pred: &mut mb_chroma_pred,
+                    mb_is_8x8dct: &mut mb_is_8x8dct,
+                    mb_skip: &mut mb_skip,
+                    mb_is_direct: &mut mb_is_direct,
+                    is_i16x16: &mut is_i16x16,
+                    mb_slice_id: &mut mb_slice_id,
+                    this_slice_id,
+                    prev_mb_qp,
+                    last_qp_delta_nonzero,
+                }
+            };
+        }
+
         let mut mb_idx = header.first_mb_in_slice as usize;
         while mb_idx < total_mbs {
             // CAVLC end-of-slice: check before reading any new syntax elements.
@@ -548,7 +586,6 @@ impl Decoder {
             mb_slice_id[mb_idx] = this_slice_id;
             let mb_x = (mb_idx % mb_width as usize) * 16;
             let mb_y = (mb_idx / mb_width as usize) * 16;
-            let stride = width as usize;
 
             // CABAC decode path
             if use_cabac {
@@ -581,80 +618,15 @@ impl Decoder {
                     if is_skip {
                         mb_skip[mb_idx] = true;
                         if is_p_slice {
-                            // P_Skip: same as CAVLC — median MV, ref=0, no residual
-                            let (mvp_x, mvp_y) = predict_mv_skip(
-                                &mv_store_l0,
-                                &ref_idx_store_l0,
+                            // P_Skip: median MV, ref=0, no residual
+                            make_ctx!().decode_p_skip_mb(
                                 mb_idx,
-                                mb_width as usize,
-                                &mb_slice_id,
-                                this_slice_id,
+                                mb_x,
+                                mb_y,
+                                &ref_pic_list,
+                                &wctx,
+                                use_weight,
                             );
-                            if let Some(ref_pic) = ref_pic_list.first() {
-                                let mut luma_pred = [0u8; 256];
-                                inter_pred::luma_mc(
-                                    ref_pic,
-                                    mb_x as i32,
-                                    mb_y as i32,
-                                    mvp_x as i32,
-                                    mvp_y as i32,
-                                    16,
-                                    16,
-                                    &mut luma_pred,
-                                );
-                                if use_weight == 1 {
-                                    wctx.apply_uni(&mut luma_pred, 0, 0, false, 0);
-                                }
-                                for r in 0..16 {
-                                    for c in 0..16 {
-                                        frame.y[(mb_y + r) * stride + mb_x + c] =
-                                            luma_pred[r * 16 + c];
-                                    }
-                                }
-                                let cw = (width / 2) as usize;
-                                let cx = mb_x / 2;
-                                let cy = mb_y / 2;
-                                let mut cb_pred = [0u8; 64];
-                                let mut cr_pred_buf = [0u8; 64];
-                                inter_pred::chroma_mc(
-                                    &ref_pic.u,
-                                    cw,
-                                    (height / 2) as usize,
-                                    cx as i32,
-                                    cy as i32,
-                                    mvp_x as i32,
-                                    mvp_y as i32,
-                                    8,
-                                    8,
-                                    &mut cb_pred,
-                                );
-                                inter_pred::chroma_mc(
-                                    &ref_pic.v,
-                                    cw,
-                                    (height / 2) as usize,
-                                    cx as i32,
-                                    cy as i32,
-                                    mvp_x as i32,
-                                    mvp_y as i32,
-                                    8,
-                                    8,
-                                    &mut cr_pred_buf,
-                                );
-                                if use_weight == 1 {
-                                    wctx.apply_uni(&mut cb_pred, 0, 0, true, 0);
-                                    wctx.apply_uni(&mut cr_pred_buf, 0, 0, true, 1);
-                                }
-                                for r in 0..8 {
-                                    for c in 0..8 {
-                                        frame.u[(cy + r) * cw + cx + c] = cb_pred[r * 8 + c];
-                                        frame.v[(cy + r) * cw + cx + c] = cr_pred_buf[r * 8 + c];
-                                    }
-                                }
-                            }
-                            for blk in 0..16 {
-                                mv_store_l0[mb_idx * 16 + blk] = [mvp_x, mvp_y];
-                                ref_idx_store_l0[mb_idx * 16 + blk] = 0;
-                            }
                         } else {
                             // B_Skip: derive MVs per 4x4 block via spatial or temporal direct mode
                             if header.direct_spatial_mv_pred_flag {
@@ -5367,79 +5339,14 @@ impl Decoder {
                     mb_skip_run -= 1;
                     if is_p_slice {
                         // P_Skip: MV = median predictor, ref_idx = 0, no residual
-                        let (mvp_x, mvp_y) = predict_mv_skip(
-                            &mv_store_l0,
-                            &ref_idx_store_l0,
+                        make_ctx!().decode_p_skip_mb(
                             mb_idx,
-                            mb_width as usize,
-                            &mb_slice_id,
-                            this_slice_id,
+                            mb_x,
+                            mb_y,
+                            &ref_pic_list,
+                            &wctx,
+                            use_weight,
                         );
-                        if let Some(ref_pic) = ref_pic_list.first() {
-                            let mut luma_pred = [0u8; 256];
-                            inter_pred::luma_mc(
-                                ref_pic,
-                                mb_x as i32,
-                                mb_y as i32,
-                                mvp_x as i32,
-                                mvp_y as i32,
-                                16,
-                                16,
-                                &mut luma_pred,
-                            );
-                            if use_weight == 1 {
-                                wctx.apply_uni(&mut luma_pred, 0, 0, false, 0);
-                            }
-                            for r in 0..16 {
-                                for c in 0..16 {
-                                    frame.y[(mb_y + r) * stride + mb_x + c] = luma_pred[r * 16 + c];
-                                }
-                            }
-                            let cw = (width / 2) as usize;
-                            let cx = mb_x / 2;
-                            let cy = mb_y / 2;
-                            let mut cb_pred = [0u8; 64];
-                            let mut cr_pred = [0u8; 64];
-                            inter_pred::chroma_mc(
-                                &ref_pic.u,
-                                cw,
-                                (height / 2) as usize,
-                                cx as i32,
-                                cy as i32,
-                                mvp_x as i32,
-                                mvp_y as i32,
-                                8,
-                                8,
-                                &mut cb_pred,
-                            );
-                            inter_pred::chroma_mc(
-                                &ref_pic.v,
-                                cw,
-                                (height / 2) as usize,
-                                cx as i32,
-                                cy as i32,
-                                mvp_x as i32,
-                                mvp_y as i32,
-                                8,
-                                8,
-                                &mut cr_pred,
-                            );
-                            if use_weight == 1 {
-                                wctx.apply_uni(&mut cb_pred, 0, 0, true, 0);
-                                wctx.apply_uni(&mut cr_pred, 0, 0, true, 1);
-                            }
-                            for r in 0..8 {
-                                for c in 0..8 {
-                                    frame.u[(cy + r) * cw + cx + c] = cb_pred[r * 8 + c];
-                                    frame.v[(cy + r) * cw + cx + c] = cr_pred[r * 8 + c];
-                                }
-                            }
-                        }
-                        // Store MV and ref for neighbors
-                        for blk in 0..16 {
-                            mv_store_l0[mb_idx * 16 + blk] = [mvp_x, mvp_y];
-                            ref_idx_store_l0[mb_idx * 16 + blk] = 0;
-                        }
                     } else {
                         // B_Skip: derive MVs via spatial or temporal direct mode, no residual
                         // Per spec 8.4.1.2, temporal direct derives per-4x4-block MVs
@@ -8127,101 +8034,16 @@ impl Decoder {
             }
         }
 
-        // Fill per-4x4-block MV/ref/nnz data into MbInfo for deblocking bS.
-        // Only update MBs decoded in this slice (first_mb..mb_idx).
-        let list_count = if is_b_slice {
-            2u8
-        } else if is_p_slice {
-            1
-        } else {
-            0
-        };
-        let first_mb = header.first_mb_in_slice as usize;
-        #[allow(clippy::needless_range_loop)]
-        for mi in first_mb..mb_idx.min(total_mbs) {
-            let info = &mut mb_info[mi];
-            let base = mi * 16;
-            info.list_count = list_count;
-            for blk in 0..16 {
-                info.mv_l0[blk] = mv_store_l0[base + blk];
-                info.ref_idx_l0[blk] = ref_idx_store_l0[base + blk];
-                info.mv_l1[blk] = mv_store_l1[base + blk];
-                info.ref_idx_l1[blk] = ref_idx_store_l1[base + blk];
-                info.nnz[blk] = nc_luma[base + blk] > 0;
-                let ri_l0 = ref_idx_store_l0[base + blk];
-                info.ref_poc_l0[blk] = if ri_l0 >= 0 {
-                    let l0_list = if is_p_slice {
-                        &ref_pic_list
-                    } else {
-                        &_ref_pic_list_l0
-                    };
-                    l0_list
-                        .get(ri_l0 as usize)
-                        .map(|p| p.pic_order_cnt)
-                        .unwrap_or(-1)
-                } else {
-                    -1
-                };
-                let ri_l1 = ref_idx_store_l1[base + blk];
-                info.ref_poc_l1[blk] = if ri_l1 >= 0 {
-                    _ref_pic_list_l1
-                        .get(ri_l1 as usize)
-                        .map(|p| p.pic_order_cnt)
-                        .unwrap_or(-1)
-                } else {
-                    -1
-                };
-            }
-        }
-
-        // Build per-block ref POC table for temporal direct mode (spec 8.4.1.2.3).
-        // Maps each block's ref_idx_l0 to the POC of the referenced picture.
-        let l0_list = if is_p_slice {
-            &ref_pic_list
-        } else {
-            &_ref_pic_list_l0
-        };
-        for i in 0..ref_poc_store_l0.len() {
-            let ri = ref_idx_store_l0[i];
-            if ri >= 0 && (ri as usize) < l0_list.len() {
-                ref_poc_store_l0[i] = l0_list[ri as usize].pic_order_cnt;
-            }
-        }
-
-        // Validate SliceContext struct matches the local variables.
-        // In Phase 2, the MB loop body will move into methods on SliceContext.
-        let _ctx = SliceContext {
-            frame: &mut frame,
-            stride: width as usize,
-            width,
-            height,
-            mb_width,
-            nc_luma: &mut nc_luma,
-            nc_cb: &mut nc_cb,
-            nc_cr: &mut nc_cr,
-            mv_store_l0: &mut mv_store_l0,
-            mv_store_l1: &mut mv_store_l1,
-            ref_idx_store_l0: &mut ref_idx_store_l0,
-            ref_poc_store_l0: &mut ref_poc_store_l0,
-            ref_idx_store_l1: &mut ref_idx_store_l1,
-            mvd_store: &mut mvd_store,
-            mvd_store_l1: &mut mvd_store_l1,
-            mb_info: &mut mb_info,
-            i4x4_modes: &mut i4x4_modes,
-            mb_cbp: &mut mb_cbp,
-            mb_chroma_pred: &mut mb_chroma_pred,
-            mb_is_8x8dct: &mut mb_is_8x8dct,
-            mb_skip: &mut mb_skip,
-            mb_is_direct: &mut mb_is_direct,
-            is_i16x16: &mut is_i16x16,
-            mb_slice_id: &mut mb_slice_id,
-            this_slice_id,
-            prev_mb_qp,
-            last_qp_delta_nonzero,
-        };
-        // Release borrows so fields can be moved into PictureState
-        #[allow(clippy::drop_non_drop)]
-        drop(_ctx);
+        // Post-loop: fill deblock info and ref POC table
+        make_ctx!().finalize_mb_info(
+            header.first_mb_in_slice as usize,
+            mb_idx.min(total_mbs),
+            is_p_slice,
+            is_b_slice,
+            &ref_pic_list,
+            &_ref_pic_list_l0,
+            &_ref_pic_list_l1,
+        );
 
         // Store state back into pending PictureState.
         // Deblocking and DPB insertion happen in finalize_pending().
