@@ -5834,6 +5834,7 @@ impl Decoder {
                 // === Inter (B) macroblock ===
                 // Table 7-11: mb_type 0=B_Direct_16x16, 1=B_L0_16x16,
                 // 2=B_L1_16x16, 3=B_Bi_16x16, 4-21=16x8/8x16 variants, 22=B_8x8
+                let mut no_sub_less_8x8_b = true; // for transform_size_8x8_flag
                 struct SubPart {
                     x: usize,
                     y: usize,
@@ -5912,6 +5913,9 @@ impl Decoder {
                     }
                     0 => {
                         // B_Direct_16x16: derive MVs per 4x4 block via spatial or temporal direct
+                        if !sps.direct_8x8_inference_flag {
+                            no_sub_less_8x8_b = false;
+                        }
                         if header.direct_spatial_mv_pred_flag {
                             for blk in 0..16 {
                                 let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) = derive_spatial_direct_blk(
@@ -6268,6 +6272,11 @@ impl Decoder {
                         let mut sub_mb_types = [0u32; 4];
                         for smt in &mut sub_mb_types {
                             *smt = reader.read_ue()?;
+                        }
+                        if sub_mb_types.iter().any(|&smt| {
+                            smt > 3 || (smt == 0 && !sps.direct_8x8_inference_flag)
+                        }) {
+                            no_sub_less_8x8_b = false;
                         }
 
                         // Parse ref_idx for each 8x8 sub-MB
@@ -6628,6 +6637,12 @@ impl Decoder {
                 let cbp_luma = cbp & 0x0F;
                 let cbp_chroma = cbp >> 4;
 
+                // 8x8 transform flag (High profile, spec 7.3.5)
+                let use_8x8_dct_b = pps.transform_8x8_mode_flag
+                    && cbp_luma != 0
+                    && no_sub_less_8x8_b
+                    && reader.read_bit()? != 0;
+
                 let qp_y = if cbp_luma != 0 || cbp_chroma != 0 {
                     let mb_qp_delta = reader.read_se()?;
                     ((prev_mb_qp + mb_qp_delta + 52) % 52 + 52) % 52
@@ -6639,27 +6654,59 @@ impl Decoder {
 
                 // Decode luma residual
                 let mut luma_residual = [0i32; 256];
-                for blk in 0..16 {
-                    if cbp_luma & (1 << (blk / 4)) != 0 {
-                        let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16, &mb_slice_id, this_slice_id);
-                        let mut block_coeffs = [0i32; 16];
-                        let tc =
-                            parse_residual_block_cavlc(&mut reader, &mut block_coeffs, 16, nc)?;
-                        nc_luma[mb_idx * 16 + blk] = tc;
-
-                        let mut raster = [0i32; 16];
-                        for i in 0..16 {
-                            let (r, c) = ZIGZAG_4X4[i];
-                            raster[r * 4 + c] = block_coeffs[i];
+                if use_8x8_dct_b {
+                    for i8x8 in 0..4 {
+                        if cbp_luma & (1 << i8x8) == 0 {
+                            for sub in 0..4 {
+                                nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = 0;
+                            }
+                            continue;
                         }
-                        // Use inter scaling list (index 3) for luma
-                        dequant_4x4_full(&mut raster, qp_y, &pps.scaling_list_4x4[3]);
-                        inverse_dct_4x4(&mut raster);
+                        let mut block_coeffs = [0i32; 64];
+                        let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, i8x8 * 4, 16, &mb_slice_id, this_slice_id);
+                        let tc = parse_residual_block_cavlc(&mut reader, &mut block_coeffs, 64, nc)?;
+                        let tc_per = tc.div_ceil(4);
+                        for sub in 0..4 {
+                            nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = tc_per;
+                        }
+                        let mut block_8x8 = [0i32; 64];
+                        for i in 0..64 {
+                            block_8x8[ZIGZAG_8X8_CAVLC[i]] = block_coeffs[i];
+                        }
+                        dequant_8x8(&mut block_8x8, qp_y, &pps.scaling_list_8x8[1]);
+                        inverse_dct_8x8(&mut block_8x8);
+                        let row_off = (i8x8 / 2) * 8;
+                        let col_off = (i8x8 % 2) * 8;
+                        for r in 0..8 {
+                            for c in 0..8 {
+                                luma_residual[(row_off + r) * 16 + col_off + c] =
+                                    block_8x8[r * 8 + c];
+                            }
+                        }
+                    }
+                } else {
+                    for blk in 0..16 {
+                        if cbp_luma & (1 << (blk / 4)) != 0 {
+                            let nc = compute_nc(&nc_luma, mb_idx, mb_width as usize, blk, 16, &mb_slice_id, this_slice_id);
+                            let mut block_coeffs = [0i32; 16];
+                            let tc =
+                                parse_residual_block_cavlc(&mut reader, &mut block_coeffs, 16, nc)?;
+                            nc_luma[mb_idx * 16 + blk] = tc;
 
-                        let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
-                        for r in 0..4 {
-                            for c in 0..4 {
-                                luma_residual[(blk_row + r) * 16 + blk_col + c] = raster[r * 4 + c];
+                            let mut raster = [0i32; 16];
+                            for i in 0..16 {
+                                let (r, c) = ZIGZAG_4X4[i];
+                                raster[r * 4 + c] = block_coeffs[i];
+                            }
+                            // Use inter scaling list (index 3) for luma
+                            dequant_4x4_full(&mut raster, qp_y, &pps.scaling_list_4x4[3]);
+                            inverse_dct_4x4(&mut raster);
+
+                            let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk];
+                            for r in 0..4 {
+                                for c in 0..4 {
+                                    luma_residual[(blk_row + r) * 16 + blk_col + c] = raster[r * 4 + c];
+                                }
                             }
                         }
                     }
