@@ -371,6 +371,16 @@ impl Decoder {
             vec![]
         };
 
+        if is_b_slice && use_weight == 2 {
+            eprintln!("B poc={} l0_active={} l1_active={} L0[0].poc={} L1[0].poc={} implicit_weights[0][0]={}",
+                current_poc,
+                header.num_ref_idx_l0_active,
+                header.num_ref_idx_l1_active,
+                _ref_pic_list_l0.first().map(|r| r.pic_order_cnt).unwrap_or(-1),
+                _ref_pic_list_l1.first().map(|r| r.pic_order_cnt).unwrap_or(-1),
+                implicit_weights.first().and_then(|r| r.first()).copied().unwrap_or(-1),
+            );
+        }
         let wctx = WeightContext {
             use_weight,
             wt: header.weight_table.as_ref(),
@@ -667,6 +677,7 @@ impl Decoder {
                                             col_pic.pic_order_cnt,
                                             mb_idx,
                                             blk,
+                                            sps.direct_8x8_inference_flag,
                                         );
                                     mv_store_l0[mb_idx * 16 + blk] = mv_l0;
                                     ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
@@ -2814,6 +2825,7 @@ impl Decoder {
                                             col_pic.pic_order_cnt,
                                             mb_idx,
                                             blk,
+                                            sps.direct_8x8_inference_flag,
                                         );
                                     mv_store_l0[mb_idx * 16 + blk] = mv_l0;
                                     ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
@@ -3434,6 +3446,7 @@ impl Decoder {
                                                         col_pic.pic_order_cnt,
                                                         mb_idx,
                                                         blk,
+                                                        sps.direct_8x8_inference_flag,
                                                     )
                                                 };
                                             mv_store_l0[mb_idx * 16 + blk] = d_mv_l0;
@@ -3764,7 +3777,6 @@ impl Decoder {
                                         luma_pred[r * sp.w + c];
                                 }
                             }
-
                             // Chroma MC
                             let cw = (width / 2) as usize;
                             let chroma_h = (height / 2) as usize;
@@ -4159,7 +4171,7 @@ impl Decoder {
                             qp_y,
                             ..Default::default()
                         };
-                        mb_idx += 1;
+                                        mb_idx += 1;
                         continue;
                     }
                 }
@@ -5409,6 +5421,7 @@ impl Decoder {
                                     col_pic.pic_order_cnt,
                                     mb_idx,
                                     blk,
+                                    sps.direct_8x8_inference_flag,
                                 );
                                 mv_store_l0[mb_idx * 16 + blk] = mv_l0;
                                 ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
@@ -5893,6 +5906,7 @@ impl Decoder {
                                     col_pic.pic_order_cnt,
                                     mb_idx,
                                     blk,
+                                    sps.direct_8x8_inference_flag,
                                 );
                                 mv_store_l0[mb_idx * 16 + blk] = mv_l0;
                                 ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
@@ -6358,6 +6372,7 @@ impl Decoder {
                                                         col_pic.pic_order_cnt,
                                                         mb_idx,
                                                         blk,
+                                                        sps.direct_8x8_inference_flag,
                                                     )
                                                 };
                                             mv_store_l0[mb_idx * 16 + blk] = d_mv_l0;
@@ -8451,24 +8466,38 @@ fn derive_temporal_direct_blk(
     col_poc: i32,
     mb_idx: usize,
     blk: usize,
+    direct_8x8_inference_flag: bool,
 ) -> ([i16; 2], [i16; 2], i8, i8, bool, bool) {
-    // Check if co-located MB is intra
+    // When direct_8x8_inference_flag is set (spec 8.4.1.2.3), use ONE co-located
+    // MV per 8x8 block. Per spec, the co-located partition is derived using the
+    // MV at luma4x4BlkIdx = (x8*3, y8*3) in 4x4-block raster coordinates within
+    // the co-located MB. Mapping to our BLOCK_INDEX_TO_OFFSET numbering:
+    //   8x8 blk 0 (x8=0,y8=0): raster(0,0) = pixel(0,0)   = our block 0
+    //   8x8 blk 1 (x8=1,y8=0): raster(3,0) = pixel(0,12)  = our block 5
+    //   8x8 blk 2 (x8=0,y8=1): raster(0,3) = pixel(12,0)  = our block 10
+    //   8x8 blk 3 (x8=1,y8=1): raster(3,3) = pixel(12,12) = our block 15
+    let col_blk = if direct_8x8_inference_flag {
+        const INFERENCE_MAP: [usize; 4] = [0, 5, 10, 15];
+        INFERENCE_MAP[blk / 4]
+    } else {
+        blk
+    };
     let col_base = mb_idx * 16;
     if col_pic.is_intra
-        || col_base + blk >= col_pic.ref_idx_l0.len()
-        || col_pic.ref_idx_l0[col_base + blk] < 0
+        || col_base + col_blk >= col_pic.ref_idx_l0.len()
+        || col_pic.ref_idx_l0[col_base + col_blk] < 0
     {
         // Intra co-located: zero MVs, ref_idx=0
         return ([0, 0], [0, 0], 0, 0, true, true);
     }
 
-    // Get co-located MV and ref_idx for the specific 4x4 block
-    let col_mv = col_pic.mv_l0[col_base + blk];
-    let col_ref_idx = col_pic.ref_idx_l0[col_base + blk];
+    // Get co-located MV and ref_idx
+    let col_mv = col_pic.mv_l0[col_base + col_blk];
+    let col_ref_idx = col_pic.ref_idx_l0[col_base + col_blk];
 
     // Map co-located ref_idx to current L0 ref_idx by matching POC (spec 8.4.1.2.3).
     // Look up the POC that the co-located picture referenced at col_ref_idx.
-    let col_ref_poc_val = col_pic.ref_poc_l0[col_base + blk];
+    let col_ref_poc_val = col_pic.ref_poc_l0[col_base + col_blk];
 
     // Find the entry in our current L0 list with the matching POC.
     let ref0 = ref_pic_list_l0
@@ -8497,6 +8526,11 @@ fn derive_temporal_direct_blk(
         ([mx_l0, my_l0], [mx_l1, my_l1])
     };
 
+    if mb_idx == 4 && blk <= 3 {
+        eprintln!("temporal_direct mb={} blk={}: col_ri={} col_mv={:?} col_ref_poc={} ref0={} poc0={} td={} tb={} -> mv_l0={:?} mv_l1={:?}",
+            mb_idx, blk, col_ref_idx, col_mv, col_ref_poc_val, ref0, poc0,
+            (col_poc - poc0).clamp(-128,127), (current_poc - poc0).clamp(-128,127), mv_l0, mv_l1);
+    }
     (mv_l0, mv_l1, ref0 as i8, 0, true, true)
 }
 
@@ -9994,5 +10028,14 @@ mod tests {
         // no deblocking, temporal+spatial direct, B_8x8 sub-partitions.
         // Tests multi-slice B-frame decode with cross-slice boundary handling.
         decode_multiframe_and_compare("ms_cabac_b_test", 4, 64, 64);
+    }
+
+    #[test]
+    fn test_b_temporal_direct_8x8_inference() {
+        // 64x64, 4 frames (I,B,B,P): CABAC Main, preset slower, direct=temporal.
+        // Tests direct_8x8_inference_flag in temporal direct mode: co-located MV
+        // must be read from the representative 4x4 block per 8x8 group, not from
+        // each individual 4x4 block.
+        decode_multiframe_and_compare("b_temporal_direct_test", 4, 64, 64);
     }
 }
