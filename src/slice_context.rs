@@ -30,6 +30,7 @@ pub(crate) struct SliceParams<'a> {
     pub num_ref_idx_l0_active: u32,
     pub num_ref_idx_l1_active: u32,
     pub wctx: &'a WeightContext<'a>,
+    pub first_mb_in_slice: u32,
 }
 use crate::dpb::DecodedPicture;
 use crate::inter_pred;
