@@ -9,7 +9,11 @@ use std::rc::Rc;
 use crate::decoder::Frame;
 use crate::dpb::DecodedPicture;
 use crate::inter_pred;
-use crate::mv_pred::{predict_mv_skip, WeightContext};
+use crate::mv_pred::{
+    derive_spatial_direct_blk, derive_temporal_direct_blk, predict_mv_skip, ref_pic_safe,
+    WeightContext,
+};
+use crate::residual::BLOCK_INDEX_TO_OFFSET;
 
 /// Mutable per-slice state passed to MB decode routines.
 ///
@@ -151,6 +155,262 @@ impl SliceContext<'_> {
             self.mv_store_l0[mb_idx * 16 + blk] = [mvp_x, mvp_y];
             self.ref_idx_store_l0[mb_idx * 16 + blk] = 0;
         }
+    }
+
+    /// Decode a B-slice skip macroblock: spatial/temporal direct MV derivation,
+    /// per-4x4-block MC (luma + chroma), no residual.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn decode_b_skip_mb(
+        &mut self,
+        mb_idx: usize,
+        mb_x: usize,
+        mb_y: usize,
+        direct_spatial: bool,
+        direct_8x8_inference_flag: bool,
+        current_poc: i32,
+        ref_pic_list_l0: &[Rc<DecodedPicture>],
+        ref_pic_list_l1: &[Rc<DecodedPicture>],
+        wctx: &WeightContext,
+        use_weight: u8,
+    ) {
+        // Derive MVs per 4x4 block via spatial or temporal direct mode
+        if direct_spatial {
+            for blk in 0..16 {
+                let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) = derive_spatial_direct_blk(
+                    self.mv_store_l0,
+                    self.ref_idx_store_l0,
+                    self.mv_store_l1,
+                    self.ref_idx_store_l1,
+                    mb_idx,
+                    self.mb_width as usize,
+                    ref_pic_list_l1.first().map(|p| p.as_ref()),
+                    blk,
+                    self.mb_slice_id,
+                    self.this_slice_id,
+                    direct_8x8_inference_flag,
+                );
+                self.mv_store_l0[mb_idx * 16 + blk] = mv_l0;
+                self.ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
+                self.mv_store_l1[mb_idx * 16 + blk] = mv_l1;
+                self.ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
+            }
+        } else {
+            let col_pic = &ref_pic_list_l1[0];
+            for blk in 0..16 {
+                let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) = derive_temporal_direct_blk(
+                    col_pic,
+                    ref_pic_list_l0,
+                    current_poc,
+                    col_pic.pic_order_cnt,
+                    mb_idx,
+                    blk,
+                    direct_8x8_inference_flag,
+                );
+                self.mv_store_l0[mb_idx * 16 + blk] = mv_l0;
+                self.ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
+                self.mv_store_l1[mb_idx * 16 + blk] = mv_l1;
+                self.ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
+            }
+        }
+
+        // Luma MC: per-4x4-block
+        let mut luma_pred = [0u8; 256];
+        for (blk, &(blk_row, blk_col)) in BLOCK_INDEX_TO_OFFSET.iter().enumerate() {
+            let bx = mb_x + blk_col;
+            let by = mb_y + blk_row;
+            let mv0 = self.mv_store_l0[mb_idx * 16 + blk];
+            let mv1 = self.mv_store_l1[mb_idx * 16 + blk];
+            let r0 = self.ref_idx_store_l0[mb_idx * 16 + blk];
+            let r1 = self.ref_idx_store_l1[mb_idx * 16 + blk];
+            let bp0 = r0 >= 0;
+            let bp1 = r1 >= 0;
+            let mut blk_pred = [0u8; 16];
+            if bp0 && bp1 {
+                let mut p0 = [0u8; 16];
+                let mut p1 = [0u8; 16];
+                inter_pred::luma_mc(
+                    ref_pic_safe(ref_pic_list_l0, r0),
+                    bx as i32,
+                    by as i32,
+                    mv0[0] as i32,
+                    mv0[1] as i32,
+                    4,
+                    4,
+                    &mut p0,
+                );
+                inter_pred::luma_mc(
+                    ref_pic_safe(ref_pic_list_l1, r1),
+                    bx as i32,
+                    by as i32,
+                    mv1[0] as i32,
+                    mv1[1] as i32,
+                    4,
+                    4,
+                    &mut p1,
+                );
+                wctx.apply_bi(&p0, &p1, &mut blk_pred, r0 as usize, r1 as usize, false, 0);
+            } else if bp0 {
+                inter_pred::luma_mc(
+                    ref_pic_safe(ref_pic_list_l0, r0),
+                    bx as i32,
+                    by as i32,
+                    mv0[0] as i32,
+                    mv0[1] as i32,
+                    4,
+                    4,
+                    &mut blk_pred,
+                );
+                if use_weight == 1 {
+                    wctx.apply_uni(&mut blk_pred, 0, r0 as usize, false, 0);
+                }
+            } else if bp1 {
+                inter_pred::luma_mc(
+                    ref_pic_safe(ref_pic_list_l1, r1),
+                    bx as i32,
+                    by as i32,
+                    mv1[0] as i32,
+                    mv1[1] as i32,
+                    4,
+                    4,
+                    &mut blk_pred,
+                );
+                if use_weight == 1 {
+                    wctx.apply_uni(&mut blk_pred, 1, r1 as usize, false, 0);
+                }
+            }
+            for r in 0..4 {
+                for c in 0..4 {
+                    luma_pred[(blk_row + r) * 16 + blk_col + c] = blk_pred[r * 4 + c];
+                }
+            }
+        }
+        for r in 0..16 {
+            for c in 0..16 {
+                self.frame.y[(mb_y + r) * self.stride + mb_x + c] = luma_pred[r * 16 + c];
+            }
+        }
+
+        // Chroma MC: per-4x4-block
+        let cw = (self.width / 2) as usize;
+        let cx = mb_x / 2;
+        let cy = mb_y / 2;
+        let chroma_h = (self.height / 2) as usize;
+        for plane_idx in 0..2 {
+            let mut chroma_pred = [0u8; 64];
+            for cblk in 0..4 {
+                let cblk_row = (cblk / 2) * 4;
+                let cblk_col = (cblk % 2) * 4;
+                let luma_blk = cblk * 4;
+                let mv0 = self.mv_store_l0[mb_idx * 16 + luma_blk];
+                let mv1 = self.mv_store_l1[mb_idx * 16 + luma_blk];
+                let r0 = self.ref_idx_store_l0[mb_idx * 16 + luma_blk];
+                let r1 = self.ref_idx_store_l1[mb_idx * 16 + luma_blk];
+                let bp0 = r0 >= 0;
+                let bp1 = r1 >= 0;
+                let mut cblk_pred = [0u8; 16];
+                if bp0 && bp1 {
+                    let mut c0 = [0u8; 16];
+                    let mut c1 = [0u8; 16];
+                    let rl0 = ref_pic_safe(ref_pic_list_l0, r0);
+                    let rl1 = ref_pic_safe(ref_pic_list_l1, r1);
+                    let cr0 = if plane_idx == 0 { &rl0.u } else { &rl0.v };
+                    let cr1 = if plane_idx == 0 { &rl1.u } else { &rl1.v };
+                    inter_pred::chroma_mc(
+                        cr0,
+                        cw,
+                        chroma_h,
+                        (cx + cblk_col) as i32,
+                        (cy + cblk_row) as i32,
+                        mv0[0] as i32,
+                        mv0[1] as i32,
+                        4,
+                        4,
+                        &mut c0,
+                    );
+                    inter_pred::chroma_mc(
+                        cr1,
+                        cw,
+                        chroma_h,
+                        (cx + cblk_col) as i32,
+                        (cy + cblk_row) as i32,
+                        mv1[0] as i32,
+                        mv1[1] as i32,
+                        4,
+                        4,
+                        &mut c1,
+                    );
+                    wctx.apply_bi(
+                        &c0,
+                        &c1,
+                        &mut cblk_pred,
+                        r0 as usize,
+                        r1 as usize,
+                        true,
+                        plane_idx,
+                    );
+                } else if bp0 {
+                    let ref_pic = ref_pic_safe(ref_pic_list_l0, r0);
+                    let cr = if plane_idx == 0 {
+                        &ref_pic.u
+                    } else {
+                        &ref_pic.v
+                    };
+                    inter_pred::chroma_mc(
+                        cr,
+                        cw,
+                        chroma_h,
+                        (cx + cblk_col) as i32,
+                        (cy + cblk_row) as i32,
+                        mv0[0] as i32,
+                        mv0[1] as i32,
+                        4,
+                        4,
+                        &mut cblk_pred,
+                    );
+                    if use_weight == 1 {
+                        wctx.apply_uni(&mut cblk_pred, 0, r0 as usize, true, plane_idx);
+                    }
+                } else if bp1 {
+                    let ref_pic = ref_pic_safe(ref_pic_list_l1, r1);
+                    let cr = if plane_idx == 0 {
+                        &ref_pic.u
+                    } else {
+                        &ref_pic.v
+                    };
+                    inter_pred::chroma_mc(
+                        cr,
+                        cw,
+                        chroma_h,
+                        (cx + cblk_col) as i32,
+                        (cy + cblk_row) as i32,
+                        mv1[0] as i32,
+                        mv1[1] as i32,
+                        4,
+                        4,
+                        &mut cblk_pred,
+                    );
+                    if use_weight == 1 {
+                        wctx.apply_uni(&mut cblk_pred, 1, r1 as usize, true, plane_idx);
+                    }
+                }
+                for r in 0..4 {
+                    for c in 0..4 {
+                        chroma_pred[(cblk_row + r) * 8 + cblk_col + c] = cblk_pred[r * 4 + c];
+                    }
+                }
+            }
+            let fp = if plane_idx == 0 {
+                &mut self.frame.u
+            } else {
+                &mut self.frame.v
+            };
+            for r in 0..8 {
+                for c in 0..8 {
+                    fp[(cy + r) * cw + cx + c] = chroma_pred[r * 8 + c];
+                }
+            }
+        }
+        self.mb_is_direct[mb_idx] = true;
     }
 
     /// Fill per-4x4-block MV/ref/nnz data into MbInfo for deblocking bS derivation,
