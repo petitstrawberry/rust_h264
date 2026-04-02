@@ -29,6 +29,21 @@ This is a Rust project using Cargo:
 - **Streaming API:** The decoder API is streaming — callers feed NAL units incrementally and receive decoded frames as they become available. No requirement to buffer an entire stream upfront.
 - **Performance:** The decoder should be fast. Prefer efficient algorithms, minimize allocations, and avoid unnecessary copies. Performance relative to ffmpeg's software decoder is a key benchmark.
 
+## Code Structure
+
+The decoder logic is split across several files for maintainability:
+
+| File | Lines | Content |
+|------|-------|---------|
+| `src/decoder.rs` | ~1,370 | Core `Decoder` struct, `decode_nal`, `decode_slice` MB loop, DPB/frame management |
+| `src/decode_cabac.rs` | ~3,600 | CABAC MB decode: skip detection, mb_type dispatch, residual decode |
+| `src/decode_cavlc.rs` | ~2,070 | CAVLC MB decode: P/B inter, intra, residual decode |
+| `src/slice_context.rs` | ~920 | `SliceContext`/`SliceParams` structs + shared methods (skip, direct, reconstruct) |
+| `src/mv_pred.rs` | ~940 | MV prediction, spatial/temporal direct mode derivation |
+| `src/neighbor.rs` | ~470 | CABAC neighbor context helpers, nC computation, dequant helpers |
+
+`SliceContext` bundles ~25 mutable per-MB arrays; `SliceParams` bundles read-only slice-level parameters. The `make_ctx!()` macro in `decoder.rs` constructs a `SliceContext` from local variables at each call site for zero-cost method dispatch.
+
 ## Status
 
 I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). Multi-reference (ref>1) with ref_pic_list_modification supported. Multi-slice frames fully supported for both CABAC and CAVLC (I, P, and B-frames byte-exact). All 49 test streams byte-exact against FFmpeg, including x264 `--preset medium` with and without deblocking (320x240, 60 frames, ref=4, bframes=3), and multi-slice streams with up to 4 slices per frame. Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
@@ -42,7 +57,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - P-slice fields: num_ref_idx_l0_active, ref_pic_list_modification, dec_ref_pic_marking
 - B-slice fields: num_ref_idx_l1_active, direct_spatial_mv_pred_flag, L1 ref_pic_list_modification, pred_weight_table (consumed)
 
-**Intra Macroblock Decoding** (`src/decoder.rs`)
+**Intra Macroblock Decoding** (`src/decode_cabac.rs`, `src/decode_cavlc.rs`)
 - I4x4 macroblocks with all 9 prediction modes
 - I16x16 macroblocks with all 4 prediction modes (vertical, horizontal, DC, plane)
 - I_PCM macroblocks (raw pixel data, both CAVLC and CABAC with engine reinit)
@@ -50,7 +65,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - Per-macroblock QP delta
 - Intra MBs within P-slices
 
-**Inter Macroblock Decoding** (`src/decoder.rs`)
+**Inter Macroblock Decoding** (`src/decode_cabac.rs`, `src/decode_cavlc.rs`)
 - P_Skip macroblocks (MV = median predictor, no residual)
 - P_L0_16x16 (single 16x16 partition with ref_idx, MVD, residual)
 - P_L0_L0_16x8 and P_L0_L0_8x16 (two-partition modes)
@@ -139,7 +154,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   straight+swapped comparison.
 - Applied automatically after slice decode
 
-**Multi-Slice Frame Support** (`src/decoder.rs`)
+**Multi-Slice Frame Support** (`src/decoder.rs`, `src/decode_cabac.rs`, `src/decode_cavlc.rs`)
 - `PictureState` accumulates decoded MBs across multiple slices of the same picture
 - Frame finalization (deblocking, DPB insert) on next picture's first slice or `flush()`
 - `mb_slice_id` array tracks which slice each MB belongs to
