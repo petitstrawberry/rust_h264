@@ -8,9 +8,7 @@ use crate::deblock::{self, MbInfo, MbType};
 use crate::dpb::{DecodedPicture, Dpb, ReferenceStatus};
 use crate::error::DecodeError;
 use crate::inter_pred;
-use crate::intra_pred::{
-    predict_chroma_8x8, predict_intra_4x4, predict_intra_8x8,
-};
+use crate::intra_pred::{predict_chroma_8x8, predict_intra_4x4, predict_intra_8x8};
 use crate::mv_pred::{predict_mv, predict_mv_sub, ref_pic_safe, WeightContext};
 use crate::nal::{NalUnit, NalUnitType};
 use crate::neighbor::{
@@ -1028,9 +1026,9 @@ impl Decoder {
                             } // close if use_8x8_intra_pb else
 
                             // Chroma prediction
-                            let chroma_width = (width / 2) as usize;
-                            let chroma_mb_x = mb_x / 2;
-                            let chroma_mb_y = mb_y / 2;
+                            let _chroma_width = (width / 2) as usize;
+                            let _chroma_mb_x = mb_x / 2;
+                            let _chroma_mb_y = mb_y / 2;
                             let (pred_u, pred_v) = make_ctx!().predict_chroma_intra(
                                 mb_x,
                                 mb_y,
@@ -1154,63 +1152,30 @@ impl Decoder {
                             }
 
                             // Chroma reconstruction
-                            for (plane_dc, plane_ac, pred_plane, frame_plane, scale_idx) in [
-                                (
+                            {
+                                let mut ctx = make_ctx!();
+                                ctx.reconstruct_chroma_plane(
                                     &mut chroma_dc_cb,
                                     &chroma_ac_cb,
                                     &pred_u,
-                                    &mut frame.u,
-                                    1usize,
-                                ),
-                                (
+                                    true,
+                                    cbp_chroma,
+                                    _qp_c,
+                                    &pps.scaling_list_4x4[1],
+                                    mb_x,
+                                    mb_y,
+                                );
+                                ctx.reconstruct_chroma_plane(
                                     &mut chroma_dc_cr,
                                     &chroma_ac_cr,
                                     &pred_v,
-                                    &mut frame.v,
-                                    2usize,
-                                ),
-                            ] {
-                                let chroma_scale = &pps.scaling_list_4x4[scale_idx];
-                                if cbp_chroma >= 1 {
-                                    inverse_hadamard_2x2(plane_dc);
-                                    dequant_chroma_dc(plane_dc, _qp_c, chroma_scale[0]);
-                                }
-                                let mut chroma_residual = [0i32; 64];
-                                for blk in 0..4 {
-                                    let blk_row = (blk / 2) * 4;
-                                    let blk_col = (blk % 2) * 4;
-                                    let mut block_raster = [0i32; 16];
-                                    block_raster[0] = plane_dc[blk];
-                                    if cbp_chroma >= 2 {
-                                        for scan_idx in 0..15 {
-                                            let (r, c) = ZIGZAG_4X4[scan_idx + 1];
-                                            block_raster[r * 4 + c] = plane_ac[blk][scan_idx];
-                                        }
-                                        dequant_4x4_ac_raster(
-                                            &mut block_raster,
-                                            _qp_c,
-                                            chroma_scale,
-                                        );
-                                    }
-                                    inverse_dct_4x4(&mut block_raster);
-                                    for r in 0..4 {
-                                        for c in 0..4 {
-                                            chroma_residual[(blk_row + r) * 8 + blk_col + c] =
-                                                block_raster[r * 4 + c];
-                                        }
-                                    }
-                                }
-                                for y in 0..8 {
-                                    for x in 0..8 {
-                                        let val = (pred_plane[y * 8 + x] as i32
-                                            + chroma_residual[y * 8 + x])
-                                            .clamp(0, 255)
-                                            as u8;
-                                        frame_plane
-                                            [(chroma_mb_y + y) * chroma_width + chroma_mb_x + x] =
-                                            val;
-                                    }
-                                }
+                                    false,
+                                    cbp_chroma,
+                                    _qp_c,
+                                    &pps.scaling_list_4x4[2],
+                                    mb_x,
+                                    mb_y,
+                                );
                             }
                             mb_info[mb_idx] = MbInfo {
                                 mb_type: MbType::Intra,
@@ -1362,9 +1327,9 @@ impl Decoder {
                             );
 
                             // Chroma prediction
-                            let chroma_width = (width / 2) as usize;
-                            let chroma_mb_x = mb_x / 2;
-                            let chroma_mb_y = mb_y / 2;
+                            let _chroma_width = (width / 2) as usize;
+                            let _chroma_mb_x = mb_x / 2;
+                            let _chroma_mb_y = mb_y / 2;
                             let (pred_u, pred_v) = make_ctx!().predict_chroma_intra(
                                 mb_x,
                                 mb_y,
@@ -1488,63 +1453,30 @@ impl Decoder {
                             mb_cbp[mb_idx] |= (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
 
                             // Chroma reconstruction
-                            for (plane_dc, plane_ac, pred_plane, frame_plane, scale_idx) in [
-                                (
+                            {
+                                let mut ctx = make_ctx!();
+                                ctx.reconstruct_chroma_plane(
                                     &mut chroma_dc_cb,
                                     &chroma_ac_cb,
                                     &pred_u,
-                                    &mut frame.u,
-                                    1usize,
-                                ),
-                                (
+                                    true,
+                                    cbp_chroma,
+                                    qp_c,
+                                    &pps.scaling_list_4x4[1],
+                                    mb_x,
+                                    mb_y,
+                                );
+                                ctx.reconstruct_chroma_plane(
                                     &mut chroma_dc_cr,
                                     &chroma_ac_cr,
                                     &pred_v,
-                                    &mut frame.v,
-                                    2usize,
-                                ),
-                            ] {
-                                let chroma_scale = &pps.scaling_list_4x4[scale_idx];
-                                if cbp_chroma >= 1 {
-                                    inverse_hadamard_2x2(plane_dc);
-                                    dequant_chroma_dc(plane_dc, qp_c, chroma_scale[0]);
-                                }
-                                let mut chroma_residual = [0i32; 64];
-                                for blk in 0..4 {
-                                    let blk_row = (blk / 2) * 4;
-                                    let blk_col = (blk % 2) * 4;
-                                    let mut block_raster = [0i32; 16];
-                                    block_raster[0] = plane_dc[blk];
-                                    if cbp_chroma >= 2 {
-                                        for scan_idx in 0..15 {
-                                            let (r, c) = ZIGZAG_4X4[scan_idx + 1];
-                                            block_raster[r * 4 + c] = plane_ac[blk][scan_idx];
-                                        }
-                                        dequant_4x4_ac_raster(
-                                            &mut block_raster,
-                                            qp_c,
-                                            chroma_scale,
-                                        );
-                                    }
-                                    inverse_dct_4x4(&mut block_raster);
-                                    for r in 0..4 {
-                                        for c in 0..4 {
-                                            chroma_residual[(blk_row + r) * 8 + blk_col + c] =
-                                                block_raster[r * 4 + c];
-                                        }
-                                    }
-                                }
-                                for y in 0..8 {
-                                    for x in 0..8 {
-                                        let val = (pred_plane[y * 8 + x] as i32
-                                            + chroma_residual[y * 8 + x])
-                                            .clamp(0, 255)
-                                            as u8;
-                                        frame_plane
-                                            [(chroma_mb_y + y) * chroma_width + chroma_mb_x + x] =
-                                            val;
-                                    }
-                                }
+                                    false,
+                                    cbp_chroma,
+                                    qp_c,
+                                    &pps.scaling_list_4x4[2],
+                                    mb_x,
+                                    mb_y,
+                                );
                             }
 
                             mb_info[mb_idx] = MbInfo {
@@ -4151,9 +4083,9 @@ impl Decoder {
                     } // close if use_8x8_intra else (luma only)
 
                     // Chroma (simplified — reuse existing chroma decode pattern)
-                    let chroma_width = (width / 2) as usize;
-                    let chroma_mb_x = mb_x / 2;
-                    let chroma_mb_y = mb_y / 2;
+                    let _chroma_width = (width / 2) as usize;
+                    let _chroma_mb_x = mb_x / 2;
+                    let _chroma_mb_y = mb_y / 2;
 
                     // Chroma prediction (slice boundary: cross-slice neighbors unavailable)
                     let (pred_u, pred_v) = make_ctx!().predict_chroma_intra(
@@ -4277,60 +4209,31 @@ impl Decoder {
                         }
                     }
 
-                    // Reconstruct chroma for each plane
-                    for (plane_dc, plane_ac, pred_plane, frame_plane, scale_idx) in [
-                        (
+                    // Reconstruct chroma
+                    {
+                        let mut ctx = make_ctx!();
+                        ctx.reconstruct_chroma_plane(
                             &mut chroma_dc_cb,
                             &chroma_ac_cb,
                             &pred_u,
-                            &mut frame.u,
-                            1usize,
-                        ),
-                        (
+                            true,
+                            cbp_chroma,
+                            _qp_c,
+                            &pps.scaling_list_4x4[1],
+                            mb_x,
+                            mb_y,
+                        );
+                        ctx.reconstruct_chroma_plane(
                             &mut chroma_dc_cr,
                             &chroma_ac_cr,
                             &pred_v,
-                            &mut frame.v,
-                            2usize,
-                        ),
-                    ] {
-                        let chroma_scale = &pps.scaling_list_4x4[scale_idx];
-                        if cbp_chroma >= 1 {
-                            inverse_hadamard_2x2(plane_dc);
-                            dequant_chroma_dc(plane_dc, _qp_c, chroma_scale[0]);
-                        }
-
-                        let mut chroma_residual = [0i32; 64];
-                        for blk in 0..4 {
-                            let blk_row = (blk / 2) * 4;
-                            let blk_col = (blk % 2) * 4;
-                            let mut block_raster = [0i32; 16];
-                            block_raster[0] = plane_dc[blk];
-                            if cbp_chroma >= 2 {
-                                for scan_idx in 0..15 {
-                                    let (r, c) = ZIGZAG_4X4[scan_idx + 1];
-                                    block_raster[r * 4 + c] = plane_ac[blk][scan_idx];
-                                }
-                                dequant_4x4_ac_raster(&mut block_raster, _qp_c, chroma_scale);
-                            }
-                            inverse_dct_4x4(&mut block_raster);
-                            for r in 0..4 {
-                                for c in 0..4 {
-                                    chroma_residual[(blk_row + r) * 8 + blk_col + c] =
-                                        block_raster[r * 4 + c];
-                                }
-                            }
-                        }
-
-                        for y in 0..8 {
-                            for x in 0..8 {
-                                let val = (pred_plane[y * 8 + x] as i32
-                                    + chroma_residual[y * 8 + x])
-                                    .clamp(0, 255) as u8;
-                                frame_plane[(chroma_mb_y + y) * chroma_width + chroma_mb_x + x] =
-                                    val;
-                            }
-                        }
+                            false,
+                            cbp_chroma,
+                            _qp_c,
+                            &pps.scaling_list_4x4[2],
+                            mb_x,
+                            mb_y,
+                        );
                     }
 
                     mb_info[mb_idx] = MbInfo {

@@ -14,7 +14,9 @@ use crate::mv_pred::{
     derive_spatial_direct_blk, derive_temporal_direct_blk, predict_mv_skip, ref_pic_safe,
     WeightContext,
 };
+use crate::neighbor::dequant_4x4_ac_raster;
 use crate::residual::BLOCK_INDEX_TO_OFFSET;
+use crate::residual::{dequant_chroma_dc, inverse_dct_4x4, inverse_hadamard_2x2, ZIGZAG_4X4};
 
 /// Mutable per-slice state passed to MB decode routines.
 ///
@@ -443,6 +445,62 @@ impl SliceContext<'_> {
 
     /// Fill per-4x4-block MV/ref/nnz data into MbInfo for deblocking bS derivation,
     /// and build the per-block ref POC table for temporal direct mode.
+    /// Reconstruct one chroma plane: Hadamard + dequant DC, unzigzag + dequant AC,
+    /// IDCT, add prediction, clamp, and write to frame.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn reconstruct_chroma_plane(
+        &mut self,
+        plane_dc: &mut [i32; 4],
+        plane_ac: &[[i32; 15]; 4],
+        pred: &[u8; 64],
+        is_u: bool,
+        cbp_chroma: u8,
+        qp_c: i32,
+        chroma_scale: &[u8; 16],
+        mb_x: usize,
+        mb_y: usize,
+    ) {
+        let chroma_width = (self.width / 2) as usize;
+        let chroma_mb_x = mb_x / 2;
+        let chroma_mb_y = mb_y / 2;
+
+        if cbp_chroma >= 1 {
+            inverse_hadamard_2x2(plane_dc);
+            dequant_chroma_dc(plane_dc, qp_c, chroma_scale[0]);
+        }
+        let mut chroma_residual = [0i32; 64];
+        for blk in 0..4 {
+            let blk_row = (blk / 2) * 4;
+            let blk_col = (blk % 2) * 4;
+            let mut block_raster = [0i32; 16];
+            block_raster[0] = plane_dc[blk];
+            if cbp_chroma >= 2 {
+                for scan_idx in 0..15 {
+                    let (r, c) = ZIGZAG_4X4[scan_idx + 1];
+                    block_raster[r * 4 + c] = plane_ac[blk][scan_idx];
+                }
+                dequant_4x4_ac_raster(&mut block_raster, qp_c, chroma_scale);
+            }
+            inverse_dct_4x4(&mut block_raster);
+            for r in 0..4 {
+                for c in 0..4 {
+                    chroma_residual[(blk_row + r) * 8 + blk_col + c] = block_raster[r * 4 + c];
+                }
+            }
+        }
+        let fp = if is_u {
+            &mut self.frame.u
+        } else {
+            &mut self.frame.v
+        };
+        for y in 0..8 {
+            for x in 0..8 {
+                let val = (pred[y * 8 + x] as i32 + chroma_residual[y * 8 + x]).clamp(0, 255) as u8;
+                fp[(chroma_mb_y + y) * chroma_width + chroma_mb_x + x] = val;
+            }
+        }
+    }
+
     /// Compute intra chroma prediction for both U and V planes.
     ///
     /// Gathers neighbor samples (respecting slice boundaries), calls `predict_chroma_8x8`
