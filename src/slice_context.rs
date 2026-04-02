@@ -157,25 +157,23 @@ impl SliceContext<'_> {
         }
     }
 
-    /// Decode a B-slice skip macroblock: spatial/temporal direct MV derivation,
-    /// per-4x4-block MC (luma + chroma), no residual.
+    /// Derive direct-mode MVs for all 16 4x4 blocks of a macroblock.
+    ///
+    /// Used by B_Skip, B_Direct_16x16, and B_Direct_8x8 sub-partitions.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn decode_b_skip_mb(
+    pub(crate) fn derive_direct_mvs(
         &mut self,
         mb_idx: usize,
-        mb_x: usize,
-        mb_y: usize,
+        blk_start: usize,
+        blk_count: usize,
         direct_spatial: bool,
         direct_8x8_inference_flag: bool,
         current_poc: i32,
         ref_pic_list_l0: &[Rc<DecodedPicture>],
         ref_pic_list_l1: &[Rc<DecodedPicture>],
-        wctx: &WeightContext,
-        use_weight: u8,
     ) {
-        // Derive MVs per 4x4 block via spatial or temporal direct mode
         if direct_spatial {
-            for blk in 0..16 {
+            for blk in blk_start..blk_start + blk_count {
                 let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) = derive_spatial_direct_blk(
                     self.mv_store_l0,
                     self.ref_idx_store_l0,
@@ -196,7 +194,7 @@ impl SliceContext<'_> {
             }
         } else {
             let col_pic = &ref_pic_list_l1[0];
-            for blk in 0..16 {
+            for blk in blk_start..blk_start + blk_count {
                 let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) = derive_temporal_direct_blk(
                     col_pic,
                     ref_pic_list_l0,
@@ -212,6 +210,35 @@ impl SliceContext<'_> {
                 self.ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
             }
         }
+    }
+
+    /// Decode a B-slice skip macroblock: spatial/temporal direct MV derivation,
+    /// per-4x4-block MC (luma + chroma), no residual.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn decode_b_skip_mb(
+        &mut self,
+        mb_idx: usize,
+        mb_x: usize,
+        mb_y: usize,
+        direct_spatial: bool,
+        direct_8x8_inference_flag: bool,
+        current_poc: i32,
+        ref_pic_list_l0: &[Rc<DecodedPicture>],
+        ref_pic_list_l1: &[Rc<DecodedPicture>],
+        wctx: &WeightContext,
+        use_weight: u8,
+    ) {
+        // Derive MVs per 4x4 block via spatial or temporal direct mode
+        self.derive_direct_mvs(
+            mb_idx,
+            0,
+            16,
+            direct_spatial,
+            direct_8x8_inference_flag,
+            current_poc,
+            ref_pic_list_l0,
+            ref_pic_list_l1,
+        );
 
         // Luma MC: per-4x4-block
         let mut luma_pred = [0u8; 256];

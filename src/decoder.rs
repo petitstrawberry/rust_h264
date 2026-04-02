@@ -11,10 +11,7 @@ use crate::inter_pred;
 use crate::intra_pred::{
     predict_chroma_8x8, predict_intra_16x16, predict_intra_4x4, predict_intra_8x8,
 };
-use crate::mv_pred::{
-    derive_spatial_direct_blk, derive_temporal_direct_blk, predict_mv, predict_mv_sub,
-    ref_pic_safe, WeightContext,
-};
+use crate::mv_pred::{predict_mv, predict_mv_sub, ref_pic_safe, WeightContext};
 use crate::nal::{NalUnit, NalUnitType};
 use crate::neighbor::{
     cabac_amvd, cabac_neighbor_nz_chroma, cabac_neighbor_nz_luma, cabac_neighbor_ref, compute_nc,
@@ -2550,46 +2547,16 @@ impl Decoder {
                             if !sps.direct_8x8_inference_flag {
                                 no_sub_less_than_8x8_b = false;
                             }
-                            if header.direct_spatial_mv_pred_flag {
-                                for blk in 0..16 {
-                                    let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) =
-                                        derive_spatial_direct_blk(
-                                            &mv_store_l0,
-                                            &ref_idx_store_l0,
-                                            &mv_store_l1,
-                                            &ref_idx_store_l1,
-                                            mb_idx,
-                                            mb_width as usize,
-                                            _ref_pic_list_l1.first().map(|p| p.as_ref()),
-                                            blk,
-                                            &mb_slice_id,
-                                            this_slice_id,
-                                            sps.direct_8x8_inference_flag,
-                                        );
-                                    mv_store_l0[mb_idx * 16 + blk] = mv_l0;
-                                    ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
-                                    mv_store_l1[mb_idx * 16 + blk] = mv_l1;
-                                    ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
-                                }
-                            } else {
-                                let col_pic = &_ref_pic_list_l1[0];
-                                for blk in 0..16 {
-                                    let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) =
-                                        derive_temporal_direct_blk(
-                                            col_pic,
-                                            &_ref_pic_list_l0,
-                                            current_poc,
-                                            col_pic.pic_order_cnt,
-                                            mb_idx,
-                                            blk,
-                                            sps.direct_8x8_inference_flag,
-                                        );
-                                    mv_store_l0[mb_idx * 16 + blk] = mv_l0;
-                                    ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
-                                    mv_store_l1[mb_idx * 16 + blk] = mv_l1;
-                                    ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
-                                }
-                            }
+                            make_ctx!().derive_direct_mvs(
+                                mb_idx,
+                                0,
+                                16,
+                                header.direct_spatial_mv_pred_flag,
+                                sps.direct_8x8_inference_flag,
+                                current_poc,
+                                &_ref_pic_list_l0,
+                                &_ref_pic_list_l1,
+                            );
                             // Build sub_parts, coalescing per-8x8 when MVs are uniform
                             let base = mb_idx * 16;
                             for i8x8 in 0..4 {
@@ -3174,55 +3141,20 @@ impl Decoder {
                             }
 
                             // Derive B_Direct_8x8 MVs per 4x4 block BEFORE MVD parsing
-                            for smb in 0..4 {
-                                if sub_mb_types[smb] != 0 {
+                            for (smb, &smt) in sub_mb_types.iter().enumerate() {
+                                if smt != 0 {
                                     continue;
                                 }
-                                let (sy, sx) = sub_mb_origins[smb];
-                                for r in (0..8).step_by(4) {
-                                    for c in (0..8).step_by(4) {
-                                        let lr = (sy + r) / 4;
-                                        let lc = (sx + c) / 4;
-                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                            .iter()
-                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                        {
-                                            let (d_mv_l0, d_mv_l1, d_ri_l0, d_ri_l1, _, _) =
-                                                if header.direct_spatial_mv_pred_flag {
-                                                    derive_spatial_direct_blk(
-                                                        &mv_store_l0,
-                                                        &ref_idx_store_l0,
-                                                        &mv_store_l1,
-                                                        &ref_idx_store_l1,
-                                                        mb_idx,
-                                                        mb_width as usize,
-                                                        _ref_pic_list_l1
-                                                            .first()
-                                                            .map(|p| p.as_ref()),
-                                                        blk,
-                                                        &mb_slice_id,
-                                                        this_slice_id,
-                                                        sps.direct_8x8_inference_flag,
-                                                    )
-                                                } else {
-                                                    let col_pic = &_ref_pic_list_l1[0];
-                                                    derive_temporal_direct_blk(
-                                                        col_pic,
-                                                        &_ref_pic_list_l0,
-                                                        current_poc,
-                                                        col_pic.pic_order_cnt,
-                                                        mb_idx,
-                                                        blk,
-                                                        sps.direct_8x8_inference_flag,
-                                                    )
-                                                };
-                                            mv_store_l0[mb_idx * 16 + blk] = d_mv_l0;
-                                            ref_idx_store_l0[mb_idx * 16 + blk] = d_ri_l0;
-                                            mv_store_l1[mb_idx * 16 + blk] = d_mv_l1;
-                                            ref_idx_store_l1[mb_idx * 16 + blk] = d_ri_l1;
-                                        }
-                                    }
-                                }
+                                make_ctx!().derive_direct_mvs(
+                                    mb_idx,
+                                    smb * 4,
+                                    4,
+                                    header.direct_spatial_mv_pred_flag,
+                                    sps.direct_8x8_inference_flag,
+                                    current_poc,
+                                    &_ref_pic_list_l0,
+                                    &_ref_pic_list_l1,
+                                );
                             }
 
                             // Collect sub-partition layouts
@@ -5226,44 +5158,16 @@ impl Decoder {
                         if !sps.direct_8x8_inference_flag {
                             no_sub_less_8x8_b = false;
                         }
-                        if header.direct_spatial_mv_pred_flag {
-                            for blk in 0..16 {
-                                let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) = derive_spatial_direct_blk(
-                                    &mv_store_l0,
-                                    &ref_idx_store_l0,
-                                    &mv_store_l1,
-                                    &ref_idx_store_l1,
-                                    mb_idx,
-                                    mb_width as usize,
-                                    _ref_pic_list_l1.first().map(|p| p.as_ref()),
-                                    blk,
-                                    &mb_slice_id,
-                                    this_slice_id,
-                                    sps.direct_8x8_inference_flag,
-                                );
-                                mv_store_l0[mb_idx * 16 + blk] = mv_l0;
-                                ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
-                                mv_store_l1[mb_idx * 16 + blk] = mv_l1;
-                                ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
-                            }
-                        } else {
-                            let col_pic = &_ref_pic_list_l1[0];
-                            for blk in 0..16 {
-                                let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) = derive_temporal_direct_blk(
-                                    col_pic,
-                                    &_ref_pic_list_l0,
-                                    current_poc,
-                                    col_pic.pic_order_cnt,
-                                    mb_idx,
-                                    blk,
-                                    sps.direct_8x8_inference_flag,
-                                );
-                                mv_store_l0[mb_idx * 16 + blk] = mv_l0;
-                                ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
-                                mv_store_l1[mb_idx * 16 + blk] = mv_l1;
-                                ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
-                            }
-                        }
+                        make_ctx!().derive_direct_mvs(
+                            mb_idx,
+                            0,
+                            16,
+                            header.direct_spatial_mv_pred_flag,
+                            sps.direct_8x8_inference_flag,
+                            current_poc,
+                            &_ref_pic_list_l0,
+                            &_ref_pic_list_l1,
+                        );
                         // Build sub_parts for MC, coalescing blocks with identical MVs/refs
                         // per 8x8 sub-block (spec 8.4.1.2.1: direct mode applied per 8x8)
                         let base = mb_idx * 16;
@@ -5695,50 +5599,16 @@ impl Decoder {
                         // Derive B_Direct_8x8 MVs per 4x4 block BEFORE MVD parsing
                         for layout in &layouts {
                             if sub_mb_types[layout.smb] == 0 {
-                                for r in (0..8).step_by(4) {
-                                    for c in (0..8).step_by(4) {
-                                        let lr = (layout.sy + r) / 4;
-                                        let lc = (layout.sx + c) / 4;
-                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                            .iter()
-                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                        {
-                                            let (d_mv_l0, d_mv_l1, d_ri_l0, d_ri_l1, _, _) =
-                                                if header.direct_spatial_mv_pred_flag {
-                                                    derive_spatial_direct_blk(
-                                                        &mv_store_l0,
-                                                        &ref_idx_store_l0,
-                                                        &mv_store_l1,
-                                                        &ref_idx_store_l1,
-                                                        mb_idx,
-                                                        mb_width as usize,
-                                                        _ref_pic_list_l1
-                                                            .first()
-                                                            .map(|p| p.as_ref()),
-                                                        blk,
-                                                        &mb_slice_id,
-                                                        this_slice_id,
-                                                        sps.direct_8x8_inference_flag,
-                                                    )
-                                                } else {
-                                                    let col_pic = &_ref_pic_list_l1[0];
-                                                    derive_temporal_direct_blk(
-                                                        col_pic,
-                                                        &_ref_pic_list_l0,
-                                                        current_poc,
-                                                        col_pic.pic_order_cnt,
-                                                        mb_idx,
-                                                        blk,
-                                                        sps.direct_8x8_inference_flag,
-                                                    )
-                                                };
-                                            mv_store_l0[mb_idx * 16 + blk] = d_mv_l0;
-                                            ref_idx_store_l0[mb_idx * 16 + blk] = d_ri_l0;
-                                            mv_store_l1[mb_idx * 16 + blk] = d_mv_l1;
-                                            ref_idx_store_l1[mb_idx * 16 + blk] = d_ri_l1;
-                                        }
-                                    }
-                                }
+                                make_ctx!().derive_direct_mvs(
+                                    mb_idx,
+                                    layout.smb * 4,
+                                    4,
+                                    header.direct_spatial_mv_pred_flag,
+                                    sps.direct_8x8_inference_flag,
+                                    current_poc,
+                                    &_ref_pic_list_l0,
+                                    &_ref_pic_list_l1,
+                                );
                             }
                         }
 
