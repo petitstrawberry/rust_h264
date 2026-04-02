@@ -27,6 +27,8 @@ pub(crate) struct SliceParams<'a> {
     pub ref_pic_list: &'a [Rc<DecodedPicture>],
     pub ref_pic_list_l0: &'a [Rc<DecodedPicture>],
     pub ref_pic_list_l1: &'a [Rc<DecodedPicture>],
+    pub num_ref_idx_l0_active: u32,
+    pub num_ref_idx_l1_active: u32,
     pub wctx: &'a WeightContext<'a>,
 }
 use crate::dpb::DecodedPicture;

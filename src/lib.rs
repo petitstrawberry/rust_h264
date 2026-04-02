@@ -3,6 +3,7 @@ pub mod cabac;
 mod cabac_tables;
 pub mod cavlc;
 pub mod deblock;
+mod decode_cavlc;
 pub mod decoder;
 pub mod dpb;
 pub mod error;
