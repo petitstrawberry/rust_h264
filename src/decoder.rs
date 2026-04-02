@@ -23,7 +23,7 @@ use crate::residual::{
     ZIGZAG_8X8_CAVLC,
 };
 use crate::slice::{parse_slice_header, SliceType};
-use crate::slice_context::SliceContext;
+use crate::slice_context::{SliceContext, SliceParams};
 use crate::sps::{parse_sps, Sps};
 
 /// A decoded YUV 4:2:0 frame.
@@ -569,6 +569,23 @@ impl Decoder {
             };
         }
 
+        let params = SliceParams {
+            is_p_slice,
+            is_b_slice,
+            use_weight,
+            current_poc,
+            direct_spatial_mv_pred_flag: header.direct_spatial_mv_pred_flag,
+            direct_8x8_inference_flag: sps.direct_8x8_inference_flag,
+            transform_8x8_mode_flag: pps.transform_8x8_mode_flag,
+            scaling_list_4x4: &pps.scaling_list_4x4,
+            scaling_list_8x8: &pps.scaling_list_8x8,
+            chroma_qp_index_offset: pps.chroma_qp_index_offset,
+            ref_pic_list: &ref_pic_list,
+            ref_pic_list_l0: &_ref_pic_list_l0,
+            ref_pic_list_l1: &_ref_pic_list_l1,
+            wctx: &wctx,
+        };
+
         let mut mb_idx = header.first_mb_in_slice as usize;
         while mb_idx < total_mbs {
             // CAVLC end-of-slice: check before reading any new syntax elements.
@@ -614,28 +631,10 @@ impl Decoder {
                         mb_skip[mb_idx] = true;
                         if is_p_slice {
                             // P_Skip: median MV, ref=0, no residual
-                            make_ctx!().decode_p_skip_mb(
-                                mb_idx,
-                                mb_x,
-                                mb_y,
-                                &ref_pic_list,
-                                &wctx,
-                                use_weight,
-                            );
+                            make_ctx!().decode_p_skip_mb(mb_idx, mb_x, mb_y, &params);
                         } else {
                             // B_Skip: spatial/temporal direct MV + MC, no residual
-                            make_ctx!().decode_b_skip_mb(
-                                mb_idx,
-                                mb_x,
-                                mb_y,
-                                header.direct_spatial_mv_pred_flag,
-                                sps.direct_8x8_inference_flag,
-                                current_poc,
-                                &_ref_pic_list_l0,
-                                &_ref_pic_list_l1,
-                                &wctx,
-                                use_weight,
-                            );
+                            make_ctx!().decode_b_skip_mb(mb_idx, mb_x, mb_y, &params);
                         }
                         mb_info[mb_idx] = MbInfo {
                             mb_type: MbType::Inter,
@@ -2201,16 +2200,7 @@ impl Decoder {
                             if !sps.direct_8x8_inference_flag {
                                 no_sub_less_than_8x8_b = false;
                             }
-                            make_ctx!().derive_direct_mvs(
-                                mb_idx,
-                                0,
-                                16,
-                                header.direct_spatial_mv_pred_flag,
-                                sps.direct_8x8_inference_flag,
-                                current_poc,
-                                &_ref_pic_list_l0,
-                                &_ref_pic_list_l1,
-                            );
+                            make_ctx!().derive_direct_mvs(mb_idx, 0, 16, &params);
                             // Build sub_parts, coalescing per-8x8 when MVs are uniform
                             let base = mb_idx * 16;
                             for i8x8 in 0..4 {
@@ -2799,16 +2789,7 @@ impl Decoder {
                                 if smt != 0 {
                                     continue;
                                 }
-                                make_ctx!().derive_direct_mvs(
-                                    mb_idx,
-                                    smb * 4,
-                                    4,
-                                    header.direct_spatial_mv_pred_flag,
-                                    sps.direct_8x8_inference_flag,
-                                    current_poc,
-                                    &_ref_pic_list_l0,
-                                    &_ref_pic_list_l1,
-                                );
+                                make_ctx!().derive_direct_mvs(mb_idx, smb * 4, 4, &params);
                             }
 
                             // Collect sub-partition layouts
@@ -4346,28 +4327,10 @@ impl Decoder {
                     mb_skip_run -= 1;
                     if is_p_slice {
                         // P_Skip: MV = median predictor, ref_idx = 0, no residual
-                        make_ctx!().decode_p_skip_mb(
-                            mb_idx,
-                            mb_x,
-                            mb_y,
-                            &ref_pic_list,
-                            &wctx,
-                            use_weight,
-                        );
+                        make_ctx!().decode_p_skip_mb(mb_idx, mb_x, mb_y, &params);
                     } else {
                         // B_Skip: spatial/temporal direct MV + MC, no residual
-                        make_ctx!().decode_b_skip_mb(
-                            mb_idx,
-                            mb_x,
-                            mb_y,
-                            header.direct_spatial_mv_pred_flag,
-                            sps.direct_8x8_inference_flag,
-                            current_poc,
-                            &_ref_pic_list_l0,
-                            &_ref_pic_list_l1,
-                            &wctx,
-                            use_weight,
-                        );
+                        make_ctx!().decode_b_skip_mb(mb_idx, mb_x, mb_y, &params);
                     }
                     mb_info[mb_idx] = MbInfo {
                         mb_type: MbType::Inter,
@@ -4483,16 +4446,7 @@ impl Decoder {
                         if !sps.direct_8x8_inference_flag {
                             no_sub_less_8x8_b = false;
                         }
-                        make_ctx!().derive_direct_mvs(
-                            mb_idx,
-                            0,
-                            16,
-                            header.direct_spatial_mv_pred_flag,
-                            sps.direct_8x8_inference_flag,
-                            current_poc,
-                            &_ref_pic_list_l0,
-                            &_ref_pic_list_l1,
-                        );
+                        make_ctx!().derive_direct_mvs(mb_idx, 0, 16, &params);
                         // Build sub_parts for MC, coalescing blocks with identical MVs/refs
                         // per 8x8 sub-block (spec 8.4.1.2.1: direct mode applied per 8x8)
                         let base = mb_idx * 16;
@@ -4924,16 +4878,7 @@ impl Decoder {
                         // Derive B_Direct_8x8 MVs per 4x4 block BEFORE MVD parsing
                         for layout in &layouts {
                             if sub_mb_types[layout.smb] == 0 {
-                                make_ctx!().derive_direct_mvs(
-                                    mb_idx,
-                                    layout.smb * 4,
-                                    4,
-                                    header.direct_spatial_mv_pred_flag,
-                                    sps.direct_8x8_inference_flag,
-                                    current_poc,
-                                    &_ref_pic_list_l0,
-                                    &_ref_pic_list_l1,
-                                );
+                                make_ctx!().derive_direct_mvs(mb_idx, layout.smb * 4, 4, &params);
                             }
                         }
 
@@ -6455,11 +6400,7 @@ impl Decoder {
         make_ctx!().finalize_mb_info(
             header.first_mb_in_slice as usize,
             mb_idx.min(total_mbs),
-            is_p_slice,
-            is_b_slice,
-            &ref_pic_list,
-            &_ref_pic_list_l0,
-            &_ref_pic_list_l1,
+            &params,
         );
 
         // Store state back into pending PictureState.

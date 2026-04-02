@@ -7,6 +7,28 @@
 use std::rc::Rc;
 
 use crate::decoder::Frame;
+
+#[allow(dead_code)] // Fields progressively used as methods are migrated
+/// Read-only per-slice parameters used by MB decode methods.
+///
+/// Bundles the immutable slice-level data (header fields, PPS/SPS flags,
+/// reference lists) to avoid long parameter lists.
+pub(crate) struct SliceParams<'a> {
+    pub is_p_slice: bool,
+    pub is_b_slice: bool,
+    pub use_weight: u8,
+    pub current_poc: i32,
+    pub direct_spatial_mv_pred_flag: bool,
+    pub direct_8x8_inference_flag: bool,
+    pub transform_8x8_mode_flag: bool,
+    pub scaling_list_4x4: &'a [[u8; 16]; 6],
+    pub scaling_list_8x8: &'a [[u8; 64]; 2],
+    pub chroma_qp_index_offset: i32,
+    pub ref_pic_list: &'a [Rc<DecodedPicture>],
+    pub ref_pic_list_l0: &'a [Rc<DecodedPicture>],
+    pub ref_pic_list_l1: &'a [Rc<DecodedPicture>],
+    pub wctx: &'a WeightContext<'a>,
+}
 use crate::dpb::DecodedPicture;
 use crate::inter_pred;
 use crate::intra_pred::{
@@ -81,10 +103,11 @@ impl SliceContext<'_> {
         mb_idx: usize,
         mb_x: usize,
         mb_y: usize,
-        ref_pic_list: &[Rc<DecodedPicture>],
-        wctx: &WeightContext,
-        use_weight: u8,
+        sp: &SliceParams,
     ) {
+        let ref_pic_list = sp.ref_pic_list;
+        let wctx = sp.wctx;
+        let use_weight = sp.use_weight;
         let (mvp_x, mvp_y) = predict_mv_skip(
             self.mv_store_l0,
             self.ref_idx_store_l0,
@@ -165,18 +188,18 @@ impl SliceContext<'_> {
     /// Derive direct-mode MVs for all 16 4x4 blocks of a macroblock.
     ///
     /// Used by B_Skip, B_Direct_16x16, and B_Direct_8x8 sub-partitions.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn derive_direct_mvs(
         &mut self,
         mb_idx: usize,
         blk_start: usize,
         blk_count: usize,
-        direct_spatial: bool,
-        direct_8x8_inference_flag: bool,
-        current_poc: i32,
-        ref_pic_list_l0: &[Rc<DecodedPicture>],
-        ref_pic_list_l1: &[Rc<DecodedPicture>],
+        sp: &SliceParams,
     ) {
+        let direct_spatial = sp.direct_spatial_mv_pred_flag;
+        let direct_8x8_inference_flag = sp.direct_8x8_inference_flag;
+        let current_poc = sp.current_poc;
+        let ref_pic_list_l0 = sp.ref_pic_list_l0;
+        let ref_pic_list_l1 = sp.ref_pic_list_l1;
         if direct_spatial {
             for blk in blk_start..blk_start + blk_count {
                 let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) = derive_spatial_direct_blk(
@@ -219,31 +242,21 @@ impl SliceContext<'_> {
 
     /// Decode a B-slice skip macroblock: spatial/temporal direct MV derivation,
     /// per-4x4-block MC (luma + chroma), no residual.
-    #[allow(clippy::too_many_arguments)]
+    /// Decode a B-slice skip macroblock: spatial/temporal direct MV derivation,
+    /// per-4x4-block MC (luma + chroma), no residual.
     pub(crate) fn decode_b_skip_mb(
         &mut self,
         mb_idx: usize,
         mb_x: usize,
         mb_y: usize,
-        direct_spatial: bool,
-        direct_8x8_inference_flag: bool,
-        current_poc: i32,
-        ref_pic_list_l0: &[Rc<DecodedPicture>],
-        ref_pic_list_l1: &[Rc<DecodedPicture>],
-        wctx: &WeightContext,
-        use_weight: u8,
+        sp: &SliceParams,
     ) {
+        let ref_pic_list_l0 = sp.ref_pic_list_l0;
+        let ref_pic_list_l1 = sp.ref_pic_list_l1;
+        let wctx = sp.wctx;
+        let use_weight = sp.use_weight;
         // Derive MVs per 4x4 block via spatial or temporal direct mode
-        self.derive_direct_mvs(
-            mb_idx,
-            0,
-            16,
-            direct_spatial,
-            direct_8x8_inference_flag,
-            current_poc,
-            ref_pic_list_l0,
-            ref_pic_list_l1,
-        );
+        self.derive_direct_mvs(mb_idx, 0, 16, sp);
 
         // Luma MC: per-4x4-block
         let mut luma_pred = [0u8; 256];
@@ -816,29 +829,20 @@ impl SliceContext<'_> {
 
     ///
     /// Called once after the MB loop completes, covering MBs `first_mb..last_mb`.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn finalize_mb_info(
-        &mut self,
-        first_mb: usize,
-        last_mb: usize,
-        is_p_slice: bool,
-        is_b_slice: bool,
-        ref_pic_list: &[Rc<DecodedPicture>],
-        ref_pic_list_l0: &[Rc<DecodedPicture>],
-        ref_pic_list_l1: &[Rc<DecodedPicture>],
-    ) {
-        let list_count = if is_b_slice {
+    pub(crate) fn finalize_mb_info(&mut self, first_mb: usize, last_mb: usize, sp: &SliceParams) {
+        let list_count = if sp.is_b_slice {
             2u8
-        } else if is_p_slice {
+        } else if sp.is_p_slice {
             1
         } else {
             0
         };
-        let l0_list = if is_p_slice {
-            ref_pic_list
+        let l0_list = if sp.is_p_slice {
+            sp.ref_pic_list
         } else {
-            ref_pic_list_l0
+            sp.ref_pic_list_l0
         };
+        let ref_pic_list_l1 = sp.ref_pic_list_l1;
 
         #[allow(clippy::needless_range_loop)]
         for mi in first_mb..last_mb {
