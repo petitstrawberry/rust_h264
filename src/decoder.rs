@@ -760,29 +760,9 @@ impl Decoder {
                                 cr.decode_chroma_pred_mode(st, left_cm, top_cm);
                             mb_chroma_pred[mb_idx] = intra_chroma_pred_mode;
 
-                            let unavail_cbp: u16 = 0x00F; // inter unavailable default
-                            let left_cbp_raw = if !mb_idx.is_multiple_of(mb_width as usize)
-                                && mb_slice_id[mb_idx - 1] == this_slice_id
-                            {
-                                mb_cbp[mb_idx - 1]
-                            } else {
-                                unavail_cbp
-                            };
-                            let top_cbp_raw = if mb_idx >= mb_width as usize
-                                && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
-                            {
-                                mb_cbp[mb_idx - mb_width as usize]
-                            } else {
-                                unavail_cbp
-                            };
-                            let left_cbp = ((left_cbp_raw & 0x7F0)
-                                | (left_cbp_raw & 2)
-                                | (((left_cbp_raw >> 2) & 2) << 2))
-                                as u8;
-                            let top_cbp = top_cbp_raw as u8;
+                            let (left_cbp, top_cbp, left_cbp_c, top_cbp_c) =
+                                make_ctx!().cabac_cbp_context(mb_idx, false);
                             let cbp_luma = cr.decode_cbp_luma(st, left_cbp, top_cbp);
-                            let left_cbp_c = ((left_cbp_raw >> 4) & 3) as u8;
-                            let top_cbp_c = ((top_cbp_raw >> 4) & 3) as u8;
                             let cbp_chroma = cr.decode_cbp_chroma(st, left_cbp_c, top_cbp_c);
                             mb_cbp[mb_idx] = (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
 
@@ -1832,28 +1812,9 @@ impl Decoder {
                         }
 
                         // Residual (inter uses CBP_INTER_TABLE equivalent from CABAC)
-                        let left_cbp_raw = if !mb_idx.is_multiple_of(mb_width as usize)
-                            && mb_slice_id[mb_idx - 1] == this_slice_id
-                        {
-                            mb_cbp[mb_idx - 1]
-                        } else {
-                            0x00Fu16
-                        };
-                        let top_cbp_raw = if mb_idx >= mb_width as usize
-                            && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
-                        {
-                            mb_cbp[mb_idx - mb_width as usize]
-                        } else {
-                            0x00Fu16
-                        };
-                        let left_cbp = ((left_cbp_raw & 0x7F0)
-                            | (left_cbp_raw & 2)
-                            | (((left_cbp_raw >> 2) & 2) << 2))
-                            as u8;
-                        let top_cbp = top_cbp_raw as u8;
+                        let (left_cbp, top_cbp, left_cbp_c, top_cbp_c) =
+                            make_ctx!().cabac_cbp_context(mb_idx, false);
                         let cbp_luma = cr.decode_cbp_luma(st, left_cbp, top_cbp);
-                        let left_cbp_c = ((left_cbp_raw >> 4) & 3) as u8;
-                        let top_cbp_c = ((top_cbp_raw >> 4) & 3) as u8;
                         let cbp_chroma = cr.decode_cbp_chroma(st, left_cbp_c, top_cbp_c);
                         mb_cbp[mb_idx] = (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
                         // 8x8 transform flag for inter MBs (spec 7.3.5).
@@ -3224,28 +3185,9 @@ impl Decoder {
                         }
 
                         // Residual: CABAC CBP + coefficients
-                        let left_cbp_raw = if !mb_idx.is_multiple_of(mb_width as usize)
-                            && mb_slice_id[mb_idx - 1] == this_slice_id
-                        {
-                            mb_cbp[mb_idx - 1]
-                        } else {
-                            0x00Fu16
-                        };
-                        let top_cbp_raw = if mb_idx >= mb_width as usize
-                            && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
-                        {
-                            mb_cbp[mb_idx - mb_width as usize]
-                        } else {
-                            0x00Fu16
-                        };
-                        let left_cbp = ((left_cbp_raw & 0x7F0)
-                            | (left_cbp_raw & 2)
-                            | (((left_cbp_raw >> 2) & 2) << 2))
-                            as u8;
-                        let top_cbp = top_cbp_raw as u8;
+                        let (left_cbp, top_cbp, left_cbp_c, top_cbp_c) =
+                            make_ctx!().cabac_cbp_context(mb_idx, false);
                         let cbp_luma = cr.decode_cbp_luma(st, left_cbp, top_cbp);
-                        let left_cbp_c = ((left_cbp_raw >> 4) & 3) as u8;
-                        let top_cbp_c = ((top_cbp_raw >> 4) & 3) as u8;
                         let cbp_chroma = cr.decode_cbp_chroma(st, left_cbp_c, top_cbp_c);
                         mb_cbp[mb_idx] = (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
 
@@ -3656,31 +3598,9 @@ impl Decoder {
                     mb_chroma_pred[mb_idx] = intra_chroma_pred_mode;
 
                     // CBP with proper neighbor context
-                    let unavail_cbp: u16 = 0x7CF;
-                    let left_cbp_raw = if !mb_idx.is_multiple_of(mb_width as usize)
-                        && mb_slice_id[mb_idx - 1] == this_slice_id
-                    {
-                        mb_cbp[mb_idx - 1]
-                    } else {
-                        unavail_cbp
-                    };
-                    let top_cbp_raw = if mb_idx >= mb_width as usize
-                        && mb_slice_id[mb_idx - mb_width as usize] == this_slice_id
-                    {
-                        mb_cbp[mb_idx - mb_width as usize]
-                    } else {
-                        unavail_cbp
-                    };
-                    // For left: extract right-side 8x8 block bits (bits 1,3 of luma)
-                    // plus upper bits (chroma + DC flags)
-                    let left_cbp = ((left_cbp_raw & 0x7F0)
-                        | (left_cbp_raw & 2)
-                        | (((left_cbp_raw >> 2) & 2) << 2))
-                        as u8;
-                    let top_cbp = top_cbp_raw as u8;
+                    let (left_cbp, top_cbp, left_cbp_c, top_cbp_c) =
+                        make_ctx!().cabac_cbp_context(mb_idx, true);
                     let cbp_luma = cr.decode_cbp_luma(st, left_cbp, top_cbp);
-                    let left_cbp_c = ((left_cbp_raw >> 4) & 3) as u8;
-                    let top_cbp_c = ((top_cbp_raw >> 4) & 3) as u8;
                     let cbp_chroma = cr.decode_cbp_chroma(st, left_cbp_c, top_cbp_c);
                     mb_cbp[mb_idx] = (cbp_luma as u16) | ((cbp_chroma as u16) << 4);
                     let qp_y = if cbp_luma != 0 || cbp_chroma != 0 {

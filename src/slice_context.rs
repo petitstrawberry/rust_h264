@@ -458,6 +458,34 @@ impl SliceContext<'_> {
         self.mb_is_direct[mb_idx] = true;
     }
 
+    /// Gather CABAC CBP neighbor context for a macroblock.
+    ///
+    /// Returns `(left_cbp, top_cbp, left_cbp_chroma, top_cbp_chroma)` for use
+    /// with `decode_cbp_luma` and `decode_cbp_chroma`.
+    pub(crate) fn cabac_cbp_context(&self, mb_idx: usize, is_intra: bool) -> (u8, u8, u8, u8) {
+        let unavail_cbp: u16 = if is_intra { 0x7CF } else { 0x00F };
+        let left_cbp_raw = if !mb_idx.is_multiple_of(self.mb_width as usize)
+            && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
+        {
+            self.mb_cbp[mb_idx - 1]
+        } else {
+            unavail_cbp
+        };
+        let top_cbp_raw = if mb_idx >= self.mb_width as usize
+            && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
+        {
+            self.mb_cbp[mb_idx - self.mb_width as usize]
+        } else {
+            unavail_cbp
+        };
+        let left_cbp =
+            ((left_cbp_raw & 0x7F0) | (left_cbp_raw & 2) | (((left_cbp_raw >> 2) & 2) << 2)) as u8;
+        let top_cbp = top_cbp_raw as u8;
+        let left_cbp_c = ((left_cbp_raw >> 4) & 3) as u8;
+        let top_cbp_c = ((top_cbp_raw >> 4) & 3) as u8;
+        (left_cbp, top_cbp, left_cbp_c, top_cbp_c)
+    }
+
     /// Fill per-4x4-block MV/ref/nnz data into MbInfo for deblocking bS derivation,
     /// and build the per-block ref POC table for temporal direct mode.
     /// Reconstruct one chroma plane: Hadamard + dequant DC, unzigzag + dequant AC,
