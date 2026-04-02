@@ -8,7 +8,7 @@ use crate::deblock::{self, MbInfo, MbType};
 use crate::dpb::{DecodedPicture, Dpb, ReferenceStatus};
 use crate::error::DecodeError;
 use crate::inter_pred;
-use crate::intra_pred::{predict_chroma_8x8, predict_intra_8x8};
+use crate::intra_pred::predict_chroma_8x8;
 use crate::mv_pred::{predict_mv, predict_mv_sub, ref_pic_safe, WeightContext};
 use crate::nal::{NalUnit, NalUnitType};
 use crate::neighbor::{
@@ -827,84 +827,17 @@ impl Decoder {
                                     }
                                 }
                                 for i8x8 in 0..4 {
-                                    let row_off = (i8x8 / 2) * 8;
-                                    let col_off = (i8x8 % 2) * 8;
-                                    let px = mb_x + col_off;
-                                    let py = mb_y + row_off;
-                                    let above_avail_8 = py > 0 && (row_off > 0 || above_mb_avail);
-                                    let above_buf: Option<[u8; 16]> = if above_avail_8 {
-                                        let mut buf = [0u8; 16];
-                                        for (i, b) in buf.iter_mut().enumerate().take(8) {
-                                            *b = frame.y[(py - 1) * stride + px + i];
-                                        }
-                                        let has_tr = if row_off == 0 {
-                                            if px + 8 < (mb_x + 16).min(stride) {
-                                                true
-                                            } else if px + 8 < stride {
-                                                above_right_mb_avail
-                                            } else {
-                                                false
-                                            }
-                                        } else {
-                                            col_off == 0
-                                        };
-                                        if has_tr {
-                                            for i in 0..8 {
-                                                buf[8 + i] = frame.y[(py - 1) * stride
-                                                    + (px + 8 + i).min(stride - 1)];
-                                            }
-                                        } else {
-                                            let last = buf[7];
-                                            buf[8..].fill(last);
-                                        }
-                                        Some(buf)
-                                    } else {
-                                        None
-                                    };
-                                    let left_avail_8 = px > 0 && (col_off > 0 || left_mb_avail);
-                                    let left_buf: Option<[u8; 8]> = if left_avail_8 {
-                                        let mut buf = [0u8; 8];
-                                        for (i, b) in buf.iter_mut().enumerate() {
-                                            *b = frame.y[(py + i) * stride + px - 1];
-                                        }
-                                        Some(buf)
-                                    } else {
-                                        None
-                                    };
-                                    let al_avail_8 = px > 0
-                                        && py > 0
-                                        && ((row_off > 0 && col_off > 0)
-                                            || (row_off > 0 && col_off == 0 && left_mb_avail)
-                                            || (row_off == 0 && col_off > 0 && above_mb_avail)
-                                            || (row_off == 0
-                                                && col_off == 0
-                                                && above_left_mb_avail));
-                                    let al = if al_avail_8 {
-                                        Some(frame.y[(py - 1) * stride + px - 1])
-                                    } else {
-                                        None
-                                    };
-                                    let has_tr = above_buf.is_some()
-                                        && ((row_off == 0 && px + 8 < stride)
-                                            || (row_off > 0 && col_off == 0));
-                                    let mut pred = [0u8; 64];
-                                    predict_intra_8x8(
+                                    make_ctx!().reconstruct_luma_8x8_block(
+                                        i8x8,
+                                        mb_x,
+                                        mb_y,
                                         pred_modes[i8x8 * 4],
-                                        above_buf.as_ref().map(|b| &b[..]),
-                                        left_buf.as_ref().map(|b| &b[..]),
-                                        al,
-                                        has_tr,
-                                        &mut pred,
+                                        &luma_residual,
+                                        above_mb_avail,
+                                        left_mb_avail,
+                                        above_left_mb_avail,
+                                        above_right_mb_avail,
                                     );
-                                    for r in 0..8 {
-                                        for c in 0..8 {
-                                            let val = (pred[r * 8 + c] as i32
-                                                + luma_residual[(row_off + r) * 16 + col_off + c])
-                                                .clamp(0, 255)
-                                                as u8;
-                                            frame.y[(py + r) * stride + px + c] = val;
-                                        }
-                                    }
                                 }
                             } else {
                                 // I4x4 path (existing)
@@ -3820,83 +3753,17 @@ impl Decoder {
                         }
                         // I8x8 prediction + residual reconstruction
                         for i8x8 in 0..4 {
-                            let row_off = (i8x8 / 2) * 8;
-                            let col_off = (i8x8 % 2) * 8;
-                            let px = mb_x + col_off;
-                            let py = mb_y + row_off;
-                            let above_avail_8 = py > 0 && (row_off > 0 || above_mb_avail);
-                            let above_buf: Option<[u8; 16]> = if above_avail_8 {
-                                let mut buf = [0u8; 16];
-                                for (i, b) in buf.iter_mut().enumerate().take(8) {
-                                    *b = frame.y[(py - 1) * stride + px + i];
-                                }
-                                let has_tr = if row_off == 0 {
-                                    if px + 8 < (mb_x + 16).min(stride) {
-                                        true
-                                    } else if px + 8 < stride {
-                                        above_right_mb_avail
-                                    } else {
-                                        false
-                                    }
-                                } else {
-                                    col_off == 0
-                                };
-                                if has_tr {
-                                    for i in 0..8 {
-                                        let col = (px + 8 + i).min(stride - 1);
-                                        buf[8 + i] = frame.y[(py - 1) * stride + col];
-                                    }
-                                } else {
-                                    let last = buf[7];
-                                    buf[8..].fill(last);
-                                }
-                                Some(buf)
-                            } else {
-                                None
-                            };
-                            let left_avail_8 = px > 0 && (col_off > 0 || left_mb_avail);
-                            let left_buf: Option<[u8; 8]> = if left_avail_8 {
-                                let mut buf = [0u8; 8];
-                                for (i, b) in buf.iter_mut().enumerate() {
-                                    *b = frame.y[(py + i) * stride + px - 1];
-                                }
-                                Some(buf)
-                            } else {
-                                None
-                            };
-                            let al_avail_8 = px > 0
-                                && py > 0
-                                && ((row_off > 0 && col_off > 0)
-                                    || (row_off > 0 && col_off == 0 && left_mb_avail)
-                                    || (row_off == 0 && col_off > 0 && above_mb_avail)
-                                    || (row_off == 0 && col_off == 0 && above_left_mb_avail));
-                            let above_left_val = if al_avail_8 {
-                                Some(frame.y[(py - 1) * stride + px - 1])
-                            } else {
-                                None
-                            };
-                            let has_topright = above_buf.is_some()
-                                && ((row_off == 0 && px + 8 < stride)
-                                    || (row_off > 0 && col_off == 0));
-                            let mode = pred_modes[i8x8 * 4];
-                            let mut pred = [0u8; 64];
-                            predict_intra_8x8(
-                                mode,
-                                above_buf.as_ref().map(|b| &b[..]),
-                                left_buf.as_ref().map(|b| &b[..]),
-                                above_left_val,
-                                has_topright,
-                                &mut pred,
+                            make_ctx!().reconstruct_luma_8x8_block(
+                                i8x8,
+                                mb_x,
+                                mb_y,
+                                pred_modes[i8x8 * 4],
+                                &luma_residual,
+                                above_mb_avail,
+                                left_mb_avail,
+                                above_left_mb_avail,
+                                above_right_mb_avail,
                             );
-                            for r in 0..8 {
-                                for c in 0..8 {
-                                    let val = (pred[r * 8 + c] as i32
-                                        + luma_residual[(row_off + r) * 16 + col_off + c])
-                                        .clamp(0, 255)
-                                        as u8;
-                                    frame.y[(py + r) * stride + px + c] = val;
-                                }
-                            }
                         }
                     } else {
                         // I4x4 via CABAC: existing path
@@ -6236,90 +6103,17 @@ impl Decoder {
                     }
                     // I8x8 prediction + residual reconstruction
                     for i8x8 in 0..4 {
-                        let row_off = (i8x8 / 2) * 8;
-                        let col_off = (i8x8 % 2) * 8;
-                        let px = mb_x + col_off;
-                        let py = mb_y + row_off;
-
-                        // Gather reference samples: 16 above (8 + 8 above-right)
-                        let above_avail_8 = py > 0 && (row_off > 0 || above_mb_avail);
-                        let above_buf: Option<[u8; 16]> = if above_avail_8 {
-                            let mut buf = [0u8; 16];
-                            for (i, b) in buf.iter_mut().enumerate().take(8) {
-                                *b = frame.y[(py - 1) * stride + px + i];
-                            }
-                            // Above-right: available if at top of MB or from MB above
-                            let has_tr = if row_off == 0 {
-                                if px + 8 < (mb_x + 16).min(stride) {
-                                    true
-                                } else if px + 8 < stride {
-                                    above_right_mb_avail
-                                } else {
-                                    false
-                                }
-                            } else {
-                                col_off == 0 // only top-left 8x8 has above-right within MB
-                            };
-                            if has_tr {
-                                for i in 0..8 {
-                                    let col = (px + 8 + i).min(stride - 1);
-                                    buf[8 + i] = frame.y[(py - 1) * stride + col];
-                                }
-                            } else {
-                                let last = buf[7];
-                                buf[8..].fill(last);
-                            }
-                            Some(buf)
-                        } else {
-                            None
-                        };
-
-                        let left_avail_8 = px > 0 && (col_off > 0 || left_mb_avail);
-                        let left_buf: Option<[u8; 8]> = if left_avail_8 {
-                            let mut buf = [0u8; 8];
-                            for (i, b) in buf.iter_mut().enumerate() {
-                                *b = frame.y[(py + i) * stride + px - 1];
-                            }
-                            Some(buf)
-                        } else {
-                            None
-                        };
-
-                        let al_avail_8 = px > 0
-                            && py > 0
-                            && ((row_off > 0 && col_off > 0)
-                                || (row_off > 0 && col_off == 0 && left_mb_avail)
-                                || (row_off == 0 && col_off > 0 && above_mb_avail)
-                                || (row_off == 0 && col_off == 0 && above_left_mb_avail));
-                        let above_left_val = if al_avail_8 {
-                            Some(frame.y[(py - 1) * stride + px - 1])
-                        } else {
-                            None
-                        };
-
-                        let has_topright = above_buf.is_some()
-                            && ((row_off == 0 && px + 8 < stride) || (row_off > 0 && col_off == 0));
-
-                        let mode = pred_modes[i8x8 * 4]; // mode stored per 8x8
-                        let mut pred = [0u8; 64];
-                        predict_intra_8x8(
-                            mode,
-                            above_buf.as_ref().map(|b| &b[..]),
-                            left_buf.as_ref().map(|b| &b[..]),
-                            above_left_val,
-                            has_topright,
-                            &mut pred,
+                        make_ctx!().reconstruct_luma_8x8_block(
+                            i8x8,
+                            mb_x,
+                            mb_y,
+                            pred_modes[i8x8 * 4],
+                            &luma_residual,
+                            above_mb_avail,
+                            left_mb_avail,
+                            above_left_mb_avail,
+                            above_right_mb_avail,
                         );
-
-                        // Add residual and write to frame
-                        for r in 0..8 {
-                            for c in 0..8 {
-                                let val = (pred[r * 8 + c] as i32
-                                    + luma_residual[(row_off + r) * 16 + col_off + c])
-                                    .clamp(0, 255) as u8;
-                                frame.y[(py + r) * stride + px + c] = val;
-                            }
-                        }
                     }
                 } else {
                     // I4x4: existing 4x4 path

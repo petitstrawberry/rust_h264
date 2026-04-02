@@ -9,7 +9,9 @@ use std::rc::Rc;
 use crate::decoder::Frame;
 use crate::dpb::DecodedPicture;
 use crate::inter_pred;
-use crate::intra_pred::{predict_chroma_8x8, predict_intra_16x16, predict_intra_4x4};
+use crate::intra_pred::{
+    predict_chroma_8x8, predict_intra_16x16, predict_intra_4x4, predict_intra_8x8,
+};
 use crate::mv_pred::{
     derive_spatial_direct_blk, derive_temporal_direct_blk, predict_mv_skip, ref_pic_safe,
     WeightContext,
@@ -514,6 +516,107 @@ impl SliceContext<'_> {
     /// Gathers above/left/above-left neighbor samples (respecting slice boundaries
     /// and above-right availability per spec 6.4.12), calls `predict_intra_4x4`,
     /// adds residual, clamps, and writes to `frame.y`.
+    #[allow(clippy::too_many_arguments)]
+    /// Predict and reconstruct a single I8x8 luma block (8x8 transform).
+    ///
+    /// Similar to I4x4 but operates on 8x8 blocks with 16-sample above buffer
+    /// and 8-sample left buffer.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn reconstruct_luma_8x8_block(
+        &mut self,
+        i8x8: usize,
+        mb_x: usize,
+        mb_y: usize,
+        pred_mode: u8,
+        luma_residual: &[i32; 256],
+        above_mb_avail: bool,
+        left_mb_avail: bool,
+        above_left_mb_avail: bool,
+        above_right_mb_avail: bool,
+    ) {
+        let row_off = (i8x8 / 2) * 8;
+        let col_off = (i8x8 % 2) * 8;
+        let px = mb_x + col_off;
+        let py = mb_y + row_off;
+
+        // Above samples (16: 8 above + 8 above-right)
+        let above_avail = py > 0 && (row_off > 0 || above_mb_avail);
+        let above_buf: Option<[u8; 16]> = if above_avail {
+            let mut buf = [0u8; 16];
+            for (i, b) in buf.iter_mut().enumerate().take(8) {
+                *b = self.frame.y[(py - 1) * self.stride + px + i];
+            }
+            let has_tr = if row_off == 0 {
+                if px + 8 < (mb_x + 16).min(self.stride) {
+                    true
+                } else if px + 8 < self.stride {
+                    above_right_mb_avail
+                } else {
+                    false
+                }
+            } else {
+                col_off == 0
+            };
+            if has_tr {
+                for i in 0..8 {
+                    let col = (px + 8 + i).min(self.stride - 1);
+                    buf[8 + i] = self.frame.y[(py - 1) * self.stride + col];
+                }
+            } else {
+                let last = buf[7];
+                buf[8..].fill(last);
+            }
+            Some(buf)
+        } else {
+            None
+        };
+
+        // Left samples
+        let left_avail = px > 0 && (col_off > 0 || left_mb_avail);
+        let left_buf: Option<[u8; 8]> = if left_avail {
+            let mut buf = [0u8; 8];
+            for (i, b) in buf.iter_mut().enumerate() {
+                *b = self.frame.y[(py + i) * self.stride + px - 1];
+            }
+            Some(buf)
+        } else {
+            None
+        };
+
+        // Above-left
+        let al_avail = px > 0
+            && py > 0
+            && ((row_off > 0 && col_off > 0)
+                || (row_off > 0 && col_off == 0 && left_mb_avail)
+                || (row_off == 0 && col_off > 0 && above_mb_avail)
+                || (row_off == 0 && col_off == 0 && above_left_mb_avail));
+        let above_left_val = if al_avail {
+            Some(self.frame.y[(py - 1) * self.stride + px - 1])
+        } else {
+            None
+        };
+
+        let has_topright = above_buf.is_some()
+            && ((row_off == 0 && px + 8 < self.stride) || (row_off > 0 && col_off == 0));
+
+        let mut pred = [0u8; 64];
+        predict_intra_8x8(
+            pred_mode,
+            above_buf.as_ref().map(|b| &b[..]),
+            left_buf.as_ref().map(|b| &b[..]),
+            above_left_val,
+            has_topright,
+            &mut pred,
+        );
+        for r in 0..8 {
+            for c in 0..8 {
+                let val = (pred[r * 8 + c] as i32 + luma_residual[(row_off + r) * 16 + col_off + c])
+                    .clamp(0, 255) as u8;
+                self.frame.y[(py + r) * self.stride + px + c] = val;
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn reconstruct_luma_4x4_block(
         &mut self,
