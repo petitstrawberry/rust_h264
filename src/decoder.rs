@@ -8,7 +8,7 @@ use crate::deblock::{self, MbInfo, MbType};
 use crate::dpb::{DecodedPicture, Dpb, ReferenceStatus};
 use crate::error::DecodeError;
 use crate::inter_pred;
-use crate::intra_pred::{predict_chroma_8x8, predict_intra_4x4, predict_intra_8x8};
+use crate::intra_pred::{predict_chroma_8x8, predict_intra_8x8};
 use crate::mv_pred::{predict_mv, predict_mv_sub, ref_pic_safe, WeightContext};
 use crate::nal::{NalUnit, NalUnitType};
 use crate::neighbor::{
@@ -950,78 +950,19 @@ impl Decoder {
                                     }
                                     inverse_dct_4x4(&mut block_coeffs);
 
-                                    let local_row = py - mb_y;
-                                    let local_col = px - mb_x;
-                                    let above_avail = py > 0 && (local_row > 0 || above_mb_avail);
-                                    let above_buf: Option<[u8; 8]> = if above_avail {
-                                        let mut buf = [0u8; 8];
-                                        for (i, b) in buf.iter_mut().enumerate().take(4) {
-                                            *b = frame.y[(py - 1) * stride + px + i];
-                                        }
-                                        let topright_avail = if local_row == 0 {
-                                            if px + 4 < (mb_x + 16).min(stride) {
-                                                true
-                                            } else if px + 4 < stride {
-                                                above_right_mb_avail
-                                            } else {
-                                                false
-                                            }
-                                        } else {
-                                            !matches!(blk, 3 | 7 | 11 | 13 | 15)
-                                        };
-                                        if topright_avail {
-                                            for (i, b) in buf.iter_mut().enumerate().skip(4) {
-                                                let col = (px + i).min(stride - 1);
-                                                *b = frame.y[(py - 1) * stride + col];
-                                            }
-                                        } else {
-                                            let last = buf[3];
-                                            buf[4..8].fill(last);
-                                        }
-                                        Some(buf)
-                                    } else {
-                                        None
-                                    };
-                                    let left_avail = px > 0 && (local_col > 0 || left_mb_avail);
-                                    let left_buf: Option<[u8; 4]> = if left_avail {
-                                        let mut buf = [0u8; 4];
-                                        for (i, b) in buf.iter_mut().enumerate() {
-                                            *b = frame.y[(py + i) * stride + px - 1];
-                                        }
-                                        Some(buf)
-                                    } else {
-                                        None
-                                    };
-                                    let al_avail = px > 0
-                                        && py > 0
-                                        && ((local_row > 0 && local_col > 0)
-                                            || (local_row > 0 && local_col == 0 && left_mb_avail)
-                                            || (local_row == 0 && local_col > 0 && above_mb_avail)
-                                            || (local_row == 0
-                                                && local_col == 0
-                                                && above_left_mb_avail));
-                                    let above_left_val = if al_avail {
-                                        Some(frame.y[(py - 1) * stride + px - 1])
-                                    } else {
-                                        None
-                                    };
-                                    let mut pred = [0u8; 16];
-                                    predict_intra_4x4(
+                                    make_ctx!().reconstruct_luma_4x4_block(
+                                        px,
+                                        py,
+                                        mb_x,
+                                        mb_y,
+                                        blk,
                                         pred_modes[blk],
-                                        above_buf.as_ref().map(|b| &b[..]),
-                                        left_buf.as_ref().map(|b| &b[..]),
-                                        above_left_val,
-                                        &mut pred,
+                                        &block_coeffs,
+                                        above_mb_avail,
+                                        left_mb_avail,
+                                        above_left_mb_avail,
+                                        above_right_mb_avail,
                                     );
-                                    for r in 0..4 {
-                                        for c in 0..4 {
-                                            let val = (pred[r * 4 + c] as i32
-                                                + block_coeffs[r * 4 + c])
-                                                .clamp(0, 255)
-                                                as u8;
-                                            frame.y[(py + r) * stride + px + c] = val;
-                                        }
-                                    }
                                 }
                             } // close if use_8x8_intra_pb else
 
@@ -4005,80 +3946,20 @@ impl Decoder {
                             }
                             inverse_dct_4x4(&mut block_coeffs);
 
-                            // I4x4 prediction
-                            let local_row = py - mb_y;
-                            let local_col = px - mb_x;
-                            // Above samples: unavailable if at picture top or cross-slice MB boundary
-                            let above_avail = py > 0 && (local_row > 0 || above_mb_avail);
-                            let above_buf: Option<[u8; 8]> = if above_avail {
-                                let mut buf = [0u8; 8];
-                                for (i, b) in buf.iter_mut().enumerate().take(4) {
-                                    *b = frame.y[(py - 1) * stride + px + i];
-                                }
-                                let topright_avail = if local_row == 0 {
-                                    if px + 4 < (mb_x + 16).min(stride) {
-                                        true // within same MB
-                                    } else if px + 4 < stride {
-                                        above_right_mb_avail
-                                    } else {
-                                        false
-                                    }
-                                } else {
-                                    !matches!(blk, 3 | 7 | 11 | 13 | 15)
-                                };
-                                if topright_avail {
-                                    for (i, b) in buf.iter_mut().enumerate().skip(4) {
-                                        let col = (px + i).min(stride - 1);
-                                        *b = frame.y[(py - 1) * stride + col];
-                                    }
-                                } else {
-                                    let last = buf[3];
-                                    buf[4..8].fill(last);
-                                }
-                                Some(buf)
-                            } else {
-                                None
-                            };
-                            // Left samples: unavailable if at picture left or cross-slice MB boundary
-                            let left_avail = px > 0 && (local_col > 0 || left_mb_avail);
-                            let left_buf: Option<[u8; 4]> = if left_avail {
-                                let mut buf = [0u8; 4];
-                                for (i, b) in buf.iter_mut().enumerate() {
-                                    *b = frame.y[(py + i) * stride + px - 1];
-                                }
-                                Some(buf)
-                            } else {
-                                None
-                            };
-                            // Above-left: unavailable if cross-slice
-                            let al_avail = px > 0
-                                && py > 0
-                                && ((local_row > 0 && local_col > 0)
-                                    || (local_row > 0 && local_col == 0 && left_mb_avail)
-                                    || (local_row == 0 && local_col > 0 && above_mb_avail)
-                                    || (local_row == 0 && local_col == 0 && above_left_mb_avail));
-                            let above_left_val = if al_avail {
-                                Some(frame.y[(py - 1) * stride + px - 1])
-                            } else {
-                                None
-                            };
-
-                            let mut pred = [0u8; 16];
-                            predict_intra_4x4(
+                            // I4x4 prediction + residual
+                            make_ctx!().reconstruct_luma_4x4_block(
+                                px,
+                                py,
+                                mb_x,
+                                mb_y,
+                                blk,
                                 pred_modes[blk],
-                                above_buf.as_ref().map(|b| &b[..]),
-                                left_buf.as_ref().map(|b| &b[..]),
-                                above_left_val,
-                                &mut pred,
+                                &block_coeffs,
+                                above_mb_avail,
+                                left_mb_avail,
+                                above_left_mb_avail,
+                                above_right_mb_avail,
                             );
-                            for r in 0..4 {
-                                for c in 0..4 {
-                                    let val = (pred[r * 4 + c] as i32 + block_coeffs[r * 4 + c])
-                                        .clamp(0, 255)
-                                        as u8;
-                                    frame.y[(py + r) * stride + px + c] = val;
-                                }
-                            }
                         }
                     } // close if use_8x8_intra else (luma only)
 
@@ -6474,78 +6355,20 @@ impl Decoder {
                             dequant_4x4_full(&mut block_coeffs, qp_y, &pps.scaling_list_4x4[0]);
                         }
                         inverse_dct_4x4(&mut block_coeffs);
-                        // Gather neighbor samples for I4x4 prediction
-                        let local_row = py - mb_y;
-                        let local_col = px - mb_x;
-                        let above_avail = py > 0 && (local_row > 0 || above_mb_avail);
-                        let above_buf: Option<[u8; 8]> = if above_avail {
-                            let mut buf = [0u8; 8];
-                            for (i, b) in buf.iter_mut().enumerate().take(4) {
-                                *b = frame.y[(py - 1) * stride + px + i];
-                            }
-                            let topright_avail = if local_row == 0 {
-                                if px + 4 < (mb_x + 16).min(stride) {
-                                    true // within same MB's above neighbor
-                                } else if px + 4 < stride {
-                                    above_right_mb_avail
-                                } else {
-                                    false
-                                }
-                            } else {
-                                !matches!(blk, 3 | 7 | 11 | 13 | 15)
-                            };
-                            if topright_avail {
-                                for (i, b) in buf.iter_mut().enumerate().skip(4) {
-                                    let col = (px + i).min(stride - 1);
-                                    *b = frame.y[(py - 1) * stride + col];
-                                }
-                            } else {
-                                let last = buf[3];
-                                buf[4..8].fill(last);
-                            }
-                            Some(buf)
-                        } else {
-                            None
-                        };
-                        let left_avail = px > 0 && (local_col > 0 || left_mb_avail);
-                        let left_buf: Option<[u8; 4]> = if left_avail {
-                            let mut buf = [0u8; 4];
-                            for (i, b) in buf.iter_mut().enumerate() {
-                                *b = frame.y[(py + i) * stride + px - 1];
-                            }
-                            Some(buf)
-                        } else {
-                            None
-                        };
-                        let al_avail = px > 0
-                            && py > 0
-                            && ((local_row > 0 && local_col > 0)
-                                || (local_row > 0 && local_col == 0 && left_mb_avail)
-                                || (local_row == 0 && local_col > 0 && above_mb_avail)
-                                || (local_row == 0 && local_col == 0 && above_left_mb_avail));
-                        let above_left_val = if al_avail {
-                            Some(frame.y[(py - 1) * stride + px - 1])
-                        } else {
-                            None
-                        };
-
-                        let mut pred = [0u8; 16];
-                        predict_intra_4x4(
+                        // I4x4 prediction + residual
+                        make_ctx!().reconstruct_luma_4x4_block(
+                            px,
+                            py,
+                            mb_x,
+                            mb_y,
+                            blk,
                             pred_modes[blk],
-                            above_buf.as_ref().map(|b| &b[..]),
-                            left_buf.as_ref().map(|b| &b[..]),
-                            above_left_val,
-                            &mut pred,
+                            &block_coeffs,
+                            above_mb_avail,
+                            left_mb_avail,
+                            above_left_mb_avail,
+                            above_right_mb_avail,
                         );
-
-                        // Add residual and write to frame
-                        for r in 0..4 {
-                            for c in 0..4 {
-                                let val = (pred[r * 4 + c] as i32 + block_coeffs[r * 4 + c])
-                                    .clamp(0, 255) as u8;
-                                frame.y[(py + r) * stride + px + c] = val;
-                            }
-                        }
                     }
                 } // close if use_8x8_intra else
             } else if mb_type <= 24 {

@@ -9,7 +9,7 @@ use std::rc::Rc;
 use crate::decoder::Frame;
 use crate::dpb::DecodedPicture;
 use crate::inter_pred;
-use crate::intra_pred::{predict_chroma_8x8, predict_intra_16x16};
+use crate::intra_pred::{predict_chroma_8x8, predict_intra_16x16, predict_intra_4x4};
 use crate::mv_pred::{
     derive_spatial_direct_blk, derive_temporal_direct_blk, predict_mv_skip, ref_pic_safe,
     WeightContext,
@@ -509,6 +509,103 @@ impl SliceContext<'_> {
     ///
     /// Gathers neighbor samples (respecting slice boundaries), calls `predict_intra_16x16`,
     /// adds the 16x16 residual, clamps, and writes to `frame.y`.
+    /// Predict and reconstruct a single I4x4 luma block.
+    ///
+    /// Gathers above/left/above-left neighbor samples (respecting slice boundaries
+    /// and above-right availability per spec 6.4.12), calls `predict_intra_4x4`,
+    /// adds residual, clamps, and writes to `frame.y`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn reconstruct_luma_4x4_block(
+        &mut self,
+        px: usize,
+        py: usize,
+        mb_x: usize,
+        mb_y: usize,
+        blk: usize,
+        pred_mode: u8,
+        block_coeffs: &[i32; 16],
+        above_mb_avail: bool,
+        left_mb_avail: bool,
+        above_left_mb_avail: bool,
+        above_right_mb_avail: bool,
+    ) {
+        let local_row = py - mb_y;
+        let local_col = px - mb_x;
+
+        // Above samples
+        let above_avail = py > 0 && (local_row > 0 || above_mb_avail);
+        let above_buf: Option<[u8; 8]> = if above_avail {
+            let mut buf = [0u8; 8];
+            for (i, b) in buf.iter_mut().enumerate().take(4) {
+                *b = self.frame.y[(py - 1) * self.stride + px + i];
+            }
+            let topright_avail = if local_row == 0 {
+                if px + 4 < (mb_x + 16).min(self.stride) {
+                    true
+                } else if px + 4 < self.stride {
+                    above_right_mb_avail
+                } else {
+                    false
+                }
+            } else {
+                !matches!(blk, 3 | 7 | 11 | 13 | 15)
+            };
+            if topright_avail {
+                for (i, b) in buf.iter_mut().enumerate().skip(4) {
+                    let col = (px + i).min(self.stride - 1);
+                    *b = self.frame.y[(py - 1) * self.stride + col];
+                }
+            } else {
+                let last = buf[3];
+                buf[4..8].fill(last);
+            }
+            Some(buf)
+        } else {
+            None
+        };
+
+        // Left samples
+        let left_avail = px > 0 && (local_col > 0 || left_mb_avail);
+        let left_buf: Option<[u8; 4]> = if left_avail {
+            let mut buf = [0u8; 4];
+            for (i, b) in buf.iter_mut().enumerate() {
+                *b = self.frame.y[(py + i) * self.stride + px - 1];
+            }
+            Some(buf)
+        } else {
+            None
+        };
+
+        // Above-left sample
+        let al_avail = px > 0
+            && py > 0
+            && ((local_row > 0 && local_col > 0)
+                || (local_row > 0 && local_col == 0 && left_mb_avail)
+                || (local_row == 0 && local_col > 0 && above_mb_avail)
+                || (local_row == 0 && local_col == 0 && above_left_mb_avail));
+        let above_left_val = if al_avail {
+            Some(self.frame.y[(py - 1) * self.stride + px - 1])
+        } else {
+            None
+        };
+
+        // Predict + add residual + write
+        let mut pred = [0u8; 16];
+        predict_intra_4x4(
+            pred_mode,
+            above_buf.as_ref().map(|b| &b[..]),
+            left_buf.as_ref().map(|b| &b[..]),
+            above_left_val,
+            &mut pred,
+        );
+        for r in 0..4 {
+            for c in 0..4 {
+                let val = (pred[r * 4 + c] as i32 + block_coeffs[r * 4 + c]).clamp(0, 255) as u8;
+                self.frame.y[(py + r) * self.stride + px + c] = val;
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn reconstruct_luma_16x16(
         &mut self,
