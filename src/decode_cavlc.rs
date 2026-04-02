@@ -791,24 +791,28 @@ impl SliceContext<'_> {
                         }
                         continue;
                     }
-                    let mut block_coeffs = [0i32; 64];
-                    let nc = compute_nc(
-                        self.nc_luma,
-                        mb_idx,
-                        self.mb_width as usize,
-                        i8x8 * 4,
-                        16,
-                        self.mb_slice_id,
-                        self.this_slice_id,
-                    );
-                    let tc = parse_residual_block_cavlc(reader, &mut block_coeffs, 64, nc)?;
-                    let tc_per = tc.div_ceil(4);
-                    for sub in 0..4 {
-                        self.nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = tc_per;
-                    }
                     let mut block_8x8 = [0i32; 64];
-                    for i in 0..64 {
-                        block_8x8[ZIGZAG_8X8_CAVLC[i]] = block_coeffs[i];
+                    // CAVLC: decode 4 groups of 16 coefficients (spec 7.3.5.3.2)
+                    for i4x4 in 0..4 {
+                        let blk = i8x8 * 4 + i4x4;
+                        let nc = compute_nc(
+                            self.nc_luma,
+                            mb_idx,
+                            self.mb_width as usize,
+                            blk,
+                            16,
+                            self.mb_slice_id,
+                            self.this_slice_id,
+                        );
+                        let mut quad_coeffs = [0i32; 16];
+                        let tc = parse_residual_block_cavlc(reader, &mut quad_coeffs, 16, nc)?;
+                        self.nc_luma[mb_idx * 16 + blk] = tc;
+                        let scan_base = i4x4 * 16;
+                        for k in 0..16 {
+                            if quad_coeffs[k] != 0 {
+                                block_8x8[ZIGZAG_8X8_CAVLC[scan_base + k]] = quad_coeffs[k];
+                            }
+                        }
                     }
                     dequant_8x8(&mut block_8x8, qp_y, &sp.scaling_list_8x8[1]);
                     inverse_dct_8x8(&mut block_8x8);

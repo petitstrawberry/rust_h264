@@ -1371,4 +1371,11 @@ mod tests {
         // transform_size_8x8_flag, and B_8x8 with sub-partition types.
         decode_multiframe_and_compare("high_b_slower_test", 10, 64, 64);
     }
+
+    #[test]
+    fn test_high_cavlc_b() {
+        // 64x64, 10 frames: CAVLC High profile with bframes=2, ref=2, 8x8dct,
+        // all partitions, no-deblock. Validates CAVLC B-frame 8x8 transform path.
+        decode_multiframe_and_compare("high_cavlc_b_test", 10, 64, 64);
+    }
 }
