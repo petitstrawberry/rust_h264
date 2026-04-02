@@ -9,7 +9,7 @@ use crate::dpb::{DecodedPicture, Dpb, ReferenceStatus};
 use crate::error::DecodeError;
 use crate::inter_pred;
 use crate::intra_pred::{
-    predict_chroma_8x8, predict_intra_16x16, predict_intra_4x4, predict_intra_8x8,
+    predict_chroma_8x8, predict_intra_4x4, predict_intra_8x8,
 };
 use crate::mv_pred::{predict_mv, predict_mv_sub, ref_pic_safe, WeightContext};
 use crate::nal::{NalUnit, NalUnitType};
@@ -1350,47 +1350,16 @@ impl Decoder {
                                 }
                             }
 
-                            // I16x16 prediction
-                            let mut luma_pred = [0u8; 256];
-                            let above: Option<Vec<u8>> = if mb_y > 0 && above_mb_avail {
-                                Some(
-                                    (0..16)
-                                        .map(|x| frame.y[(mb_y - 1) * stride + mb_x + x])
-                                        .collect(),
-                                )
-                            } else {
-                                None
-                            };
-                            let left: Option<Vec<u8>> = if mb_x > 0 && left_mb_avail {
-                                Some(
-                                    (0..16)
-                                        .map(|y| frame.y[(mb_y + y) * stride + mb_x - 1])
-                                        .collect(),
-                                )
-                            } else {
-                                None
-                            };
-                            let above_left = if mb_x > 0 && mb_y > 0 && above_left_mb_avail {
-                                Some(frame.y[(mb_y - 1) * stride + mb_x - 1])
-                            } else {
-                                None
-                            };
-                            predict_intra_16x16(
+                            // I16x16 prediction + residual
+                            make_ctx!().reconstruct_luma_16x16(
+                                mb_x,
+                                mb_y,
                                 i16_pred,
-                                above.as_deref(),
-                                left.as_deref(),
-                                above_left,
-                                &mut luma_pred,
+                                &luma_residual,
+                                above_mb_avail,
+                                left_mb_avail,
+                                above_left_mb_avail,
                             );
-                            for r in 0..16 {
-                                for c in 0..16 {
-                                    let val = (luma_pred[r * 16 + c] as i32
-                                        + luma_residual[r * 16 + c])
-                                        .clamp(0, 255)
-                                        as u8;
-                                    frame.y[(mb_y + r) * stride + mb_x + c] = val;
-                                }
-                            }
 
                             // Chroma prediction
                             let chroma_width = (width / 2) as usize;
@@ -4501,47 +4470,16 @@ impl Decoder {
                         }
                     }
 
-                    // I16x16 prediction
-                    let mut luma_pred = [0u8; 256];
-                    let above: Option<Vec<u8>> = if mb_y > 0 && above_mb_avail_i {
-                        Some(
-                            (0..16)
-                                .map(|x| frame.y[(mb_y - 1) * stride + mb_x + x])
-                                .collect(),
-                        )
-                    } else {
-                        None
-                    };
-                    let left: Option<Vec<u8>> = if mb_x > 0 && left_mb_avail_i {
-                        Some(
-                            (0..16)
-                                .map(|y| frame.y[(mb_y + y) * stride + mb_x - 1])
-                                .collect(),
-                        )
-                    } else {
-                        None
-                    };
-                    let above_left = if mb_x > 0 && mb_y > 0 && above_left_mb_avail_i {
-                        Some(frame.y[(mb_y - 1) * stride + mb_x - 1])
-                    } else {
-                        None
-                    };
-
-                    predict_intra_16x16(
+                    // I16x16 prediction + residual
+                    make_ctx!().reconstruct_luma_16x16(
+                        mb_x,
+                        mb_y,
                         intra16x16_pred_mode,
-                        above.as_deref(),
-                        left.as_deref(),
-                        above_left,
-                        &mut luma_pred,
+                        &luma_residual,
+                        above_mb_avail_i,
+                        left_mb_avail_i,
+                        above_left_mb_avail_i,
                     );
-
-                    for r in 0..16 {
-                        for c in 0..16 {
-                            let val = (luma_pred[r * 16 + c] as i32 + luma_residual[r * 16 + c])
-                                .clamp(0, 255) as u8;
-                            frame.y[(mb_y + r) * stride + mb_x + c] = val;
-                        }
-                    }
 
                     // Chroma (same as I4x4 CABAC path)
                     let chroma_width = (width / 2) as usize;
@@ -6821,47 +6759,16 @@ impl Decoder {
                     }
                 }
 
-                // I16x16 prediction
-                let mut luma_pred = [0u8; 256];
-                let above: Option<Vec<u8>> = if mb_y > 0 && above_mb_avail {
-                    Some(
-                        (0..16)
-                            .map(|x| frame.y[(mb_y - 1) * stride + mb_x + x])
-                            .collect(),
-                    )
-                } else {
-                    None
-                };
-                let left: Option<Vec<u8>> = if mb_x > 0 && left_mb_avail {
-                    Some(
-                        (0..16)
-                            .map(|y| frame.y[(mb_y + y) * stride + mb_x - 1])
-                            .collect(),
-                    )
-                } else {
-                    None
-                };
-                let above_left = if mb_x > 0 && mb_y > 0 && above_left_mb_avail {
-                    Some(frame.y[(mb_y - 1) * stride + mb_x - 1])
-                } else {
-                    None
-                };
-
-                predict_intra_16x16(
+                // I16x16 prediction + residual
+                make_ctx!().reconstruct_luma_16x16(
+                    mb_x,
+                    mb_y,
                     intra16x16_pred_mode,
-                    above.as_deref(),
-                    left.as_deref(),
-                    above_left,
-                    &mut luma_pred,
+                    &luma_residual,
+                    above_mb_avail,
+                    left_mb_avail,
+                    above_left_mb_avail,
                 );
-
-                for y in 0..16 {
-                    for x in 0..16 {
-                        let val = (luma_pred[y * 16 + x] as i32 + luma_residual[y * 16 + x])
-                            .clamp(0, 255) as u8;
-                        frame.y[(mb_y + y) * stride + mb_x + x] = val;
-                    }
-                }
             } else if mb_type == 25 {
                 // === I_PCM macroblock ===
                 reader.align_to_byte();

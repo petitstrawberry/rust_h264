@@ -9,7 +9,7 @@ use std::rc::Rc;
 use crate::decoder::Frame;
 use crate::dpb::DecodedPicture;
 use crate::inter_pred;
-use crate::intra_pred::predict_chroma_8x8;
+use crate::intra_pred::{predict_chroma_8x8, predict_intra_16x16};
 use crate::mv_pred::{
     derive_spatial_direct_blk, derive_temporal_direct_blk, predict_mv_skip, ref_pic_safe,
     WeightContext,
@@ -447,6 +447,62 @@ impl SliceContext<'_> {
     ///
     /// Gathers neighbor samples (respecting slice boundaries), calls `predict_chroma_8x8`
     /// for each plane, and returns the two 64-byte prediction buffers.
+    /// Compute I16x16 luma prediction and add residual to the frame.
+    ///
+    /// Gathers neighbor samples (respecting slice boundaries), calls `predict_intra_16x16`,
+    /// adds the 16x16 residual, clamps, and writes to `frame.y`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn reconstruct_luma_16x16(
+        &mut self,
+        mb_x: usize,
+        mb_y: usize,
+        pred_mode: u8,
+        luma_residual: &[i32; 256],
+        above_avail: bool,
+        left_avail: bool,
+        above_left_avail: bool,
+    ) {
+        let above: Option<Vec<u8>> = if mb_y > 0 && above_avail {
+            Some(
+                (0..16)
+                    .map(|x| self.frame.y[(mb_y - 1) * self.stride + mb_x + x])
+                    .collect(),
+            )
+        } else {
+            None
+        };
+        let left: Option<Vec<u8>> = if mb_x > 0 && left_avail {
+            Some(
+                (0..16)
+                    .map(|y| self.frame.y[(mb_y + y) * self.stride + mb_x - 1])
+                    .collect(),
+            )
+        } else {
+            None
+        };
+        let above_left = if mb_x > 0 && mb_y > 0 && above_left_avail {
+            Some(self.frame.y[(mb_y - 1) * self.stride + mb_x - 1])
+        } else {
+            None
+        };
+        let mut luma_pred = [0u8; 256];
+        predict_intra_16x16(
+            pred_mode,
+            above.as_deref(),
+            left.as_deref(),
+            above_left,
+            &mut luma_pred,
+        );
+        for r in 0..16 {
+            for c in 0..16 {
+                let val =
+                    (luma_pred[r * 16 + c] as i32 + luma_residual[r * 16 + c]).clamp(0, 255) as u8;
+                self.frame.y[(mb_y + r) * self.stride + mb_x + c] = val;
+            }
+        }
+    }
+
+    /// Compute intra chroma prediction for both U and V planes.
     pub(crate) fn predict_chroma_intra(
         &self,
         mb_x: usize,
