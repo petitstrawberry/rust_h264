@@ -1031,74 +1031,13 @@ impl Decoder {
                             let chroma_width = (width / 2) as usize;
                             let chroma_mb_x = mb_x / 2;
                             let chroma_mb_y = mb_y / 2;
-
-                            let above_cu = if mb_y > 0 && above_mb_avail {
-                                let mut buf = [0u8; 8];
-                                buf.copy_from_slice(
-                                    &frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
-                                        ..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8],
-                                );
-                                Some(buf)
-                            } else {
-                                None
-                            };
-                            let left_cu = if mb_x > 0 && left_mb_avail {
-                                let mut buf = [0u8; 8];
-                                for (i, b) in buf.iter_mut().enumerate() {
-                                    *b =
-                                        frame.u[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
-                                }
-                                Some(buf)
-                            } else {
-                                None
-                            };
-                            let above_left_u = if mb_x > 0 && mb_y > 0 && above_left_mb_avail {
-                                Some(frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
-                            } else {
-                                None
-                            };
-
-                            let above_cv = if mb_y > 0 && above_mb_avail {
-                                let mut buf = [0u8; 8];
-                                buf.copy_from_slice(
-                                    &frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
-                                        ..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8],
-                                );
-                                Some(buf)
-                            } else {
-                                None
-                            };
-                            let left_cv = if mb_x > 0 && left_mb_avail {
-                                let mut buf = [0u8; 8];
-                                for (i, b) in buf.iter_mut().enumerate() {
-                                    *b =
-                                        frame.v[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
-                                }
-                                Some(buf)
-                            } else {
-                                None
-                            };
-                            let above_left_v = if mb_x > 0 && mb_y > 0 && above_left_mb_avail {
-                                Some(frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
-                            } else {
-                                None
-                            };
-
-                            let mut pred_u = [0u8; 64];
-                            let mut pred_v = [0u8; 64];
-                            predict_chroma_8x8(
+                            let (pred_u, pred_v) = make_ctx!().predict_chroma_intra(
+                                mb_x,
+                                mb_y,
                                 intra_chroma_pred_mode,
-                                above_cu.as_ref().map(|b| &b[..]),
-                                left_cu.as_ref().map(|b| &b[..]),
-                                above_left_u,
-                                &mut pred_u,
-                            );
-                            predict_chroma_8x8(
-                                intra_chroma_pred_mode,
-                                above_cv.as_ref().map(|b| &b[..]),
-                                left_cv.as_ref().map(|b| &b[..]),
-                                above_left_v,
-                                &mut pred_v,
+                                above_mb_avail,
+                                left_mb_avail,
+                                above_left_mb_avail,
                             );
 
                             // Chroma DC residual
@@ -1457,73 +1396,13 @@ impl Decoder {
                             let chroma_width = (width / 2) as usize;
                             let chroma_mb_x = mb_x / 2;
                             let chroma_mb_y = mb_y / 2;
-
-                            let above_chroma_u = if mb_y > 0 && above_mb_avail {
-                                let mut buf = [0u8; 8];
-                                buf.copy_from_slice(
-                                    &frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
-                                        ..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8],
-                                );
-                                Some(buf)
-                            } else {
-                                None
-                            };
-                            let left_chroma_u = if mb_x > 0 && left_mb_avail {
-                                let mut buf = [0u8; 8];
-                                for (i, b) in buf.iter_mut().enumerate() {
-                                    *b =
-                                        frame.u[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
-                                }
-                                Some(buf)
-                            } else {
-                                None
-                            };
-                            let above_left_u = if mb_x > 0 && mb_y > 0 && above_left_mb_avail {
-                                Some(frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
-                            } else {
-                                None
-                            };
-                            let above_chroma_v = if mb_y > 0 && above_mb_avail {
-                                let mut buf = [0u8; 8];
-                                buf.copy_from_slice(
-                                    &frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
-                                        ..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8],
-                                );
-                                Some(buf)
-                            } else {
-                                None
-                            };
-                            let left_chroma_v = if mb_x > 0 && left_mb_avail {
-                                let mut buf = [0u8; 8];
-                                for (i, b) in buf.iter_mut().enumerate() {
-                                    *b =
-                                        frame.v[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
-                                }
-                                Some(buf)
-                            } else {
-                                None
-                            };
-                            let above_left_v = if mb_x > 0 && mb_y > 0 && above_left_mb_avail {
-                                Some(frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
-                            } else {
-                                None
-                            };
-
-                            let mut pred_u = [0u8; 64];
-                            let mut pred_v = [0u8; 64];
-                            predict_chroma_8x8(
+                            let (pred_u, pred_v) = make_ctx!().predict_chroma_intra(
+                                mb_x,
+                                mb_y,
                                 intra_chroma_pred_mode,
-                                above_chroma_u.as_ref().map(|b| &b[..]),
-                                left_chroma_u.as_ref().map(|b| &b[..]),
-                                above_left_u,
-                                &mut pred_u,
-                            );
-                            predict_chroma_8x8(
-                                intra_chroma_pred_mode,
-                                above_chroma_v.as_ref().map(|b| &b[..]),
-                                left_chroma_v.as_ref().map(|b| &b[..]),
-                                above_left_v,
-                                &mut pred_v,
+                                above_mb_avail,
+                                left_mb_avail,
+                                above_left_mb_avail,
                             );
 
                             // Chroma DC residual
@@ -4308,71 +4187,13 @@ impl Decoder {
                     let chroma_mb_y = mb_y / 2;
 
                     // Chroma prediction (slice boundary: cross-slice neighbors unavailable)
-                    let above_chroma_u = if mb_y > 0 && above_mb_avail {
-                        let mut buf = [0u8; 8];
-                        buf.copy_from_slice(
-                            &frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
-                                ..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8],
-                        );
-                        Some(buf)
-                    } else {
-                        None
-                    };
-                    let left_chroma_u = if mb_x > 0 && left_mb_avail {
-                        let mut buf = [0u8; 8];
-                        for (i, b) in buf.iter_mut().enumerate() {
-                            *b = frame.u[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
-                        }
-                        Some(buf)
-                    } else {
-                        None
-                    };
-                    let above_left_u = if mb_x > 0 && mb_y > 0 && above_left_mb_avail {
-                        Some(frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
-                    } else {
-                        None
-                    };
-
-                    let above_chroma_v = if mb_y > 0 && above_mb_avail {
-                        let mut buf = [0u8; 8];
-                        buf.copy_from_slice(
-                            &frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
-                                ..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8],
-                        );
-                        Some(buf)
-                    } else {
-                        None
-                    };
-                    let left_chroma_v = if mb_x > 0 && left_mb_avail {
-                        let mut buf = [0u8; 8];
-                        for (i, b) in buf.iter_mut().enumerate() {
-                            *b = frame.v[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
-                        }
-                        Some(buf)
-                    } else {
-                        None
-                    };
-                    let above_left_v = if mb_x > 0 && mb_y > 0 && above_left_mb_avail {
-                        Some(frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
-                    } else {
-                        None
-                    };
-
-                    let mut pred_u = [0u8; 64];
-                    let mut pred_v = [0u8; 64];
-                    predict_chroma_8x8(
+                    let (pred_u, pred_v) = make_ctx!().predict_chroma_intra(
+                        mb_x,
+                        mb_y,
                         intra_chroma_pred_mode,
-                        above_chroma_u.as_ref().map(|b| &b[..]),
-                        left_chroma_u.as_ref().map(|b| &b[..]),
-                        above_left_u,
-                        &mut pred_u,
-                    );
-                    predict_chroma_8x8(
-                        intra_chroma_pred_mode,
-                        above_chroma_v.as_ref().map(|b| &b[..]),
-                        left_chroma_v.as_ref().map(|b| &b[..]),
-                        above_left_v,
-                        &mut pred_v,
+                        above_mb_avail,
+                        left_mb_avail,
+                        above_left_mb_avail,
                     );
 
                     // Chroma residual: DC + AC via CABAC
@@ -4726,71 +4547,13 @@ impl Decoder {
                     let chroma_width = (width / 2) as usize;
                     let chroma_mb_x = mb_x / 2;
                     let chroma_mb_y = mb_y / 2;
-
-                    let above_chroma_u = if mb_y > 0 && above_mb_avail_i {
-                        let mut buf = [0u8; 8];
-                        buf.copy_from_slice(
-                            &frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
-                                ..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8],
-                        );
-                        Some(buf)
-                    } else {
-                        None
-                    };
-                    let left_chroma_u = if mb_x > 0 && left_mb_avail_i {
-                        let mut buf = [0u8; 8];
-                        for (i, b) in buf.iter_mut().enumerate() {
-                            *b = frame.u[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
-                        }
-                        Some(buf)
-                    } else {
-                        None
-                    };
-                    let above_left_u = if mb_x > 0 && mb_y > 0 && above_left_mb_avail_i {
-                        Some(frame.u[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
-                    } else {
-                        None
-                    };
-                    let above_chroma_v = if mb_y > 0 && above_mb_avail_i {
-                        let mut buf = [0u8; 8];
-                        buf.copy_from_slice(
-                            &frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
-                                ..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8],
-                        );
-                        Some(buf)
-                    } else {
-                        None
-                    };
-                    let left_chroma_v = if mb_x > 0 && left_mb_avail_i {
-                        let mut buf = [0u8; 8];
-                        for (i, b) in buf.iter_mut().enumerate() {
-                            *b = frame.v[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
-                        }
-                        Some(buf)
-                    } else {
-                        None
-                    };
-                    let above_left_v = if mb_x > 0 && mb_y > 0 && above_left_mb_avail_i {
-                        Some(frame.v[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
-                    } else {
-                        None
-                    };
-
-                    let mut pred_u = [0u8; 64];
-                    let mut pred_v = [0u8; 64];
-                    predict_chroma_8x8(
+                    let (pred_u, pred_v) = make_ctx!().predict_chroma_intra(
+                        mb_x,
+                        mb_y,
                         intra_chroma_pred_mode,
-                        above_chroma_u.as_ref().map(|b| &b[..]),
-                        left_chroma_u.as_ref().map(|b| &b[..]),
-                        above_left_u,
-                        &mut pred_u,
-                    );
-                    predict_chroma_8x8(
-                        intra_chroma_pred_mode,
-                        above_chroma_v.as_ref().map(|b| &b[..]),
-                        left_chroma_v.as_ref().map(|b| &b[..]),
-                        above_left_v,
-                        &mut pred_v,
+                        above_mb_avail_i,
+                        left_mb_avail_i,
+                        above_left_mb_avail_i,
                     );
 
                     // Chroma residual

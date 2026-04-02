@@ -9,6 +9,7 @@ use std::rc::Rc;
 use crate::decoder::Frame;
 use crate::dpb::DecodedPicture;
 use crate::inter_pred;
+use crate::intra_pred::predict_chroma_8x8;
 use crate::mv_pred::{
     derive_spatial_direct_blk, derive_temporal_direct_blk, predict_mv_skip, ref_pic_safe,
     WeightContext,
@@ -442,6 +443,63 @@ impl SliceContext<'_> {
 
     /// Fill per-4x4-block MV/ref/nnz data into MbInfo for deblocking bS derivation,
     /// and build the per-block ref POC table for temporal direct mode.
+    /// Compute intra chroma prediction for both U and V planes.
+    ///
+    /// Gathers neighbor samples (respecting slice boundaries), calls `predict_chroma_8x8`
+    /// for each plane, and returns the two 64-byte prediction buffers.
+    pub(crate) fn predict_chroma_intra(
+        &self,
+        mb_x: usize,
+        mb_y: usize,
+        intra_chroma_pred_mode: u8,
+        above_avail: bool,
+        left_avail: bool,
+        above_left_avail: bool,
+    ) -> ([u8; 64], [u8; 64]) {
+        let chroma_width = (self.width / 2) as usize;
+        let chroma_mb_x = mb_x / 2;
+        let chroma_mb_y = mb_y / 2;
+
+        let mut pred_u = [0u8; 64];
+        let mut pred_v = [0u8; 64];
+
+        for (plane_buf, pred) in [(&self.frame.u, &mut pred_u), (&self.frame.v, &mut pred_v)] {
+            let above = if mb_y > 0 && above_avail {
+                let mut buf = [0u8; 8];
+                buf.copy_from_slice(
+                    &plane_buf[(chroma_mb_y - 1) * chroma_width + chroma_mb_x
+                        ..(chroma_mb_y - 1) * chroma_width + chroma_mb_x + 8],
+                );
+                Some(buf)
+            } else {
+                None
+            };
+            let left = if mb_x > 0 && left_avail {
+                let mut buf = [0u8; 8];
+                for (i, b) in buf.iter_mut().enumerate() {
+                    *b = plane_buf[(chroma_mb_y + i) * chroma_width + chroma_mb_x - 1];
+                }
+                Some(buf)
+            } else {
+                None
+            };
+            let above_left = if mb_x > 0 && mb_y > 0 && above_left_avail {
+                Some(plane_buf[(chroma_mb_y - 1) * chroma_width + chroma_mb_x - 1])
+            } else {
+                None
+            };
+            predict_chroma_8x8(
+                intra_chroma_pred_mode,
+                above.as_ref().map(|b| &b[..]),
+                left.as_ref().map(|b| &b[..]),
+                above_left,
+                pred,
+            );
+        }
+
+        (pred_u, pred_v)
+    }
+
     ///
     /// Called once after the MB loop completes, covering MBs `first_mb..last_mb`.
     #[allow(clippy::too_many_arguments)]
