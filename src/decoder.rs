@@ -1437,4 +1437,27 @@ mod tests {
         // bframes=0, ref=2, no-deblock. Tests CABAC explicit weighted P-slice.
         decode_multiframe_and_compare("cabac_weighted_p_test", 8, 64, 64);
     }
+
+    #[test]
+    fn test_cavlc_i8x8() {
+        // 64x64, 3 frames: CAVLC High profile, all-intra (keyint=1), 8x8dct,
+        // no-deblock. Tests CAVLC I8x8 intra prediction with 8x8 transform.
+        decode_multiframe_and_compare("cavlc_i8x8_test", 3, 64, 64);
+    }
+
+    #[test]
+    fn test_high_preset_medium() {
+        // 320x240, 30 frames: CABAC High profile, bframes=3, ref=4, 8x8dct
+        // (92% intra, 98% inter), no-deblock. Large-resolution stress test
+        // with all High profile features active.
+        decode_multiframe_and_compare("high_preset_medium_test", 30, 320, 240);
+    }
+
+    #[test]
+    fn test_high_deblock_medium() {
+        // 320x240, 30 frames: CABAC High profile, bframes=3, ref=4, 8x8dct,
+        // deblocking ON. Tests 8x8 transform deblocking (skip internal odd
+        // edges per spec 8.7.2.1).
+        decode_multiframe_and_compare("high_deblock_medium_test", 30, 320, 240);
+    }
 }

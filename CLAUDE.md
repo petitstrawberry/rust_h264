@@ -152,6 +152,8 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   bS=4 (intra MB edge), bS=3 (intra internal), bS=2 (non-zero coefficients),
   bS=1 (different refs or |MV_diff|>=4), bS=0 (none). B-slice dual-list
   straight+swapped comparison.
+- 8x8 transform: internal odd edges (positions 4 and 12 within MB) skipped
+  per spec 8.7.2.1 — they fall inside 8x8 transform blocks
 - Applied automatically after slice decode
 
 **Multi-Slice Frame Support** (`src/decoder.rs`, `src/decode_cabac.rs`, `src/decode_cavlc.rs`)
@@ -171,7 +173,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (104 tests, all byte-exact against FFmpeg)
+**Test Coverage** (107 tests, all byte-exact against FFmpeg)
 - Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
   mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
   noise_16x16, scaling_test
@@ -211,7 +213,10 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   ms_cavlc_b_test (64x64, 8-frame, CAVLC 4-slice bframes=2 ref=2),
   cavlc_deblock_pb_test (64x64, 8-frame, CAVLC P+B with deblocking),
   unaligned_100x76_test (100x76, 6-frame, non-16-aligned dimensions),
-  cabac_weighted_p_test (64x64, 8-frame, CABAC 100% weighted P fading)
+  cabac_weighted_p_test (64x64, 8-frame, CABAC 100% weighted P fading),
+  cavlc_i8x8_test (64x64, 3-frame, CAVLC High profile I8x8 intra),
+  high_preset_medium_test (320x240, 30-frame, High profile bframes=3 ref=4 8x8dct no-deblock),
+  high_deblock_medium_test (320x240, 30-frame, High profile bframes=3 ref=4 8x8dct deblock ON)
 
 ### Not Yet Implemented
 

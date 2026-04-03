@@ -880,6 +880,7 @@ impl SliceContext<'_> {
             let info = &mut self.mb_info[mi];
             let base = mi * 16;
             info.list_count = list_count;
+            info.is_8x8dct = self.mb_is_8x8dct[mi];
             for blk in 0..16 {
                 info.mv_l0[blk] = self.mv_store_l0[base + blk];
                 info.ref_idx_l0[blk] = self.ref_idx_store_l0[base + blk];

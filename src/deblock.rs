@@ -38,6 +38,8 @@ pub struct MbInfo {
     pub nnz: [bool; 16],
     /// Number of reference lists used (1 for P-slice, 2 for B-slice, 0 for I-slice).
     pub list_count: u8,
+    /// True if this MB uses 8x8 transform (High profile transform_size_8x8_flag).
+    pub is_8x8dct: bool,
 }
 
 // H.264 Table 8-16a: alpha threshold indexed by indexA = clamp(0..51, QPavg + offset_a)
@@ -135,6 +137,13 @@ pub fn filter_frame_params(
             }
 
             let is_mb_edge = edge == 0;
+
+            // 8x8 transform: skip internal odd edges (spec 8.7.2.1).
+            // Edges 1 and 3 fall inside 8x8 transform blocks, so no filtering.
+            if !is_mb_edge && (edge & 1) != 0 && mb_q.is_8x8dct {
+                continue;
+            }
+
             let mb_p = if is_mb_edge {
                 &mb_info[mb_idx - 1]
             } else {
@@ -240,6 +249,12 @@ pub fn filter_frame_params(
             }
 
             let is_mb_edge = edge == 0;
+
+            // 8x8 transform: skip internal odd edges (spec 8.7.2.1).
+            if !is_mb_edge && (edge & 1) != 0 && mb_q.is_8x8dct {
+                continue;
+            }
+
             let mb_p = if is_mb_edge {
                 &mb_info[mb_idx - mb_width]
             } else {
