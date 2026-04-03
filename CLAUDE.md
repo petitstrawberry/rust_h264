@@ -177,7 +177,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (109 tests, all byte-exact against FFmpeg)
+**Test Coverage** (111 tests, all byte-exact against FFmpeg)
 - Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
   mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
   noise_16x16, scaling_test
@@ -222,7 +222,9 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   high_preset_medium_test (320x240, 30-frame, High profile bframes=3 ref=4 8x8dct no-deblock),
   high_deblock_medium_test (320x240, 30-frame, High profile bframes=3 ref=4 8x8dct deblock ON),
   constrained_intra_test (64x64, 8-frame, CABAC constrained_intra_pred_flag=1 bframes=1 ref=2),
-  cabac_b8x8_direct_test (64x64, 8-frame, CABAC B_8x8 with B_Direct_8x8 sub-partitions)
+  cabac_b8x8_direct_test (64x64, 8-frame, CABAC B_8x8 with B_Direct_8x8 sub-partitions),
+  jm_ltr_cavlc_test (64x64, 8-frame, JM CAVLC long-term reference),
+  jm_ltr_cabac_test (64x64, 8-frame, JM CABAC long-term reference)
 
 ### Not Yet Implemented
 

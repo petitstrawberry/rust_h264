@@ -1527,4 +1527,20 @@ mod tests {
         // edges per spec 8.7.2.1).
         decode_multiframe_and_compare("high_deblock_medium_test", 30, 320, 240);
     }
+
+    #[test]
+    fn test_jm_ltr_cavlc() {
+        // 64x64, 8 frames: JM encoder, Baseline profile, CAVLC,
+        // SetFirstAsLongTerm=1, ref=2. Tests MMCO long-term reference
+        // (IDR marked as LT via long_term_reference_flag).
+        decode_multiframe_and_compare("jm_ltr_cavlc_test", 8, 64, 64);
+    }
+
+    #[test]
+    fn test_jm_ltr_cabac() {
+        // 64x64, 8 frames: JM encoder, Main profile, CABAC,
+        // SetFirstAsLongTerm=1, ref=2. Tests MMCO long-term reference
+        // with CABAC entropy coding.
+        decode_multiframe_and_compare("jm_ltr_cabac_test", 8, 64, 64);
+    }
 }
