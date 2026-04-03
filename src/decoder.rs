@@ -1553,6 +1553,13 @@ mod tests {
     }
 
     #[test]
+    fn test_jm_ipcm_cavlc() {
+        // 32x32, 4 frames: JM encoder, Baseline profile, CAVLC, QP=0,
+        // I_PCM macroblocks with random content. Tests CAVLC I_PCM decode.
+        decode_multiframe_and_compare("jm_ipcm_cavlc_test", 4, 32, 32);
+    }
+
+    #[test]
     fn test_jm_poc_type1() {
         // 64x64, 6 frames: JM encoder, Baseline profile, CAVLC,
         // pic_order_cnt_type=1 (delta-based POC). Tests POC type 1 computation.
