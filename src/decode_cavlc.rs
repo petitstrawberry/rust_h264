@@ -1618,16 +1618,21 @@ impl SliceContext<'_> {
 
         // === Intra macroblock (I4x4, I16x16, I_PCM) ===
         // Cross-slice intra prediction: neighbors from other slices unavailable (spec 6.4.1)
+        // constrained_intra_pred_flag: inter-predicted neighbors also unavailable
         let above_mb_avail = mb_idx >= self.mb_width as usize
-            && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id;
+            && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
+            && self.is_intra_neighbor_avail(mb_idx - self.mb_width as usize, sp);
         let left_mb_avail = !mb_idx.is_multiple_of(self.mb_width as usize)
-            && self.mb_slice_id[mb_idx - 1] == self.this_slice_id;
+            && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
+            && self.is_intra_neighbor_avail(mb_idx - 1, sp);
         let above_left_mb_avail = mb_idx >= self.mb_width as usize
             && !mb_idx.is_multiple_of(self.mb_width as usize)
-            && self.mb_slice_id[mb_idx - self.mb_width as usize - 1] == self.this_slice_id;
+            && self.mb_slice_id[mb_idx - self.mb_width as usize - 1] == self.this_slice_id
+            && self.is_intra_neighbor_avail(mb_idx - self.mb_width as usize - 1, sp);
         let above_right_mb_avail = mb_idx >= self.mb_width as usize
             && (mb_idx % self.mb_width as usize) + 1 < self.mb_width as usize
-            && self.mb_slice_id[mb_idx - self.mb_width as usize + 1] == self.this_slice_id;
+            && self.mb_slice_id[mb_idx - self.mb_width as usize + 1] == self.this_slice_id
+            && self.is_intra_neighbor_avail(mb_idx - self.mb_width as usize + 1, sp);
 
         // Variables shared between I4x4/I16x16 for chroma reconstruction
         let intra_chroma_pred_mode;
@@ -1640,6 +1645,8 @@ impl SliceContext<'_> {
 
             // Check 8x8 transform flag
             let use_8x8_intra = sp.transform_8x8_mode_flag && reader.read_bit()? != 0;
+
+            let intra_avail = self.intra_avail_map(sp);
 
             // Parse prediction modes: 4 for I8x8, 16 for I4x4
             let num_modes = if use_8x8_intra { 4 } else { 16 };
@@ -1654,6 +1661,7 @@ impl SliceContext<'_> {
                     blk,
                     self.mb_slice_id,
                     self.this_slice_id,
+                    &intra_avail,
                 );
                 let mode = if prev_flag != 0 {
                     predicted

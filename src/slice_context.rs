@@ -23,6 +23,7 @@ pub(crate) struct SliceParams<'a> {
     pub transform_8x8_mode_flag: bool,
     pub scaling_list_4x4: &'a [[u8; 16]; 6],
     pub scaling_list_8x8: &'a [[u8; 64]; 2],
+    pub constrained_intra_pred_flag: bool,
     pub chroma_qp_index_offset: i32,
     pub ref_pic_list: &'a [Rc<DecodedPicture>],
     pub ref_pic_list_l0: &'a [Rc<DecodedPicture>],
@@ -99,7 +100,33 @@ pub(crate) struct SliceContext<'a> {
     pub last_qp_delta_nonzero: bool,
 }
 
+use crate::deblock::MbType;
+
 impl SliceContext<'_> {
+    /// Check if a neighbor MB is available for intra prediction samples.
+    /// When `constrained_intra_pred_flag` is set in a P/B slice, inter-predicted
+    /// neighbors are treated as unavailable (spec 6.4.1).
+    pub(crate) fn is_intra_neighbor_avail(&self, neighbor_idx: usize, sp: &SliceParams) -> bool {
+        if !sp.constrained_intra_pred_flag || !(sp.is_p_slice || sp.is_b_slice) {
+            return true; // no constraint, neighbor is available
+        }
+        let mt = self.mb_info[neighbor_idx].mb_type;
+        mt == MbType::Intra || mt == MbType::Ipcm
+    }
+
+    /// Build per-MB intra availability array for predict_i4x4_mode.
+    /// When constrained_intra_pred_flag is off or in I-slices, all MBs are available.
+    pub(crate) fn intra_avail_map(&self, sp: &SliceParams) -> Vec<bool> {
+        if !sp.constrained_intra_pred_flag || !(sp.is_p_slice || sp.is_b_slice) {
+            vec![true; self.mb_info.len()]
+        } else {
+            self.mb_info
+                .iter()
+                .map(|info| info.mb_type == MbType::Intra || info.mb_type == MbType::Ipcm)
+                .collect()
+        }
+    }
+
     /// Decode a P-slice skip macroblock: median MV prediction, MC, no residual.
     pub(crate) fn decode_p_skip_mb(
         &mut self,

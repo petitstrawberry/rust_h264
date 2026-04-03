@@ -240,6 +240,7 @@ pub(crate) fn cabac_neighbor_nz_chroma(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn predict_i4x4_mode(
     modes: &[u8],
     mb_idx: usize,
@@ -247,6 +248,7 @@ pub(crate) fn predict_i4x4_mode(
     blk_idx: usize,
     mb_slice_id: &[u16],
     cur_slice_id: u16,
+    intra_avail: &[bool],
 ) -> u8 {
     // None = neighbor unavailable (picture boundary or non-I4x4 neighbor MB that
     // doesn't exist). When either is None, predicted mode defaults to DC (2).
@@ -258,6 +260,7 @@ pub(crate) fn predict_i4x4_mode(
         true,
         mb_slice_id,
         cur_slice_id,
+        intra_avail,
     );
     let mode_b = get_neighbor_i4x4_mode(
         modes,
@@ -267,6 +270,7 @@ pub(crate) fn predict_i4x4_mode(
         false,
         mb_slice_id,
         cur_slice_id,
+        intra_avail,
     );
     match (mode_a, mode_b) {
         (Some(a), Some(b)) => a.min(b),
@@ -274,6 +278,9 @@ pub(crate) fn predict_i4x4_mode(
     }
 }
 
+/// `intra_avail`: per-MB flag, true if the MB is available for intra prediction
+/// (always true unless constrained_intra_pred_flag is set and the neighbor is inter).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn get_neighbor_i4x4_mode(
     modes: &[u8],
     mb_idx: usize,
@@ -282,6 +289,7 @@ pub(crate) fn get_neighbor_i4x4_mode(
     is_left: bool,
     mb_slice_id: &[u16],
     cur_slice_id: u16,
+    intra_avail: &[bool],
 ) -> Option<u8> {
     // Block layout:  0  1 | 4  5
     //                2  3 | 6  7
@@ -298,7 +306,10 @@ pub(crate) fn get_neighbor_i4x4_mode(
             14 => Some(modes[mb_idx * 16 + 11]),
             0 | 2 | 8 | 10 => {
                 // Left edge of MB
-                if !mb_idx.is_multiple_of(mb_width) && mb_slice_id[mb_idx - 1] == cur_slice_id {
+                if !mb_idx.is_multiple_of(mb_width)
+                    && mb_slice_id[mb_idx - 1] == cur_slice_id
+                    && intra_avail[mb_idx - 1]
+                {
                     let left_mb = mb_idx - 1;
                     let left_blk = match blk_idx {
                         0 => 5,
@@ -324,7 +335,10 @@ pub(crate) fn get_neighbor_i4x4_mode(
             13 => Some(modes[mb_idx * 16 + 7]),
             0 | 1 | 4 | 5 => {
                 // Top edge of MB
-                if mb_idx >= mb_width && mb_slice_id[mb_idx - mb_width] == cur_slice_id {
+                if mb_idx >= mb_width
+                    && mb_slice_id[mb_idx - mb_width] == cur_slice_id
+                    && intra_avail[mb_idx - mb_width]
+                {
                     let above_mb = mb_idx - mb_width;
                     let above_blk = match blk_idx {
                         0 => 10,

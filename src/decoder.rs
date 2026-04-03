@@ -589,6 +589,7 @@ impl Decoder {
             transform_8x8_mode_flag: pps.transform_8x8_mode_flag,
             scaling_list_4x4: &pps.scaling_list_4x4,
             scaling_list_8x8: &pps.scaling_list_8x8,
+            constrained_intra_pred_flag: pps.constrained_intra_pred_flag,
             chroma_qp_index_offset: pps.chroma_qp_index_offset,
             ref_pic_list: &ref_pic_list,
             ref_pic_list_l0: &_ref_pic_list_l0,
@@ -1443,6 +1444,14 @@ mod tests {
         // 64x64, 3 frames: CAVLC High profile, all-intra (keyint=1), 8x8dct,
         // no-deblock. Tests CAVLC I8x8 intra prediction with 8x8 transform.
         decode_multiframe_and_compare("cavlc_i8x8_test", 3, 64, 64);
+    }
+
+    #[test]
+    fn test_constrained_intra() {
+        // 64x64, 8 frames: CABAC Main profile, constrained_intra_pred_flag=1,
+        // bframes=1, ref=2, no-deblock. Tests that intra MBs in P/B slices
+        // treat inter-predicted neighbors as unavailable (spec 8.3.1).
+        decode_multiframe_and_compare("constrained_intra_test", 8, 64, 64);
     }
 
     #[test]
