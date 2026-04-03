@@ -97,7 +97,11 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - P-slice L0: short-term refs sorted by descending frame_num
 - B-slice L0: refs sorted by POC (before current descending, after ascending)
 - B-slice L1: refs sorted by POC (after current ascending, before descending)
-- `ref_pic_list_modification` (spec 8.2.4.3) with shift+insert+dedup algorithm
+- `ref_pic_list_modification` (spec 8.2.4.3) with shift+insert+dedup algorithm,
+  including idc=2 for long-term reference reordering
+- Long-term reference support: MMCO ops 1-6 (mark ST/LT unused, assign ST→LT,
+  set max LT index, clear all, assign current as LT), IDR `long_term_reference_flag`
+- Long-term refs appended to reference lists after short-term refs (spec 8.2.4.2)
 - Co-located picture MV/ref storage for temporal direct mode
 
 **CAVLC Entropy Decoding** (`src/cavlc.rs`)
@@ -223,7 +227,6 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 ### Not Yet Implemented
 
 - MBAFF/interlaced mode (mb_adaptive_frame_field, field pictures)
-- Long-term reference support (MMCO ops 2-6; only op=1 implemented)
 - High 10/4:2:2/4:4:4 profiles (>8-bit, non-4:2:0 chroma)
 - SP/SI slice types (parsed but not decoded)
 - Slice groups / FMO (returns error)

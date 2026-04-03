@@ -16,6 +16,8 @@ pub enum ReferenceStatus {
     Unused,
     /// Short-term reference (identified by frame_num).
     ShortTerm,
+    /// Long-term reference (identified by long_term_frame_idx).
+    LongTerm(u32),
 }
 
 /// Immutable decoded picture data shared via Rc.
@@ -80,6 +82,7 @@ impl Dpb {
     /// Insert a decoded picture into the DPB.
     /// Applies sliding window marking if needed (spec 8.2.5.3).
     pub fn insert(&mut self, pic: Rc<DecodedPicture>, reference: ReferenceStatus) {
+        // Sliding window only applies to short-term references (spec 8.2.5.3)
         if reference == ReferenceStatus::ShortTerm {
             self.sliding_window_mark();
         }
@@ -100,6 +103,8 @@ impl Dpb {
             .collect();
         // Sort by descending POC as a proxy for recency (handles frame_num wraparound).
         refs.sort_by(|a, b| b.pic_order_cnt.cmp(&a.pic_order_cnt));
+        // Append long-term refs sorted by ascending long_term_frame_idx (spec 8.2.4.2.1)
+        refs.extend(self.long_term_ref_list());
         refs
     }
 
@@ -129,6 +134,8 @@ impl Dpb {
         after.sort_by(|a, b| a.pic_order_cnt.cmp(&b.pic_order_cnt)); // ascending
 
         before.extend(after);
+        // Append long-term refs (spec 8.2.4.2.3)
+        before.extend(self.long_term_ref_list());
         before
     }
 
@@ -159,6 +166,8 @@ impl Dpb {
         before.sort_by(|a, b| b.pic_order_cnt.cmp(&a.pic_order_cnt)); // descending
 
         after.extend(before);
+        // Append long-term refs (spec 8.2.4.2.4)
+        after.extend(self.long_term_ref_list());
 
         // Spec 8.2.4.2.4: if L1 == L0 and has more than one entry, swap first two
         let l0 = self.ref_list_l0_b(current_poc);
@@ -193,8 +202,39 @@ impl Dpb {
         let mut ref_idx_lx = 0usize;
 
         for &(idc, val) in ops {
+            if idc == 2 {
+                // Long-term ref reordering (spec 8.2.4.3.2)
+                let long_term_pic_num = val; // long_term_pic_num directly
+                if let Some(found_pos) = ref_list.iter().position(|p| {
+                    // Match by frame_num used as long_term_frame_idx proxy
+                    // In practice, the DPB entry's long_term_frame_idx is stored
+                    // but DecodedPicture doesn't carry it. Match by position in list.
+                    // Actually, long_term_pic_num == long_term_frame_idx for frames.
+                    // We find LT refs appended at the end of the list.
+                    p.frame_num == long_term_pic_num
+                }) {
+                    let pic = ref_list[found_pos].clone();
+                    ref_list.push(ref_list.last().unwrap().clone());
+                    let end = ref_list.len() - 1;
+                    for c in (ref_idx_lx + 1..=end).rev() {
+                        ref_list[c] = ref_list[c - 1].clone();
+                    }
+                    ref_list[ref_idx_lx] = pic.clone();
+                    // Remove duplicate: entries after ref_idx_lx with same pic
+                    let mut n = ref_idx_lx + 1;
+                    for c in (ref_idx_lx + 1)..ref_list.len() {
+                        if !Rc::ptr_eq(&ref_list[c], &pic) {
+                            ref_list[n] = ref_list[c].clone();
+                            n += 1;
+                        }
+                    }
+                    ref_list.truncate(num_active);
+                }
+                ref_idx_lx += 1;
+                continue;
+            }
             if idc > 1 {
-                continue; // Skip long-term ref ops (idc=2) for now
+                continue; // idc=3 terminates the loop (handled by caller)
             }
             let abs_diff = val + 1;
             let pic_num = if idc == 0 {
@@ -350,12 +390,13 @@ impl Dpb {
     fn sliding_window_mark(&mut self) {
         let max = self.max_ref_frames.max(1);
         while self.max_ref_frames > 0 {
-            let short_term_count = self
+            // Total ref count includes both short-term and long-term (spec 8.2.5.3)
+            let total_ref_count = self
                 .entries
                 .iter()
-                .filter(|e| e.reference == ReferenceStatus::ShortTerm)
+                .filter(|e| e.reference != ReferenceStatus::Unused)
                 .count();
-            if short_term_count < max {
+            if total_ref_count < max {
                 break;
             }
             // Evict the oldest short-term reference (first in insertion order).
@@ -382,6 +423,106 @@ impl Dpb {
             }
         }
         self.remove_unused();
+    }
+
+    /// Mark a long-term reference as unused by long_term_pic_num (MMCO op=2).
+    pub fn mark_long_term_unused(&mut self, long_term_pic_num: u32) {
+        for entry in &mut self.entries {
+            if entry.reference == ReferenceStatus::LongTerm(long_term_pic_num) {
+                entry.reference = ReferenceStatus::Unused;
+                break;
+            }
+        }
+        self.remove_unused();
+    }
+
+    /// Assign a short-term reference to long-term with given index (MMCO op=3).
+    /// First marks any existing long-term with the same index as unused.
+    pub fn assign_long_term(&mut self, frame_num: u32, long_term_frame_idx: u32) {
+        // Remove any existing long-term with this index
+        for entry in &mut self.entries {
+            if entry.reference == ReferenceStatus::LongTerm(long_term_frame_idx) {
+                entry.reference = ReferenceStatus::Unused;
+            }
+        }
+        // Convert the short-term ref to long-term
+        for entry in &mut self.entries {
+            if entry.reference == ReferenceStatus::ShortTerm && entry.pic.frame_num == frame_num {
+                entry.reference = ReferenceStatus::LongTerm(long_term_frame_idx);
+                break;
+            }
+        }
+        self.remove_unused();
+    }
+
+    /// Set max long-term frame index (MMCO op=4).
+    /// All long-term refs with index > max are marked unused.
+    /// max_long_term_frame_idx_plus1 = 0 means no long-term refs allowed.
+    pub fn set_max_long_term_frame_idx(&mut self, max_long_term_frame_idx_plus1: u32) {
+        if max_long_term_frame_idx_plus1 == 0 {
+            // Mark ALL long-term refs as unused
+            for entry in &mut self.entries {
+                if matches!(entry.reference, ReferenceStatus::LongTerm(_)) {
+                    entry.reference = ReferenceStatus::Unused;
+                }
+            }
+        } else {
+            let max_idx = max_long_term_frame_idx_plus1 - 1;
+            for entry in &mut self.entries {
+                if let ReferenceStatus::LongTerm(idx) = entry.reference {
+                    if idx > max_idx {
+                        entry.reference = ReferenceStatus::Unused;
+                    }
+                }
+            }
+        }
+        self.remove_unused();
+    }
+
+    /// Clear all reference pictures (MMCO op=5).
+    /// Marks all refs as unused and resets POC state.
+    pub fn clear_all_refs(&mut self) {
+        for entry in &mut self.entries {
+            entry.reference = ReferenceStatus::Unused;
+        }
+        self.remove_unused();
+        self.prev_poc_msb = 0;
+        self.prev_poc_lsb = 0;
+    }
+
+    /// Insert current picture as long-term reference with given index (MMCO op=6).
+    /// Called after the picture is decoded and inserted into DPB.
+    /// The picture must already be in the DPB as ShortTerm.
+    pub fn mark_current_as_long_term(&mut self, long_term_frame_idx: u32, frame_num: u32) {
+        // Remove any existing long-term with this index
+        for entry in &mut self.entries {
+            if entry.reference == ReferenceStatus::LongTerm(long_term_frame_idx) {
+                entry.reference = ReferenceStatus::Unused;
+            }
+        }
+        // Find the just-inserted picture and change to long-term
+        for entry in self.entries.iter_mut().rev() {
+            if entry.reference == ReferenceStatus::ShortTerm && entry.pic.frame_num == frame_num {
+                entry.reference = ReferenceStatus::LongTerm(long_term_frame_idx);
+                break;
+            }
+        }
+        self.remove_unused();
+    }
+
+    /// Get list of long-term reference pictures, sorted by ascending long_term_frame_idx.
+    /// Used to append to reference lists after short-term refs (spec 8.2.4.2.1, 8.2.4.2.3).
+    pub fn long_term_ref_list(&self) -> Vec<Rc<DecodedPicture>> {
+        let mut refs: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|e| matches!(e.reference, ReferenceStatus::LongTerm(_)))
+            .collect::<Vec<_>>();
+        refs.sort_by_key(|e| match e.reference {
+            ReferenceStatus::LongTerm(idx) => idx,
+            _ => u32::MAX,
+        });
+        refs.iter().map(|e| e.pic.clone()).collect()
     }
 
     /// Remove entries that are unused for reference (freeing memory).

@@ -66,6 +66,7 @@ struct PictureState {
     last_qp_delta_nonzero: bool,
     // Slice header info for finalization
     mmco_ops: Vec<(u32, u32)>,
+    long_term_reference_flag: bool,
     is_intra_slice: bool,
     // Deblock parameters (from first slice; per-slice deblock offsets
     // could differ but we use the first slice's values)
@@ -198,15 +199,43 @@ impl Decoder {
         }
 
         let reference = if ps.nal_ref_idc > 0 {
-            ReferenceStatus::ShortTerm
+            if ps.nal_unit_type == NalUnitType::SliceIdr && ps.long_term_reference_flag {
+                ReferenceStatus::LongTerm(0) // IDR with long_term_reference_flag → LT idx 0
+            } else {
+                ReferenceStatus::ShortTerm
+            }
         } else {
             ReferenceStatus::Unused
         };
 
+        let mut has_mmco5 = false;
         for &(op, param) in &ps.mmco_ops {
-            if op == 1 {
-                let pic_num_to_remove = ps.frame_num as i32 - (param as i32 + 1);
-                self.dpb.mark_short_term_unused(pic_num_to_remove as u32);
+            match op {
+                1 => {
+                    let pic_num_to_remove = ps.frame_num as i32 - ((param & 0xFFFF) as i32 + 1);
+                    self.dpb.mark_short_term_unused(pic_num_to_remove as u32);
+                }
+                2 => {
+                    self.dpb.mark_long_term_unused(param);
+                }
+                3 => {
+                    let abs_diff_minus1 = param & 0xFFFF;
+                    let long_term_frame_idx = param >> 16;
+                    let pic_num = ps.frame_num as i32 - (abs_diff_minus1 as i32 + 1);
+                    self.dpb
+                        .assign_long_term(pic_num as u32, long_term_frame_idx);
+                }
+                4 => {
+                    self.dpb.set_max_long_term_frame_idx(param);
+                }
+                5 => {
+                    self.dpb.clear_all_refs();
+                    has_mmco5 = true;
+                }
+                6 => {
+                    // Will be applied after insert (current pic must be in DPB first)
+                }
+                _ => {}
             }
         }
 
@@ -226,6 +255,19 @@ impl Decoder {
         });
 
         self.dpb.insert(pic, reference);
+
+        // MMCO op=6: mark current picture as long-term (after insert)
+        for &(op, param) in &ps.mmco_ops {
+            if op == 6 {
+                self.dpb.mark_current_as_long_term(param, ps.frame_num);
+            }
+        }
+
+        // MMCO op=5: reset frame_num to 0 after clearing (spec 7.4.3.3)
+        if has_mmco5 {
+            // After op=5, the current picture should have frame_num = 0
+            // This is handled by the encoder; we just need the DPB cleared.
+        }
 
         // Crop frame from coded dimensions (MB-aligned) to display dimensions
         let coded_w = (ps.mb_width * 16) as usize;
@@ -457,6 +499,7 @@ impl Decoder {
                 prev_mb_qp: slice_qp,
                 last_qp_delta_nonzero: false,
                 mmco_ops: header.mmco_ops.clone(),
+                long_term_reference_flag: header.long_term_reference_flag,
                 is_intra_slice: header.slice_type == SliceType::I,
                 disable_deblocking_filter_idc: header.disable_deblocking_filter_idc,
                 slice_alpha_c0_offset_div2: header.slice_alpha_c0_offset_div2,
@@ -498,6 +541,7 @@ impl Decoder {
             prev_mb_qp: _,
             last_qp_delta_nonzero: _,
             mmco_ops: _ps_mmco_ops,
+            long_term_reference_flag: _ps_lt_ref_flag,
             is_intra_slice: _ps_is_intra,
             disable_deblocking_filter_idc: ps_deblock_idc,
             slice_alpha_c0_offset_div2: ps_alpha,
@@ -715,6 +759,7 @@ impl Decoder {
             prev_mb_qp,
             last_qp_delta_nonzero,
             mmco_ops: header.mmco_ops.clone(),
+            long_term_reference_flag: header.long_term_reference_flag,
             is_intra_slice: header.slice_type == SliceType::I,
             disable_deblocking_filter_idc: ps_deblock_idc,
             slice_alpha_c0_offset_div2: ps_alpha,

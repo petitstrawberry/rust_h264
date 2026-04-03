@@ -280,17 +280,24 @@ pub fn parse_slice_header(
                         mmco_ops.push((1, diff));
                     }
                     2 => {
-                        let _ = r.read_ue()?;
+                        let long_term_pic_num = r.read_ue()?;
+                        mmco_ops.push((2, long_term_pic_num));
                     }
                     3 => {
-                        let _ = r.read_ue()?;
-                        let _ = r.read_ue()?;
+                        let diff = r.read_ue()?;
+                        let long_term_frame_idx = r.read_ue()?;
+                        mmco_ops.push((3, diff | (long_term_frame_idx << 16)));
                     }
-                    4 | 5 => {
-                        let _ = r.read_ue()?;
+                    4 => {
+                        let max_long_term_frame_idx_plus1 = r.read_ue()?;
+                        mmco_ops.push((4, max_long_term_frame_idx_plus1));
+                    }
+                    5 => {
+                        mmco_ops.push((5, 0));
                     }
                     6 => {
-                        let _ = r.read_ue()?;
+                        let long_term_frame_idx = r.read_ue()?;
+                        mmco_ops.push((6, long_term_frame_idx));
                     }
                     _ => break,
                 }
