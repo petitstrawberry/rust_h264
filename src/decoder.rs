@@ -213,8 +213,8 @@ impl Decoder {
             y: ps.frame.y.clone(),
             u: ps.frame.u.clone(),
             v: ps.frame.v.clone(),
-            width: ps.frame.width,
-            height: ps.frame.height,
+            width: ps.mb_width * 16,
+            height: (ps.frame.height.div_ceil(16)) * 16,
             frame_num: ps.frame_num,
             pic_order_cnt: ps.poc,
             mv_l0: ps.mv_store_l0,
@@ -225,6 +225,36 @@ impl Decoder {
         });
 
         self.dpb.insert(pic, reference);
+
+        // Crop frame from coded dimensions (MB-aligned) to display dimensions
+        let coded_w = (ps.mb_width * 16) as usize;
+        let coded_h = ps.frame.y.len() / coded_w;
+        let display_w = ps.frame.width as usize;
+        let display_h = ps.frame.height as usize;
+        if coded_w != display_w || coded_h != display_h {
+            // Luma: copy display_w pixels per row from coded_w-stride buffer
+            let mut y = vec![0u8; display_w * display_h];
+            for r in 0..display_h {
+                y[r * display_w..(r + 1) * display_w]
+                    .copy_from_slice(&ps.frame.y[r * coded_w..r * coded_w + display_w]);
+            }
+            let chroma_coded_w = coded_w / 2;
+            let chroma_w = display_w / 2;
+            let chroma_h = display_h / 2;
+            let mut u = vec![0u8; chroma_w * chroma_h];
+            let mut v = vec![0u8; chroma_w * chroma_h];
+            for r in 0..chroma_h {
+                u[r * chroma_w..(r + 1) * chroma_w].copy_from_slice(
+                    &ps.frame.u[r * chroma_coded_w..r * chroma_coded_w + chroma_w],
+                );
+                v[r * chroma_w..(r + 1) * chroma_w].copy_from_slice(
+                    &ps.frame.v[r * chroma_coded_w..r * chroma_coded_w + chroma_w],
+                );
+            }
+            ps.frame.y = y;
+            ps.frame.u = u;
+            ps.frame.v = v;
+        }
 
         Some(ps.frame)
     }
@@ -375,6 +405,8 @@ impl Decoder {
         let height = sps.height();
         let mb_width = width.div_ceil(16);
         let mb_height = height.div_ceil(16);
+        let coded_width = mb_width * 16;
+        let coded_height = mb_height * 16;
         let total_mbs = (mb_width * mb_height) as usize;
 
         let slice_qp = header.qp_y(pps);
@@ -391,9 +423,9 @@ impl Decoder {
                 frame: Frame {
                     width,
                     height,
-                    y: vec![0u8; (width * height) as usize],
-                    u: vec![0u8; (width * height / 4) as usize],
-                    v: vec![0u8; (width * height / 4) as usize],
+                    y: vec![0u8; (coded_width * coded_height) as usize],
+                    u: vec![0u8; (coded_width * coded_height / 4) as usize],
+                    v: vec![0u8; (coded_width * coded_height / 4) as usize],
                     pic_order_cnt: current_poc,
                 },
                 frame_num: header.frame_num,
@@ -509,7 +541,7 @@ impl Decoder {
 
         let mut mb_skip_run: i32 = -1; // -1 = not initialized for P slices
 
-        let stride = width as usize;
+        let stride = coded_width as usize;
 
         // Macro to construct a SliceContext from the local variables.
         // Used at each call site that delegates to a SliceContext method.
@@ -518,8 +550,8 @@ impl Decoder {
                 SliceContext {
                     frame: &mut frame,
                     stride,
-                    width,
-                    height,
+                    width: coded_width,
+                    height: coded_height,
                     mb_width,
                     nc_luma: &mut nc_luma,
                     nc_cb: &mut nc_cb,
@@ -1376,5 +1408,33 @@ mod tests {
         // neighbors, MV/MVD zeroing for inactive prediction lists, and
         // multi-slice deblocking.
         decode_multiframe_and_compare("ms_deblock_b_cabac_test", 8, 64, 64);
+    }
+
+    #[test]
+    fn test_ms_cavlc_b() {
+        // 64x64, 8 frames: CAVLC Main profile, bframes=2, ref=2, 4 slices,
+        // no-deblock. Tests CAVLC multi-slice B-frame decode.
+        decode_multiframe_and_compare("ms_cavlc_b_test", 8, 64, 64);
+    }
+
+    #[test]
+    fn test_cavlc_deblock_pb() {
+        // 64x64, 8 frames: CAVLC Main profile, bframes=1, ref=1,
+        // deblocking ON. Tests CAVLC P+B with deblocking filter.
+        decode_multiframe_and_compare("cavlc_deblock_pb_test", 8, 64, 64);
+    }
+
+    #[test]
+    fn test_unaligned_resolution() {
+        // 100x76, 6 frames: CABAC High profile, bframes=1, ref=1,
+        // no-deblock. Tests non-16-aligned dimensions (coded 112x80).
+        decode_multiframe_and_compare("unaligned_100x76_test", 6, 100, 76);
+    }
+
+    #[test]
+    fn test_cabac_weighted_p() {
+        // 64x64, 8 frames: CABAC Main profile, 100% weighted P (fading),
+        // bframes=0, ref=2, no-deblock. Tests CABAC explicit weighted P-slice.
+        decode_multiframe_and_compare("cabac_weighted_p_test", 8, 64, 64);
     }
 }

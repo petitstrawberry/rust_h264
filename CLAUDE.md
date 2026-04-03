@@ -171,7 +171,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (100 tests, all byte-exact against FFmpeg)
+**Test Coverage** (104 tests, all byte-exact against FFmpeg)
 - Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
   mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
   noise_16x16, scaling_test
@@ -207,7 +207,11 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   high_p8x8_sub4x4_test (64x64, 6-frame, High profile P_8x8 sub-4x4 + 8x8dct),
   high_b_slower_test (64x64, 10-frame, High profile preset slower ref=2 B-frames 8x8dct),
   high_cavlc_b_test (64x64, 10-frame, CAVLC High profile bframes=2 ref=2 8x8dct),
-  ms_deblock_b_cabac_test (64x64, 8-frame, CABAC 4-slice bframes=2 ref=2 deblock)
+  ms_deblock_b_cabac_test (64x64, 8-frame, CABAC 4-slice bframes=2 ref=2 deblock),
+  ms_cavlc_b_test (64x64, 8-frame, CAVLC 4-slice bframes=2 ref=2),
+  cavlc_deblock_pb_test (64x64, 8-frame, CAVLC P+B with deblocking),
+  unaligned_100x76_test (100x76, 6-frame, non-16-aligned dimensions),
+  cabac_weighted_p_test (64x64, 8-frame, CABAC 100% weighted P fading)
 
 ### Not Yet Implemented
 
