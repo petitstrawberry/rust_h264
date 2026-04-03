@@ -83,7 +83,8 @@ pub(crate) fn cabac_neighbor_ref(
     px: usize,
     mb_slice_id: &[u16],
     cur_slice_id: u16,
-    mb_is_direct: &[bool],
+    _mb_is_direct: &[bool],
+    blk_is_direct: &[bool],
     is_b_slice: bool,
 ) -> (i8, i8) {
     let left_ref = if px > 0 {
@@ -92,20 +93,31 @@ pub(crate) fn cabac_neighbor_ref(
         BLOCK_INDEX_TO_OFFSET
             .iter()
             .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-            .map(|blk| ref_idx_store[mb_idx * 16 + blk])
+            .map(|blk| {
+                if is_b_slice && blk_is_direct[mb_idx * 16 + blk] {
+                    0
+                } else {
+                    ref_idx_store[mb_idx * 16 + blk]
+                }
+            })
             .unwrap_or(-1)
     } else if !mb_idx.is_multiple_of(mb_width) {
         if mb_slice_id[mb_idx - 1] != cur_slice_id {
             -1
-        } else if is_b_slice && mb_is_direct[mb_idx - 1] {
-            0 // Direct neighbors don't contribute to ref_idx context
         } else {
             let lr = py / 4;
             let lc = 3;
+            let neighbor_mb = mb_idx - 1;
             BLOCK_INDEX_TO_OFFSET
                 .iter()
                 .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                .map(|blk| ref_idx_store[(mb_idx - 1) * 16 + blk])
+                .map(|blk| {
+                    if is_b_slice && blk_is_direct[neighbor_mb * 16 + blk] {
+                        0
+                    } else {
+                        ref_idx_store[neighbor_mb * 16 + blk]
+                    }
+                })
                 .unwrap_or(-1)
         }
     } else {
@@ -118,20 +130,31 @@ pub(crate) fn cabac_neighbor_ref(
         BLOCK_INDEX_TO_OFFSET
             .iter()
             .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-            .map(|blk| ref_idx_store[mb_idx * 16 + blk])
+            .map(|blk| {
+                if is_b_slice && blk_is_direct[mb_idx * 16 + blk] {
+                    0
+                } else {
+                    ref_idx_store[mb_idx * 16 + blk]
+                }
+            })
             .unwrap_or(-1)
     } else if mb_idx >= mb_width {
         if mb_slice_id[mb_idx - mb_width] != cur_slice_id {
             -1
-        } else if is_b_slice && mb_is_direct[mb_idx - mb_width] {
-            0 // Direct neighbors don't contribute to ref_idx context
         } else {
             let lr = 3;
             let lc = px / 4;
+            let neighbor_mb = mb_idx - mb_width;
             BLOCK_INDEX_TO_OFFSET
                 .iter()
                 .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                .map(|blk| ref_idx_store[(mb_idx - mb_width) * 16 + blk])
+                .map(|blk| {
+                    if is_b_slice && blk_is_direct[neighbor_mb * 16 + blk] {
+                        0
+                    } else {
+                        ref_idx_store[neighbor_mb * 16 + blk]
+                    }
+                })
                 .unwrap_or(-1)
         }
     } else {

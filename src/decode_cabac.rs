@@ -857,6 +857,7 @@ impl SliceContext<'_> {
                                     self.mb_slice_id,
                                     self.this_slice_id,
                                     self.mb_is_direct,
+                                    self.blk_is_direct,
                                     sp.is_b_slice,
                                 );
                                 *sr = cr.decode_ref_idx(st, left_ref, top_ref);
@@ -1064,6 +1065,7 @@ impl SliceContext<'_> {
                                 self.mb_slice_id,
                                 self.this_slice_id,
                                 self.mb_is_direct,
+                                self.blk_is_direct,
                                 sp.is_b_slice,
                             );
                             *ref_entry = cr.decode_ref_idx(st, left_ref, top_ref);
@@ -1565,6 +1567,9 @@ impl SliceContext<'_> {
                 if raw_mb_type == 0 {
                     // B_Direct_16x16: derive MVs per 4x4 block
                     self.mb_is_direct[mb_idx] = true;
+                    for blk in 0..16 {
+                        self.blk_is_direct[mb_idx * 16 + blk] = true;
+                    }
                     if !sp.direct_8x8_inference_flag {
                         no_sub_less_than_8x8_b = false;
                     }
@@ -1642,6 +1647,7 @@ impl SliceContext<'_> {
                             self.mb_slice_id,
                             self.this_slice_id,
                             self.mb_is_direct,
+                            self.blk_is_direct,
                             sp.is_b_slice,
                         );
                         ref_l0 = cr.decode_ref_idx(st, left_ref, top_ref);
@@ -1656,6 +1662,7 @@ impl SliceContext<'_> {
                             self.mb_slice_id,
                             self.this_slice_id,
                             self.mb_is_direct,
+                            self.blk_is_direct,
                             sp.is_b_slice,
                         );
                         ref_l1 = cr.decode_ref_idx(st, left_ref, top_ref);
@@ -1800,6 +1807,7 @@ impl SliceContext<'_> {
                                     self.mb_slice_id,
                                     self.this_slice_id,
                                     self.mb_is_direct,
+                                    self.blk_is_direct,
                                     sp.is_b_slice,
                                 );
                                 part_ref_l0[p] = cr.decode_ref_idx(st, left_ref, top_ref);
@@ -1836,6 +1844,7 @@ impl SliceContext<'_> {
                                     self.mb_slice_id,
                                     self.this_slice_id,
                                     self.mb_is_direct,
+                                    self.blk_is_direct,
                                     sp.is_b_slice,
                                 );
                                 part_ref_l1[p] = cr.decode_ref_idx(st, left_ref, top_ref);
@@ -2089,6 +2098,7 @@ impl SliceContext<'_> {
                                         self.mb_slice_id,
                                         self.this_slice_id,
                                         self.mb_is_direct,
+                                        self.blk_is_direct,
                                         sp.is_b_slice,
                                     );
                                     sub_ref_l0[smb] = cr.decode_ref_idx(st, left_ref, top_ref);
@@ -2129,6 +2139,7 @@ impl SliceContext<'_> {
                                         self.mb_slice_id,
                                         self.this_slice_id,
                                         self.mb_is_direct,
+                                        self.blk_is_direct,
                                         sp.is_b_slice,
                                     );
                                     sub_ref_l1[smb] = cr.decode_ref_idx(st, left_ref, top_ref);
@@ -2189,6 +2200,7 @@ impl SliceContext<'_> {
                                 {
                                     self.mvd_store[mb_idx * 16 + blk] = [0, 0];
                                     self.mvd_store_l1[mb_idx * 16 + blk] = [0, 0];
+                                    self.blk_is_direct[mb_idx * 16 + blk] = true;
                                 }
                             }
                         }

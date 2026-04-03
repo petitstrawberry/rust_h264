@@ -89,6 +89,7 @@ pub(crate) struct SliceContext<'a> {
     pub mb_is_8x8dct: &'a mut [bool],
     pub mb_skip: &'a mut [bool],
     pub mb_is_direct: &'a mut [bool],
+    pub blk_is_direct: &'a mut [bool],
     pub is_i16x16: &'a mut [bool],
 
     // Multi-slice boundary tracking
@@ -486,6 +487,9 @@ impl SliceContext<'_> {
             }
         }
         self.mb_is_direct[mb_idx] = true;
+        for blk in 0..16 {
+            self.blk_is_direct[mb_idx * 16 + blk] = true;
+        }
     }
 
     /// Gather CABAC CBP neighbor context for a macroblock.

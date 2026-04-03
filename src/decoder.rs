@@ -53,6 +53,7 @@ struct PictureState {
     mb_is_8x8dct: Vec<bool>,
     mb_skip: Vec<bool>,
     mb_is_direct: Vec<bool>,
+    blk_is_direct: Vec<bool>,
     is_i16x16: Vec<bool>,
     /// Per-MB slice ID for slice boundary detection. MBs from different
     /// slices are treated as unavailable for CABAC context and MV prediction.
@@ -449,6 +450,7 @@ impl Decoder {
                 mb_is_8x8dct: vec![false; total_mbs],
                 mb_skip: vec![false; total_mbs],
                 mb_is_direct: vec![false; total_mbs],
+                blk_is_direct: vec![false; total_mbs * 16],
                 is_i16x16: vec![false; total_mbs],
                 mb_slice_id: vec![0u16; total_mbs],
                 current_slice_id: 0,
@@ -489,6 +491,7 @@ impl Decoder {
             mut mb_is_8x8dct,
             mut mb_skip,
             mut mb_is_direct,
+            mut blk_is_direct,
             mut is_i16x16,
             mut mb_slice_id,
             mut current_slice_id,
@@ -570,6 +573,7 @@ impl Decoder {
                     mb_is_8x8dct: &mut mb_is_8x8dct,
                     mb_skip: &mut mb_skip,
                     mb_is_direct: &mut mb_is_direct,
+                    blk_is_direct: &mut blk_is_direct,
                     is_i16x16: &mut is_i16x16,
                     mb_slice_id: &mut mb_slice_id,
                     this_slice_id,
@@ -704,6 +708,7 @@ impl Decoder {
             mb_is_8x8dct,
             mb_skip,
             mb_is_direct,
+            blk_is_direct,
             is_i16x16,
             mb_slice_id,
             current_slice_id,
@@ -1444,6 +1449,14 @@ mod tests {
         // 64x64, 3 frames: CAVLC High profile, all-intra (keyint=1), 8x8dct,
         // no-deblock. Tests CAVLC I8x8 intra prediction with 8x8 transform.
         decode_multiframe_and_compare("cavlc_i8x8_test", 3, 64, 64);
+    }
+
+    #[test]
+    fn test_cabac_b8x8_direct() {
+        // 64x64, 8 frames: CABAC Main profile, constrained_intra_pred_flag=1,
+        // bframes=2, ref=2, no-deblock. All-B_8x8 MBs with B_Direct_8x8
+        // sub-partitions. Tests per-block direct flag for ref_idx CABAC context.
+        decode_multiframe_and_compare("cabac_b8x8_direct_test", 8, 64, 64);
     }
 
     #[test]
