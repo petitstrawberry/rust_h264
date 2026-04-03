@@ -71,8 +71,10 @@ pub(crate) fn cabac_amvd(
     left_mvd + top_mvd
 }
 
+#[allow(clippy::too_many_arguments)]
 /// CABAC ref_idx neighbor context for a partition.
 /// Returns (left_ref, top_ref) from neighbor blocks.
+/// For B-slices, direct-mode neighbors are treated as ref=0 (spec 9.3.3.1.1.4).
 pub(crate) fn cabac_neighbor_ref(
     ref_idx_store: &[i8],
     mb_idx: usize,
@@ -81,6 +83,8 @@ pub(crate) fn cabac_neighbor_ref(
     px: usize,
     mb_slice_id: &[u16],
     cur_slice_id: u16,
+    mb_is_direct: &[bool],
+    is_b_slice: bool,
 ) -> (i8, i8) {
     let left_ref = if px > 0 {
         let lr = py / 4;
@@ -93,6 +97,8 @@ pub(crate) fn cabac_neighbor_ref(
     } else if !mb_idx.is_multiple_of(mb_width) {
         if mb_slice_id[mb_idx - 1] != cur_slice_id {
             -1
+        } else if is_b_slice && mb_is_direct[mb_idx - 1] {
+            0 // Direct neighbors don't contribute to ref_idx context
         } else {
             let lr = py / 4;
             let lc = 3;
@@ -117,6 +123,8 @@ pub(crate) fn cabac_neighbor_ref(
     } else if mb_idx >= mb_width {
         if mb_slice_id[mb_idx - mb_width] != cur_slice_id {
             -1
+        } else if is_b_slice && mb_is_direct[mb_idx - mb_width] {
+            0 // Direct neighbors don't contribute to ref_idx context
         } else {
             let lr = 3;
             let lc = px / 4;

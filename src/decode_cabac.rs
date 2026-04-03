@@ -73,6 +73,11 @@ impl SliceContext<'_> {
                     // B_Skip: spatial/temporal direct MV + MC, no residual
                     self.decode_b_skip_mb(mb_idx, mb_x, mb_y, sp);
                 }
+                // Skip MBs have zero MVD — clear for CABAC neighbor context
+                for blk in 0..16 {
+                    self.mvd_store[mb_idx * 16 + blk] = [0, 0];
+                    self.mvd_store_l1[mb_idx * 16 + blk] = [0, 0];
+                }
                 self.mb_info[mb_idx] = MbInfo {
                     mb_type: MbType::Inter,
                     qp_y: self.prev_mb_qp,
@@ -843,6 +848,8 @@ impl SliceContext<'_> {
                                     sx,
                                     self.mb_slice_id,
                                     self.this_slice_id,
+                                    self.mb_is_direct,
+                                    sp.is_b_slice,
                                 );
                                 *sr = cr.decode_ref_idx(st, left_ref, top_ref);
                             }
@@ -1048,6 +1055,8 @@ impl SliceContext<'_> {
                                 px_off,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                                self.mb_is_direct,
+                                sp.is_b_slice,
                             );
                             *ref_entry = cr.decode_ref_idx(st, left_ref, top_ref);
                         }
@@ -1552,6 +1561,11 @@ impl SliceContext<'_> {
                         no_sub_less_than_8x8_b = false;
                     }
                     self.derive_direct_mvs(mb_idx, 0, 16, sp);
+                    // B_Direct has zero MVD
+                    for blk in 0..16 {
+                        self.mvd_store[mb_idx * 16 + blk] = [0, 0];
+                        self.mvd_store_l1[mb_idx * 16 + blk] = [0, 0];
+                    }
                     // Build sub_parts, coalescing per-8x8 when MVs are uniform
                     let base = mb_idx * 16;
                     for i8x8 in 0..4 {
@@ -1619,6 +1633,8 @@ impl SliceContext<'_> {
                             0,
                             self.mb_slice_id,
                             self.this_slice_id,
+                            self.mb_is_direct,
+                            sp.is_b_slice,
                         );
                         ref_l0 = cr.decode_ref_idx(st, left_ref, top_ref);
                     }
@@ -1631,6 +1647,8 @@ impl SliceContext<'_> {
                             0,
                             self.mb_slice_id,
                             self.this_slice_id,
+                            self.mb_is_direct,
+                            sp.is_b_slice,
                         );
                         ref_l1 = cr.decode_ref_idx(st, left_ref, top_ref);
                     }
@@ -1727,11 +1745,15 @@ impl SliceContext<'_> {
                     if !pred_l0 {
                         for blk in 0..16 {
                             self.ref_idx_store_l0[mb_idx * 16 + blk] = -1;
+                            self.mv_store_l0[mb_idx * 16 + blk] = [0, 0];
+                            self.mvd_store[mb_idx * 16 + blk] = [0, 0];
                         }
                     }
                     if !pred_l1 {
                         for blk in 0..16 {
                             self.ref_idx_store_l1[mb_idx * 16 + blk] = -1;
+                            self.mv_store_l1[mb_idx * 16 + blk] = [0, 0];
+                            self.mvd_store_l1[mb_idx * 16 + blk] = [0, 0];
                         }
                     }
 
@@ -1769,6 +1791,8 @@ impl SliceContext<'_> {
                                     px_off,
                                     self.mb_slice_id,
                                     self.this_slice_id,
+                                    self.mb_is_direct,
+                                    sp.is_b_slice,
                                 );
                                 part_ref_l0[p] = cr.decode_ref_idx(st, left_ref, top_ref);
                             } else {
@@ -1803,6 +1827,8 @@ impl SliceContext<'_> {
                                     px_off,
                                     self.mb_slice_id,
                                     self.this_slice_id,
+                                    self.mb_is_direct,
+                                    sp.is_b_slice,
                                 );
                                 part_ref_l1[p] = cr.decode_ref_idx(st, left_ref, top_ref);
                             } else {
@@ -1896,7 +1922,7 @@ impl SliceContext<'_> {
                                 }
                             }
                         } else {
-                            // Inactive L0: set ref_idx = -1
+                            // Inactive L0: set ref_idx = -1, zero MV and MVD
                             let (py_off, px_off) =
                                 if part_h == 8 { (p * 8, 0) } else { (0, p * 8) };
                             for r in (0..part_h).step_by(4) {
@@ -1908,6 +1934,8 @@ impl SliceContext<'_> {
                                         .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
                                     {
                                         self.ref_idx_store_l0[mb_idx * 16 + blk] = -1;
+                                        self.mv_store_l0[mb_idx * 16 + blk] = [0, 0];
+                                        self.mvd_store[mb_idx * 16 + blk] = [0, 0];
                                     }
                                 }
                             }
@@ -1980,6 +2008,7 @@ impl SliceContext<'_> {
                                 }
                             }
                         } else {
+                            // Inactive L1: set ref_idx = -1, zero MV and MVD
                             let (py_off, px_off) =
                                 if part_h == 8 { (p * 8, 0) } else { (0, p * 8) };
                             for r in (0..part_h).step_by(4) {
@@ -1991,6 +2020,8 @@ impl SliceContext<'_> {
                                         .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
                                     {
                                         self.ref_idx_store_l1[mb_idx * 16 + blk] = -1;
+                                        self.mv_store_l1[mb_idx * 16 + blk] = [0, 0];
+                                        self.mvd_store_l1[mb_idx * 16 + blk] = [0, 0];
                                     }
                                 }
                             }
@@ -2049,6 +2080,8 @@ impl SliceContext<'_> {
                                         sx,
                                         self.mb_slice_id,
                                         self.this_slice_id,
+                                        self.mb_is_direct,
+                                        sp.is_b_slice,
                                     );
                                     sub_ref_l0[smb] = cr.decode_ref_idx(st, left_ref, top_ref);
                                 } else {
@@ -2087,6 +2120,8 @@ impl SliceContext<'_> {
                                         sx,
                                         self.mb_slice_id,
                                         self.this_slice_id,
+                                        self.mb_is_direct,
+                                        sp.is_b_slice,
                                     );
                                     sub_ref_l1[smb] = cr.decode_ref_idx(st, left_ref, top_ref);
                                 } else {
@@ -2134,6 +2169,21 @@ impl SliceContext<'_> {
                             continue;
                         }
                         self.derive_direct_mvs(mb_idx, smb * 4, 4, sp);
+                        // B_Direct_8x8 has zero MVD
+                        let (sy, sx) = sub_mb_origins[smb];
+                        for r in (0..8).step_by(4) {
+                            for c in (0..8).step_by(4) {
+                                let lr = (sy + r) / 4;
+                                let lc = (sx + c) / 4;
+                                if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                    .iter()
+                                    .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                {
+                                    self.mvd_store[mb_idx * 16 + blk] = [0, 0];
+                                    self.mvd_store_l1[mb_idx * 16 + blk] = [0, 0];
+                                }
+                            }
+                        }
                     }
 
                     // Collect sub-partition layouts
@@ -2183,6 +2233,21 @@ impl SliceContext<'_> {
                             continue;
                         }
                         if !layout.pl0 {
+                            // Zero MV/MVD for inactive L0
+                            let (sy, sx) = sub_mb_origins[layout.smb];
+                            for r in (0..8).step_by(4) {
+                                for c in (0..8).step_by(4) {
+                                    let lr = (sy + r) / 4;
+                                    let lc = (sx + c) / 4;
+                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                        .iter()
+                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                    {
+                                        self.mv_store_l0[mb_idx * 16 + blk] = [0, 0];
+                                        self.mvd_store[mb_idx * 16 + blk] = [0, 0];
+                                    }
+                                }
+                            }
                             continue;
                         }
                         let (sy, sx) = sub_mb_origins[layout.smb];
@@ -2247,6 +2312,21 @@ impl SliceContext<'_> {
                             continue;
                         }
                         if !layout.pl1 {
+                            // Zero MV/MVD for inactive L1
+                            let (sy, sx) = sub_mb_origins[layout.smb];
+                            for r in (0..8).step_by(4) {
+                                for c in (0..8).step_by(4) {
+                                    let lr = (sy + r) / 4;
+                                    let lc = (sx + c) / 4;
+                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
+                                        .iter()
+                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
+                                    {
+                                        self.mv_store_l1[mb_idx * 16 + blk] = [0, 0];
+                                        self.mvd_store_l1[mb_idx * 16 + blk] = [0, 0];
+                                    }
+                                }
+                            }
                             continue;
                         }
                         let (sy, sx) = sub_mb_origins[layout.smb];

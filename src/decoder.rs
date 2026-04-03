@@ -365,16 +365,6 @@ impl Decoder {
             vec![]
         };
 
-        if is_b_slice && use_weight == 2 {
-            eprintln!("B poc={} l0_active={} l1_active={} L0[0].poc={} L1[0].poc={} implicit_weights[0][0]={}",
-                current_poc,
-                header.num_ref_idx_l0_active,
-                header.num_ref_idx_l1_active,
-                _ref_pic_list_l0.first().map(|r| r.pic_order_cnt).unwrap_or(-1),
-                _ref_pic_list_l1.first().map(|r| r.pic_order_cnt).unwrap_or(-1),
-                implicit_weights.first().and_then(|r| r.first()).copied().unwrap_or(-1),
-            );
-        }
         let wctx = WeightContext {
             use_weight,
             wt: header.weight_table.as_ref(),
@@ -1377,5 +1367,14 @@ mod tests {
         // 64x64, 10 frames: CAVLC High profile with bframes=2, ref=2, 8x8dct,
         // all partitions, no-deblock. Validates CAVLC B-frame 8x8 transform path.
         decode_multiframe_and_compare("high_cavlc_b_test", 10, 64, 64);
+    }
+
+    #[test]
+    fn test_ms_deblock_b_cabac() {
+        // 64x64, 8 frames: CABAC Main profile with bframes=2, ref=2, 4 slices,
+        // deblocking ON. Tests B-slice CABAC ref_idx context with direct-mode
+        // neighbors, MV/MVD zeroing for inactive prediction lists, and
+        // multi-slice deblocking.
+        decode_multiframe_and_compare("ms_deblock_b_cabac_test", 8, 64, 64);
     }
 }
