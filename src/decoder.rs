@@ -1551,4 +1551,18 @@ mod tests {
         // Tests explicit weighted bi-prediction for B-slices.
         decode_multiframe_and_compare("jm_weighted_b_explicit_test", 8, 64, 64);
     }
+
+    #[test]
+    fn test_jm_poc_type1() {
+        // 64x64, 6 frames: JM encoder, Baseline profile, CAVLC,
+        // pic_order_cnt_type=1 (delta-based POC). Tests POC type 1 computation.
+        decode_multiframe_and_compare("jm_poc_type1_test", 6, 64, 64);
+    }
+
+    #[test]
+    fn test_jm_poc_type2() {
+        // 64x64, 6 frames: JM encoder, Baseline profile, CAVLC,
+        // pic_order_cnt_type=2 (frame_num-derived POC). Tests POC type 2 computation.
+        decode_multiframe_and_compare("jm_poc_type2_test", 6, 64, 64);
+    }
 }
