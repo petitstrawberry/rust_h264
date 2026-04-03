@@ -1543,4 +1543,12 @@ mod tests {
         // with CABAC entropy coding.
         decode_multiframe_and_compare("jm_ltr_cabac_test", 8, 64, 64);
     }
+
+    #[test]
+    fn test_jm_weighted_b_explicit() {
+        // 64x64, 8 frames: JM encoder, Main profile, CABAC,
+        // weighted_bipred_idc=1 (explicit weighted B), bframes=1.
+        // Tests explicit weighted bi-prediction for B-slices.
+        decode_multiframe_and_compare("jm_weighted_b_explicit_test", 8, 64, 64);
+    }
 }
