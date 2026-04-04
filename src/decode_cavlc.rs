@@ -861,7 +861,7 @@ impl SliceContext<'_> {
 
             // Luma MC + residual for each sub-partition
             for sub_part in &sub_parts {
-                let mut luma_pred = vec![0u8; sub_part.w * sub_part.h];
+                let mut luma_pred = [0u8; 256];
 
                 if sub_part.pred_l0 && sub_part.pred_l1 {
                     // Bi-prediction: average L0 and L1
@@ -1050,7 +1050,7 @@ impl SliceContext<'_> {
                     let cx = (chroma_mb_x + cx_off) as i32;
                     let cy = (chroma_mb_y + cy_off) as i32;
 
-                    let mut part_pred = vec![0u8; cw * ch];
+                    let mut part_pred = [0u8; 64];
                     if sub_part.pred_l0 && sub_part.pred_l1 {
                         let ref_l0 = ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0);
                         let ref_l1 = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1);
@@ -1434,7 +1434,7 @@ impl SliceContext<'_> {
             for sub_part in &sub_parts {
                 let ref_pic =
                     &sp.ref_pic_list[(sub_part.ref_idx as usize).min(sp.ref_pic_list.len() - 1)];
-                let mut luma_pred = vec![0u8; sub_part.w * sub_part.h];
+                let mut luma_pred = [0u8; 256];
                 inter_pred::luma_mc(
                     ref_pic,
                     (mb_x + sub_part.x) as i32,
@@ -1567,7 +1567,7 @@ impl SliceContext<'_> {
                         } else {
                             &part_ref_pic.v
                         };
-                        let mut part_pred = vec![0u8; cw * ch];
+                        let mut part_pred = [0u8; 64];
                         inter_pred::chroma_mc(
                             chroma_ref,
                             chroma_width,

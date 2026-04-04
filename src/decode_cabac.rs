@@ -884,15 +884,15 @@ impl SliceContext<'_> {
                     for smb in 0..4 {
                         let (sy, sx) = sub_mb_origins[smb];
                         let ref_idx = sub_ref[smb];
-                        let sub_parts_layout: Vec<(usize, usize, usize, usize)> =
+                        let sub_parts_layout: &[(usize, usize, usize, usize)] =
                             match sub_mb_types[smb] {
-                                0 => vec![(0, 0, 8, 8)],
-                                1 => vec![(0, 0, 8, 4), (0, 4, 8, 4)],
-                                2 => vec![(0, 0, 4, 8), (4, 0, 4, 8)],
-                                3 => vec![(0, 0, 4, 4), (4, 0, 4, 4), (0, 4, 4, 4), (4, 4, 4, 4)],
+                                0 => &[(0, 0, 8, 8)],
+                                1 => &[(0, 0, 8, 4), (0, 4, 8, 4)],
+                                2 => &[(0, 0, 4, 8), (4, 0, 4, 8)],
+                                3 => &[(0, 0, 4, 4), (4, 0, 4, 4), (0, 4, 4, 4), (4, 4, 4, 4)],
                                 _ => return Err(DecodeError::from("invalid sub_mb_type")),
                             };
-                        for &(dx, dy, spw, sph) in &sub_parts_layout {
+                        for &(dx, dy, spw, sph) in sub_parts_layout {
                             let px = sx + dx;
                             let py = sy + dy;
                             let amvd_x = cabac_amvd(
@@ -948,7 +948,7 @@ impl SliceContext<'_> {
                             // MC
                             let ref_pic =
                                 &sp.ref_pic_list[(ref_idx as usize).min(sp.ref_pic_list.len() - 1)];
-                            let mut luma_pred = vec![0u8; spw * sph];
+                            let mut luma_pred = [0u8; 256]; // stack: max 16x16
                             inter_pred::luma_mc(
                                 ref_pic,
                                 (mb_x + px) as i32,
@@ -979,14 +979,14 @@ impl SliceContext<'_> {
                         let (sy, sx) = sub_mb_origins[smb];
                         let ref_pic = &sp.ref_pic_list
                             [(sub_ref[smb] as usize).min(sp.ref_pic_list.len() - 1)];
-                        let sub_parts: Vec<(usize, usize, usize, usize)> = match sub_mb_types[smb] {
-                            0 => vec![(0, 0, 8, 8)],
-                            1 => vec![(0, 0, 8, 4), (0, 4, 8, 4)],
-                            2 => vec![(0, 0, 4, 8), (4, 0, 4, 8)],
-                            3 => vec![(0, 0, 4, 4), (4, 0, 4, 4), (0, 4, 4, 4), (4, 4, 4, 4)],
-                            _ => vec![(0, 0, 8, 8)],
+                        let sub_parts: &[(usize, usize, usize, usize)] = match sub_mb_types[smb] {
+                            0 => &[(0, 0, 8, 8)],
+                            1 => &[(0, 0, 8, 4), (0, 4, 8, 4)],
+                            2 => &[(0, 0, 4, 8), (4, 0, 4, 8)],
+                            3 => &[(0, 0, 4, 4), (4, 0, 4, 4), (0, 4, 4, 4), (4, 4, 4, 4)],
+                            _ => &[(0, 0, 8, 8)],
                         };
-                        for &(dx, dy, spw, sph) in &sub_parts {
+                        for &(dx, dy, spw, sph) in sub_parts {
                             let px = sx + dx;
                             let py = sy + dy;
                             let blk_idx = BLOCK_INDEX_TO_OFFSET
@@ -1001,8 +1001,8 @@ impl SliceContext<'_> {
                             if ccw == 0 || cch == 0 {
                                 continue;
                             }
-                            let mut cb_pred = vec![0u8; ccw * cch];
-                            let mut cr_pred_buf = vec![0u8; ccw * cch];
+                            let mut cb_pred = [0u8; 64]; // stack: max 8x8
+                            let mut cr_pred_buf = [0u8; 64]; // stack: max 8x8
                             inter_pred::chroma_mc(
                                 &ref_pic.u,
                                 cw,
@@ -1152,7 +1152,7 @@ impl SliceContext<'_> {
                         // MC
                         let ref_pic =
                             &sp.ref_pic_list[(part_ref[p] as usize).min(sp.ref_pic_list.len() - 1)];
-                        let mut luma_pred = vec![0u8; part_w * part_h];
+                        let mut luma_pred = [0u8; 256]; // stack: max 16x16
                         inter_pred::luma_mc(
                             ref_pic,
                             (mb_x + px_off) as i32,
@@ -1183,8 +1183,8 @@ impl SliceContext<'_> {
                         let chroma_mb_y = mb_y / 2;
                         let chw = part_w.max(2) / 2;
                         let chh = part_h.max(2) / 2;
-                        let mut cb_pred = vec![0u8; chw * chh];
-                        let mut cr_pred_buf = vec![0u8; chw * chh];
+                        let mut cb_pred = [0u8; 64]; // stack: max 8x8
+                        let mut cr_pred_buf = [0u8; 64]; // stack: max 8x8
                         inter_pred::chroma_mc(
                             &ref_pic.u,
                             cw,
@@ -1552,6 +1552,7 @@ impl SliceContext<'_> {
                     (4, 4, true, true),   // 12: B_Bi_4x4
                 ];
 
+                #[derive(Clone, Copy, Default)]
                 struct BSubPart {
                     x: usize,
                     y: usize,
@@ -1564,7 +1565,8 @@ impl SliceContext<'_> {
                     pred_l0: bool,
                     pred_l1: bool,
                 }
-                let mut b_sub_parts: Vec<BSubPart> = Vec::new();
+                let mut b_sub_parts = [BSubPart::default(); 16];
+                let mut b_sub_count = 0usize;
 
                 if raw_mb_type == 0 {
                     // B_Direct_16x16: derive MVs per 4x4 block
@@ -1598,7 +1600,7 @@ impl SliceContext<'_> {
                         });
                         let (blk_row, blk_col) = BLOCK_INDEX_TO_OFFSET[blk0];
                         if uniform {
-                            b_sub_parts.push(BSubPart {
+                            b_sub_parts[b_sub_count] = BSubPart {
                                 x: blk_col,
                                 y: blk_row,
                                 w: 8,
@@ -1609,14 +1611,15 @@ impl SliceContext<'_> {
                                 mv_l1: mv1,
                                 pred_l0: r0 >= 0,
                                 pred_l1: r1 >= 0,
-                            });
+                            };
+                            b_sub_count += 1;
                         } else {
                             for sub in 0..4 {
                                 let b = blk0 + sub;
                                 let (br, bc) = BLOCK_INDEX_TO_OFFSET[b];
                                 let rl0 = self.ref_idx_store_l0[base + b];
                                 let rl1 = self.ref_idx_store_l1[base + b];
-                                b_sub_parts.push(BSubPart {
+                                b_sub_parts[b_sub_count] = BSubPart {
                                     x: bc,
                                     y: br,
                                     w: 4,
@@ -1627,7 +1630,8 @@ impl SliceContext<'_> {
                                     mv_l1: self.mv_store_l1[base + b],
                                     pred_l0: rl0 >= 0,
                                     pred_l1: rl1 >= 0,
-                                });
+                                };
+                                b_sub_count += 1;
                             }
                         }
                     }
@@ -1774,7 +1778,7 @@ impl SliceContext<'_> {
                         }
                     }
 
-                    b_sub_parts.push(BSubPart {
+                    b_sub_parts[b_sub_count] = BSubPart {
                         x: 0,
                         y: 0,
                         w: 16,
@@ -1785,7 +1789,8 @@ impl SliceContext<'_> {
                         mv_l1,
                         pred_l0,
                         pred_l1,
-                    });
+                    };
+                    b_sub_count += 1;
                 } else if raw_mb_type <= 21 {
                     // B 16x8/8x16 partition variants (mb_type 4-21)
                     let entry = B_PART_TABLE[(raw_mb_type - 4) as usize];
@@ -2050,7 +2055,7 @@ impl SliceContext<'_> {
                     // Build sub_parts for MC
                     for p in 0..2 {
                         let (py_off, px_off) = if part_h == 8 { (p * 8, 0) } else { (0, p * 8) };
-                        b_sub_parts.push(BSubPart {
+                        b_sub_parts[b_sub_count] = BSubPart {
                             x: px_off,
                             y: py_off,
                             w: part_w,
@@ -2061,7 +2066,8 @@ impl SliceContext<'_> {
                             mv_l1: mv_l1_parts[p],
                             pred_l0: pred_flags[p].0,
                             pred_l1: pred_flags[p].1,
-                        });
+                        };
+                        b_sub_count += 1;
                     }
                 } else if raw_mb_type == 22 {
                     // B_8x8
@@ -2209,48 +2215,64 @@ impl SliceContext<'_> {
                     }
 
                     // Collect sub-partition layouts
+                    #[derive(Clone, Copy)]
                     struct BSubLayout {
                         smb: usize,
                         sub_w: usize,
                         sub_h: usize,
                         pl0: bool,
                         pl1: bool,
-                        offsets: Vec<(usize, usize)>,
+                        offsets: [(usize, usize); 4],
+                        num_offsets: usize,
                     }
-                    let mut layouts: Vec<BSubLayout> = Vec::new();
+                    let mut layouts = [BSubLayout {
+                        smb: 0,
+                        sub_w: 0,
+                        sub_h: 0,
+                        pl0: false,
+                        pl1: false,
+                        offsets: [(0, 0); 4],
+                        num_offsets: 0,
+                    }; 4];
+                    let mut layout_count = 0usize;
                     for (smb, &smt_val) in sub_mb_types.iter().enumerate() {
                         let smt = smt_val as usize;
                         if smt == 0 {
-                            layouts.push(BSubLayout {
+                            layouts[layout_count] = BSubLayout {
                                 smb,
                                 sub_w: 8,
                                 sub_h: 8,
                                 pl0: false,
                                 pl1: false,
-                                offsets: vec![(0, 0)],
-                            });
+                                offsets: [(0, 0), (0, 0), (0, 0), (0, 0)],
+                                num_offsets: 1,
+                            };
+                            layout_count += 1;
                             continue;
                         }
                         let (sub_w, sub_h, pl0, pl1) = B_SUB_TABLE[smt];
-                        let offsets = match (sub_w, sub_h) {
-                            (8, 8) => vec![(0, 0)],
-                            (8, 4) => vec![(0, 0), (0, 4)],
-                            (4, 8) => vec![(0, 0), (4, 0)],
-                            (4, 4) => vec![(0, 0), (4, 0), (0, 4), (4, 4)],
+                        let (offsets, num_offsets) = match (sub_w, sub_h) {
+                            (8, 8) => ([(0, 0), (0, 0), (0, 0), (0, 0)], 1),
+                            (8, 4) => ([(0, 0), (0, 4), (0, 0), (0, 0)], 2),
+                            (4, 8) => ([(0, 0), (4, 0), (0, 0), (0, 0)], 2),
+                            (4, 4) => ([(0, 0), (4, 0), (0, 4), (4, 4)], 4),
                             _ => unreachable!(),
                         };
-                        layouts.push(BSubLayout {
+                        layouts[layout_count] = BSubLayout {
                             smb,
                             sub_w,
                             sub_h,
                             pl0,
                             pl1,
                             offsets,
-                        });
+                            num_offsets,
+                        };
+                        layout_count += 1;
                     }
 
                     // Parse L0 MVDs
-                    for layout in &layouts {
+                    for li in 0..layout_count {
+                        let layout = &layouts[li];
                         if sub_mb_types[layout.smb] == 0 {
                             continue;
                         }
@@ -2273,7 +2295,8 @@ impl SliceContext<'_> {
                             continue;
                         }
                         let (sy, sx) = sub_mb_origins[layout.smb];
-                        for &(dx, dy) in &layout.offsets {
+                        for oi in 0..layout.num_offsets {
+                            let (dx, dy) = layout.offsets[oi];
                             let px = sx + dx;
                             let py = sy + dy;
                             let amvd_x = cabac_amvd(
@@ -2329,7 +2352,8 @@ impl SliceContext<'_> {
                     }
 
                     // Parse L1 MVDs
-                    for layout in &layouts {
+                    for li in 0..layout_count {
+                        let layout = &layouts[li];
                         if sub_mb_types[layout.smb] == 0 {
                             continue;
                         }
@@ -2352,7 +2376,8 @@ impl SliceContext<'_> {
                             continue;
                         }
                         let (sy, sx) = sub_mb_origins[layout.smb];
-                        for &(dx, dy) in &layout.offsets {
+                        for oi in 0..layout.num_offsets {
+                            let (dx, dy) = layout.offsets[oi];
                             let px = sx + dx;
                             let py = sy + dy;
                             let amvd_x = cabac_amvd(
@@ -2408,7 +2433,8 @@ impl SliceContext<'_> {
                     }
 
                     // Build sub_parts from stored MVs
-                    for layout in &layouts {
+                    for li in 0..layout_count {
+                        let layout = &layouts[li];
                         let (sy, sx) = sub_mb_origins[layout.smb];
                         if sub_mb_types[layout.smb] == 0 {
                             // B_Direct_8x8: per-4x4-block sub_parts
@@ -2423,7 +2449,7 @@ impl SliceContext<'_> {
                                         .unwrap_or(0);
                                     let ri_l0 = self.ref_idx_store_l0[base + blk];
                                     let ri_l1 = self.ref_idx_store_l1[base + blk];
-                                    b_sub_parts.push(BSubPart {
+                                    b_sub_parts[b_sub_count] = BSubPart {
                                         x: sx + c,
                                         y: sy + r,
                                         w: 4,
@@ -2434,13 +2460,15 @@ impl SliceContext<'_> {
                                         mv_l1: self.mv_store_l1[base + blk],
                                         pred_l0: ri_l0 >= 0,
                                         pred_l1: ri_l1 >= 0,
-                                    });
+                                    };
+                                    b_sub_count += 1;
                                 }
                             }
                         } else {
                             let smt = sub_mb_types[layout.smb] as usize;
                             let (_, _, pl0, pl1) = B_SUB_TABLE[smt];
-                            for &(dx, dy) in &layout.offsets {
+                            for oi in 0..layout.num_offsets {
+                                let (dx, dy) = layout.offsets[oi];
                                 let px = sx + dx;
                                 let py = sy + dy;
                                 let blk0 = BLOCK_INDEX_TO_OFFSET
@@ -2448,7 +2476,7 @@ impl SliceContext<'_> {
                                     .position(|&(br, bc)| br / 4 == py / 4 && bc / 4 == px / 4)
                                     .unwrap_or(0);
                                 let base = mb_idx * 16;
-                                b_sub_parts.push(BSubPart {
+                                b_sub_parts[b_sub_count] = BSubPart {
                                     x: px,
                                     y: py,
                                     w: layout.sub_w,
@@ -2459,7 +2487,8 @@ impl SliceContext<'_> {
                                     mv_l1: self.mv_store_l1[base + blk0],
                                     pred_l0: pl0,
                                     pred_l1: pl1,
-                                });
+                                };
+                                b_sub_count += 1;
                             }
                         }
                     }
@@ -2468,14 +2497,15 @@ impl SliceContext<'_> {
                 }
 
                 // Motion compensation for all sub-parts
-                for sub_part in &b_sub_parts {
+                for _sp_i in 0..b_sub_count {
+                    let sub_part = &b_sub_parts[_sp_i];
                     let abs_x = mb_x + sub_part.x;
                     let abs_y = mb_y + sub_part.y;
-                    let mut luma_pred = vec![0u8; sub_part.w * sub_part.h];
+                    let mut luma_pred = [0u8; 256]; // stack: max 16x16
 
                     if sub_part.pred_l0 && sub_part.pred_l1 {
-                        let mut p0 = vec![0u8; sub_part.w * sub_part.h];
-                        let mut p1 = vec![0u8; sub_part.w * sub_part.h];
+                        let mut p0 = [0u8; 256]; // stack: max 16x16
+                        let mut p1 = [0u8; 256]; // stack: max 16x16
                         inter_pred::luma_mc(
                             ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0),
                             abs_x as i32,
@@ -2562,7 +2592,7 @@ impl SliceContext<'_> {
                     let chh = sub_part.h.max(2) / 2;
 
                     for plane_idx in 0..2 {
-                        let mut chroma_pred = vec![0u8; chw * chh];
+                        let mut chroma_pred = [0u8; 64]; // stack: max 8x8
                         if sub_part.pred_l0 && sub_part.pred_l1 {
                             let ref_l0 = ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0);
                             let ref_l1 = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1);
