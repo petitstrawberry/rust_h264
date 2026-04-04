@@ -428,8 +428,12 @@ pub(crate) fn derive_spatial_direct_blk(
     }
 
     // Co-located zero-MV refinement (spec 8.4.1.2.2):
-    // If the co-located block in L1[0] has near-zero MV with ref_idx=0,
-    // zero out spatial MVs for lists where ref_idx == 0.
+    // Derive mvCol/refIdxCol from the co-located partition in ColPic (= RefPicList1[0]):
+    //   - If co-located PredFlagL0 = 1: use L0 MV/ref
+    //   - If co-located PredFlagL0 = 0 (L1-only, e.g. B_L1_16x16): use L1 MV/ref
+    // Then colZeroFlag = 1 if refIdxCol maps to the same picture as
+    // RefPicList0[0] and |mvCol| <= 1 in both components.
+    // When colZeroFlag is set, zero out spatial MVs for lists where ref_idx == 0.
     // When direct_8x8_inference_flag is set, use the representative 4x4 block
     // per 8x8 group (same mapping as temporal direct).
     if let Some(col) = col_pic {
@@ -441,15 +445,32 @@ pub(crate) fn derive_spatial_direct_blk(
         };
         let col_pos = mb_idx * 16 + effective_blk;
         if col_pos < col.ref_idx_l0.len() && !col.is_intra {
-            let col_ref = col.ref_idx_l0[col_pos];
-            let col_mv = if col_pos < col.mv_l0.len() {
-                col.mv_l0[col_pos]
+            let col_ref_l0 = col.ref_idx_l0[col_pos];
+            // Determine which co-located MV to use for the zero check:
+            // If co-located has L0 prediction (ref_idx_l0 >= 0): use L0 MV/ref
+            // If co-located is L1-only (ref_idx_l0 < 0): use L1 MV/ref per spec
+            let col_zero = if col_ref_l0 == 0 {
+                let col_mv = if col_pos < col.mv_l0.len() {
+                    col.mv_l0[col_pos]
+                } else {
+                    [0, 0]
+                };
+                col_mv[0].abs() <= 1 && col_mv[1].abs() <= 1
+            } else if col_ref_l0 < 0
+                && col_pos < col.ref_idx_l1.len()
+                && col.ref_idx_l1[col_pos] == 0
+            {
+                let col_mv_l1 = if col_pos < col.mv_l1.len() {
+                    col.mv_l1[col_pos]
+                } else {
+                    [0, 0]
+                };
+                col_mv_l1[0].abs() <= 1 && col_mv_l1[1].abs() <= 1
             } else {
-                [0, 0]
+                false
             };
-            // Check: co-located ref_idx_l0 == 0 and |MV| <= 1 in both components
-            if col_ref == 0 && col_mv[0].abs() <= 1 && col_mv[1].abs() <= 1 {
-                // Zero out MVs for lists with ref_idx == 0
+
+            if col_zero {
                 if ref_idx[0] == 0 {
                     mv[0] = [0, 0];
                 }

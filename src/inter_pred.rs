@@ -256,6 +256,8 @@ mod tests {
             mv_l0: vec![],
             ref_idx_l0: vec![],
             ref_poc_l0: vec![],
+            mv_l1: vec![],
+            ref_idx_l1: vec![],
             mb_width: width / 16,
             is_intra: false,
         })

@@ -250,6 +250,8 @@ impl Decoder {
             mv_l0: ps.mv_store_l0,
             ref_idx_l0: ps.ref_idx_store_l0,
             ref_poc_l0: ps.ref_poc_store_l0,
+            mv_l1: ps.mv_store_l1,
+            ref_idx_l1: ps.ref_idx_store_l1,
             mb_width: ps.mb_width,
             is_intra: ps.is_intra_slice,
         });

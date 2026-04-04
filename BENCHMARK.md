@@ -111,13 +111,15 @@ tagged with the second GOP's IDR count, placing it after the second
 IDR's frames in display order. Fixed by incrementing `idr_count` after
 `decode_nal` returns.
 
-**Sub-pixel rounding at 720p:** With very smooth content (sinusoidal
-patterns), `ref=4 bframes=3` at 720p produces ±1-2 pixel diffs
-starting from frame 1. This is a sub-pixel interpolation rounding
-difference that only manifests with specific content where MV
-differences are tiny and residuals near zero. Does not occur with
-`ref=1` or random/natural content. Needs investigation of the 6-tap
-FIR half-pel filter rounding vs FFmpeg's NEON implementation.
+**Spatial direct colZeroFlag L1 fallback (fixed):** At 720p with
+`ref=4 bframes=3` and smooth sinusoidal content, ±1 pixel diffs
+appeared in B-frames using spatial direct mode. Root cause: per spec
+8.4.1.2.2, when the co-located partition is L1-only (`PredFlagL0=0`),
+`mvCol`/`refIdxCol` should be derived from L1 data, not L0. Our code
+only stored and checked L0 data from the co-located picture. For L1-only
+co-located blocks (`ref_idx_l0 < 0`), we missed the colZeroFlag entirely.
+Fixed by storing L1 MV/ref data in `DecodedPicture` and using L1 data
+when L0 is unavailable in `derive_spatial_direct_blk`.
 
 ## Realistic Performance Target
 

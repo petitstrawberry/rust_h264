@@ -46,7 +46,7 @@ The decoder logic is split across several files for maintainability:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). Multi-reference (ref>1) with ref_pic_list_modification supported. Multi-slice frames fully supported for both CABAC and CAVLC (I, P, and B-frames byte-exact). All 49 test streams byte-exact against FFmpeg, including x264 `--preset medium` with and without deblocking (320x240, 60 frames, ref=4, bframes=3), and multi-slice streams with up to 4 slices per frame. Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). Multi-reference (ref>1) with ref_pic_list_modification supported. Multi-slice frames fully supported for both CABAC and CAVLC (I, P, and B-frames byte-exact). 116 unit tests (73 byte-exact stream tests against FFmpeg), including x264 `--preset medium` with and without deblocking (320x240, 60 frames, ref=4, bframes=3), multi-slice streams with up to 4 slices per frame. Also verified byte-exact at 720p (1280x720, 300 frames, bframes=3 ref=4). Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
 
 ### Completed
 
@@ -77,7 +77,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - B_L0_16x16, B_L1_16x16 (uni-directional), B_Bi_16x16 (bi-directional)
 - Dual MV/ref_idx storage (L0 + L1) for B-slice support
 - Spatial direct mode: min-positive ref_idx from neighbors, median MV prediction,
-  per-4x4-block co-located zero-MV refinement
+  per-4x4-block co-located zero-MV refinement with L0→L1 fallback per spec 8.4.1.2.2
 - Temporal direct mode: per-4x4-block co-located MV scaling by POC distance (dist_scale_factor),
   `direct_8x8_inference_flag` support (one MV per 8x8 group from co-located picture)
 - Bi-prediction averaging for luma and chroma
@@ -102,7 +102,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - Long-term reference support: MMCO ops 1-6 (mark ST/LT unused, assign ST→LT,
   set max LT index, clear all, assign current as LT), IDR `long_term_reference_flag`
 - Long-term refs appended to reference lists after short-term refs (spec 8.2.4.2)
-- Co-located picture MV/ref storage for temporal direct mode
+- Co-located picture MV/ref storage (L0 + L1) for spatial and temporal direct mode
 
 **CAVLC Entropy Decoding** (`src/cavlc.rs`)
 - Complete coeff_token VLC tables (nC 0-2, 2-4, 4-8, 8+, chroma DC)
