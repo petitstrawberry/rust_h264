@@ -95,13 +95,23 @@ Replaced `Vec` heap allocations with stack arrays in hot paths:
 
 **Result: ~4% improvement** (1.70s → 1.63s)
 
-## Known Decode Issues at 720p
+## Known Issues
 
-The benchmark uses `--bframes 0 --ref 1` because some B-frame configurations
-with `ref ≥ 2` produce pixel mismatches at late frames (frame 249+) in 720p
-streams. This is likely the same B_8x8 B_Direct_8x8 sub-partition context
-issue that was fixed for smaller resolutions but may have residual edge cases
-at larger frame counts where error accumulates.
+**Frame ordering bug (fixed):** The `dump_frames` example had a frame
+reordering bug at IDR boundaries — `idr_count` was incremented when the
+IDR NAL was seen (before `decode_nal`), but `decode_nal` returns the
+PREVIOUS frame. This caused the last B-frame of the first GOP to be
+tagged with the second GOP's IDR count, placing it after the second
+IDR's frames in display order. Fixed by incrementing `idr_count` after
+`decode_nal` returns.
+
+**Sub-pixel rounding at 720p:** With very smooth content (sinusoidal
+patterns), `ref=4 bframes=3` at 720p produces ±1-2 pixel diffs
+starting from frame 1. This is a sub-pixel interpolation rounding
+difference that only manifests with specific content where MV
+differences are tiny and residuals near zero. Does not occur with
+`ref=1` or random/natural content. Needs investigation of the 6-tap
+FIR half-pel filter rounding vs FFmpeg's NEON implementation.
 
 ## Realistic Performance Target
 

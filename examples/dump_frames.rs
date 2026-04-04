@@ -32,9 +32,7 @@ fn main() {
     let mut decode_order: usize = 0;
 
     for nal in &nals {
-        if nal.nal_unit_type == NalUnitType::SliceIdr {
-            idr_count += 1;
-        }
+        let is_idr = nal.nal_unit_type == NalUnitType::SliceIdr;
         match decoder.decode_nal(nal) {
             Ok(Some(f)) => {
                 eprintln!(
@@ -49,6 +47,11 @@ fn main() {
                 eprintln!("Error decoding frame: {:?}", e);
                 std::process::exit(1);
             }
+        }
+        // Increment IDR count AFTER decode_nal returns the previous frame,
+        // so the previous GOP's last frame gets the correct idr_count.
+        if is_idr {
+            idr_count += 1;
         }
     }
 
