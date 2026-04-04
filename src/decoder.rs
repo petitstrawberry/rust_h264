@@ -646,6 +646,9 @@ impl Decoder {
             num_ref_idx_l1_active: header.num_ref_idx_l1_active,
             wctx: &wctx,
             first_mb_in_slice: header.first_mb_in_slice,
+            slice_qp,
+            is_i_slice: header.slice_type == SliceType::I,
+            cabac_init_idc: header.cabac_init_idc,
         };
 
         let mut mb_idx = header.first_mb_in_slice as usize;
@@ -1557,6 +1560,14 @@ mod tests {
         // 32x32, 4 frames: JM encoder, Baseline profile, CAVLC, QP=0,
         // I_PCM macroblocks with random content. Tests CAVLC I_PCM decode.
         decode_multiframe_and_compare("jm_ipcm_cavlc_test", 4, 32, 32);
+    }
+
+    #[test]
+    fn test_jm_ipcm_cabac() {
+        // 32x32, 4 frames: JM encoder, Main profile, CABAC, QP=0,
+        // I_PCM macroblocks with random content. Tests CABAC I_PCM decode
+        // with engine reinit and is_i16x16 context flag for I_PCM neighbors.
+        decode_multiframe_and_compare("jm_ipcm_cabac_test", 4, 32, 32);
     }
 
     #[test]

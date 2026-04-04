@@ -814,6 +814,8 @@ impl SliceContext<'_> {
                     cr.reinit(pcm_pos + off);
                     self.prev_mb_qp = 0;
                     self.last_qp_delta_nonzero = false;
+                    self.is_i16x16[mb_idx] = true; // I_PCM treated as I16x16 for CABAC context
+                    self.mb_cbp[mb_idx] = 0;
                     self.mb_info[mb_idx] = MbInfo {
                         mb_type: MbType::Ipcm,
                         qp_y: 0,
@@ -2994,7 +2996,7 @@ impl SliceContext<'_> {
             cr.reinit(pcm_pos + off);
             self.prev_mb_qp = 0;
             self.last_qp_delta_nonzero = false;
-            self.is_i16x16[mb_idx] = false;
+            self.is_i16x16[mb_idx] = true; // I_PCM treated as I16x16 for CABAC context
             self.mb_cbp[mb_idx] = 0;
             self.mb_info[mb_idx] = MbInfo {
                 mb_type: MbType::Ipcm,
@@ -3685,7 +3687,7 @@ impl SliceContext<'_> {
             cr.reinit(pcm_pos + off);
             self.prev_mb_qp = 0;
             self.last_qp_delta_nonzero = false;
-            self.is_i16x16[mb_idx] = false;
+            self.is_i16x16[mb_idx] = true; // I_PCM treated as I16x16 for CABAC context
             self.mb_cbp[mb_idx] = 0;
             self.mb_info[mb_idx] = MbInfo {
                 mb_type: MbType::Ipcm,
