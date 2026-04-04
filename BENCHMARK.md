@@ -3,18 +3,24 @@
 ## Test Setup
 
 - **Platform:** Apple Silicon (ARM64), macOS
-- **Stream:** 1280×720, 300 frames, x264 `--preset medium --bframes 0 --ref 1 --no-deblock`, CABAC
+- **Streams:** 1280×720, 300 frames, x264 `--preset medium --no-deblock`, CABAC
+  - P-only: `--bframes 0 --ref 1`
+  - B-frames: `--bframes 1 --ref 1 --no-weightb`
 - **FFmpeg:** Single-threaded (`-threads 1`), software decode, compiled with `-O3` + NEON assembly
 - **rust_h264:** `cargo build --release`, pure Rust, no SIMD
 
 ## Results
 
-| Decoder | Time (user) | FPS | Memory |
-|---------|-------------|-----|--------|
-| FFmpeg (1 thread) | 0.01s | ~15,000 | 20 MB |
-| rust_h264 (release) | 1.63s | 184 | 12 MB |
+| Decoder | Stream | Time (user) | FPS | Memory |
+|---------|--------|-------------|-----|--------|
+| FFmpeg | P-only | 0.01s | ~30,000 | 20 MB |
+| FFmpeg | B-frames | 0.01s | ~30,000 | 20 MB |
+| rust_h264 | P-only | 1.60s | 188 | 12 MB |
+| rust_h264 | B-frames | 1.58s | 190 | 12 MB |
 
-**FFmpeg is ~84× faster.** This is expected — FFmpeg has decades of hand-tuned NEON/SSE assembly for the hot paths.
+**FFmpeg is ~80-160× faster.** This is expected — FFmpeg has decades of hand-tuned
+NEON/SSE assembly for the hot paths. Our B-frame decode is slightly faster than
+P-only because B-frames have more skip MBs (less work per MB).
 
 ## Profile Breakdown
 
