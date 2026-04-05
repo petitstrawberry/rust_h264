@@ -12,7 +12,7 @@ use crate::neighbor::{
 use crate::residual::{
     chroma_qp, dequant_4x4_full, dequant_8x8, dequant_chroma_dc, dequant_luma_dc_i16x16,
     inverse_dct_4x4, inverse_dct_8x8, inverse_hadamard_2x2, inverse_hadamard_4x4,
-    BLOCK_INDEX_TO_OFFSET, ZIGZAG_4X4, ZIGZAG_8X8_CABAC,
+    BLOCK_INDEX_TO_OFFSET, OFFSET_TO_BLOCK, ZIGZAG_4X4, ZIGZAG_8X8_CABAC,
 };
 use crate::slice_context::{SliceContext, SliceParams};
 
@@ -870,12 +870,8 @@ impl SliceContext<'_> {
                                 for c in (0..8).step_by(4) {
                                     let lr = (sy + r) / 4;
                                     let lc = (sx + c) / 4;
-                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                        .iter()
-                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                    {
-                                        self.ref_idx_store_l0[mb_idx * 16 + blk] = *sr;
-                                    }
+                                    let blk = OFFSET_TO_BLOCK[lr][lc];
+                                    self.ref_idx_store_l0[mb_idx * 16 + blk] = *sr;
                                 }
                             }
                         }
@@ -935,14 +931,10 @@ impl SliceContext<'_> {
                                 for c in (0..spw).step_by(4) {
                                     let lr = (py + r) / 4;
                                     let lc = (px + c) / 4;
-                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                        .iter()
-                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                    {
-                                        self.mv_store_l0[mb_idx * 16 + blk] = mv;
-                                        self.ref_idx_store_l0[mb_idx * 16 + blk] = ref_idx;
-                                        self.mvd_store[mb_idx * 16 + blk] = [mvd_x, mvd_y];
-                                    }
+                                    let blk = OFFSET_TO_BLOCK[lr][lc];
+                                    self.mv_store_l0[mb_idx * 16 + blk] = mv;
+                                    self.ref_idx_store_l0[mb_idx * 16 + blk] = ref_idx;
+                                    self.mvd_store[mb_idx * 16 + blk] = [mvd_x, mvd_y];
                                 }
                             }
                             // MC
@@ -989,10 +981,7 @@ impl SliceContext<'_> {
                         for &(dx, dy, spw, sph) in sub_parts {
                             let px = sx + dx;
                             let py = sy + dy;
-                            let blk_idx = BLOCK_INDEX_TO_OFFSET
-                                .iter()
-                                .position(|&(br, bc)| br == py && bc == px)
-                                .unwrap_or(0);
+                            let blk_idx = OFFSET_TO_BLOCK[py / 4][px / 4];
                             let mv = self.mv_store_l0[mb_idx * 16 + blk_idx];
                             let ccx = px / 2;
                             let ccy = py / 2;
@@ -1083,12 +1072,8 @@ impl SliceContext<'_> {
                             for c in (0..part_w).step_by(4) {
                                 let lr = (py_off + r) / 4;
                                 let lc = (px_off + c) / 4;
-                                if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                    .iter()
-                                    .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                {
-                                    self.ref_idx_store_l0[mb_idx * 16 + blk] = *ref_entry;
-                                }
+                                let blk = OFFSET_TO_BLOCK[lr][lc];
+                                self.ref_idx_store_l0[mb_idx * 16 + blk] = *ref_entry;
                             }
                         }
                     }
@@ -1138,14 +1123,10 @@ impl SliceContext<'_> {
                             for c in (0..part_w).step_by(4) {
                                 let lr = (py_off + r) / 4;
                                 let lc = (px_off + c) / 4;
-                                if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                    .iter()
-                                    .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                {
-                                    self.mv_store_l0[mb_idx * 16 + blk] = mv;
-                                    self.ref_idx_store_l0[mb_idx * 16 + blk] = part_ref[p];
-                                    self.mvd_store[mb_idx * 16 + blk] = [mvd_x, mvd_y];
-                                }
+                                let blk = OFFSET_TO_BLOCK[lr][lc];
+                                self.mv_store_l0[mb_idx * 16 + blk] = mv;
+                                self.ref_idx_store_l0[mb_idx * 16 + blk] = part_ref[p];
+                                self.mvd_store[mb_idx * 16 + blk] = [mvd_x, mvd_y];
                             }
                         }
 
@@ -1828,12 +1809,8 @@ impl SliceContext<'_> {
                             for c in (0..part_w).step_by(4) {
                                 let lr = (py_off + r) / 4;
                                 let lc = (px_off + c) / 4;
-                                if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                    .iter()
-                                    .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                {
-                                    self.ref_idx_store_l0[mb_idx * 16 + blk] = part_ref_l0[p];
-                                }
+                                let blk = OFFSET_TO_BLOCK[lr][lc];
+                                self.ref_idx_store_l0[mb_idx * 16 + blk] = part_ref_l0[p];
                             }
                         }
                     }
@@ -1865,12 +1842,8 @@ impl SliceContext<'_> {
                             for c in (0..part_w).step_by(4) {
                                 let lr = (py_off + r) / 4;
                                 let lc = (px_off + c) / 4;
-                                if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                    .iter()
-                                    .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                {
-                                    self.ref_idx_store_l1[mb_idx * 16 + blk] = part_ref_l1[p];
-                                }
+                                let blk = OFFSET_TO_BLOCK[lr][lc];
+                                self.ref_idx_store_l1[mb_idx * 16 + blk] = part_ref_l1[p];
                             }
                         }
                     }
@@ -1888,12 +1861,8 @@ impl SliceContext<'_> {
                                 for c in (0..part_w).step_by(4) {
                                     let lr = (py_off + r) / 4;
                                     let lc = (px_off + c) / 4;
-                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                        .iter()
-                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                    {
-                                        self.ref_idx_store_l0[mb_idx * 16 + blk] = part_ref_l0[p];
-                                    }
+                                    let blk = OFFSET_TO_BLOCK[lr][lc];
+                                    self.ref_idx_store_l0[mb_idx * 16 + blk] = part_ref_l0[p];
                                 }
                             }
                             let amvd_x = cabac_amvd(
@@ -1936,13 +1905,9 @@ impl SliceContext<'_> {
                                 for c in (0..part_w).step_by(4) {
                                     let lr = (py_off + r) / 4;
                                     let lc = (px_off + c) / 4;
-                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                        .iter()
-                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                    {
-                                        self.mv_store_l0[mb_idx * 16 + blk] = mv_l0_parts[p];
-                                        self.mvd_store[mb_idx * 16 + blk] = [mvd_x, mvd_y];
-                                    }
+                                    let blk = OFFSET_TO_BLOCK[lr][lc];
+                                    self.mv_store_l0[mb_idx * 16 + blk] = mv_l0_parts[p];
+                                    self.mvd_store[mb_idx * 16 + blk] = [mvd_x, mvd_y];
                                 }
                             }
                         } else {
@@ -1953,14 +1918,10 @@ impl SliceContext<'_> {
                                 for c in (0..part_w).step_by(4) {
                                     let lr = (py_off + r) / 4;
                                     let lc = (px_off + c) / 4;
-                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                        .iter()
-                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                    {
-                                        self.ref_idx_store_l0[mb_idx * 16 + blk] = -1;
-                                        self.mv_store_l0[mb_idx * 16 + blk] = [0, 0];
-                                        self.mvd_store[mb_idx * 16 + blk] = [0, 0];
-                                    }
+                                    let blk = OFFSET_TO_BLOCK[lr][lc];
+                                    self.ref_idx_store_l0[mb_idx * 16 + blk] = -1;
+                                    self.mv_store_l0[mb_idx * 16 + blk] = [0, 0];
+                                    self.mvd_store[mb_idx * 16 + blk] = [0, 0];
                                 }
                             }
                         }
@@ -1975,12 +1936,8 @@ impl SliceContext<'_> {
                                 for c in (0..part_w).step_by(4) {
                                     let lr = (py_off + r) / 4;
                                     let lc = (px_off + c) / 4;
-                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                        .iter()
-                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                    {
-                                        self.ref_idx_store_l1[mb_idx * 16 + blk] = part_ref_l1[p];
-                                    }
+                                    let blk = OFFSET_TO_BLOCK[lr][lc];
+                                    self.ref_idx_store_l1[mb_idx * 16 + blk] = part_ref_l1[p];
                                 }
                             }
                             let amvd_x = cabac_amvd(
@@ -2022,13 +1979,9 @@ impl SliceContext<'_> {
                                 for c in (0..part_w).step_by(4) {
                                     let lr = (py_off + r) / 4;
                                     let lc = (px_off + c) / 4;
-                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                        .iter()
-                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                    {
-                                        self.mv_store_l1[mb_idx * 16 + blk] = mv_l1_parts[p];
-                                        self.mvd_store_l1[mb_idx * 16 + blk] = [mvd_x, mvd_y];
-                                    }
+                                    let blk = OFFSET_TO_BLOCK[lr][lc];
+                                    self.mv_store_l1[mb_idx * 16 + blk] = mv_l1_parts[p];
+                                    self.mvd_store_l1[mb_idx * 16 + blk] = [mvd_x, mvd_y];
                                 }
                             }
                         } else {
@@ -2039,14 +1992,10 @@ impl SliceContext<'_> {
                                 for c in (0..part_w).step_by(4) {
                                     let lr = (py_off + r) / 4;
                                     let lc = (px_off + c) / 4;
-                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                        .iter()
-                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                    {
-                                        self.ref_idx_store_l1[mb_idx * 16 + blk] = -1;
-                                        self.mv_store_l1[mb_idx * 16 + blk] = [0, 0];
-                                        self.mvd_store_l1[mb_idx * 16 + blk] = [0, 0];
-                                    }
+                                    let blk = OFFSET_TO_BLOCK[lr][lc];
+                                    self.ref_idx_store_l1[mb_idx * 16 + blk] = -1;
+                                    self.mv_store_l1[mb_idx * 16 + blk] = [0, 0];
+                                    self.mvd_store_l1[mb_idx * 16 + blk] = [0, 0];
                                 }
                             }
                         }
@@ -2121,12 +2070,8 @@ impl SliceContext<'_> {
                             for c in (0..8).step_by(4) {
                                 let lr = (sy + r) / 4;
                                 let lc = (sx + c) / 4;
-                                if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                    .iter()
-                                    .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                {
-                                    self.ref_idx_store_l0[mb_idx * 16 + blk] = sub_ref_l0[smb];
-                                }
+                                let blk = OFFSET_TO_BLOCK[lr][lc];
+                                self.ref_idx_store_l0[mb_idx * 16 + blk] = sub_ref_l0[smb];
                             }
                         }
                     }
@@ -2162,12 +2107,8 @@ impl SliceContext<'_> {
                             for c in (0..8).step_by(4) {
                                 let lr = (sy + r) / 4;
                                 let lc = (sx + c) / 4;
-                                if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                    .iter()
-                                    .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                {
-                                    self.ref_idx_store_l1[mb_idx * 16 + blk] = sub_ref_l1[smb];
-                                }
+                                let blk = OFFSET_TO_BLOCK[lr][lc];
+                                self.ref_idx_store_l1[mb_idx * 16 + blk] = sub_ref_l1[smb];
                             }
                         }
                     }
@@ -2179,13 +2120,9 @@ impl SliceContext<'_> {
                             for c in (0..8).step_by(4) {
                                 let lr = (sy + r) / 4;
                                 let lc = (sx + c) / 4;
-                                if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                    .iter()
-                                    .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                {
-                                    self.ref_idx_store_l0[mb_idx * 16 + blk] = sub_ref_l0[smb];
-                                    self.ref_idx_store_l1[mb_idx * 16 + blk] = sub_ref_l1[smb];
-                                }
+                                let blk = OFFSET_TO_BLOCK[lr][lc];
+                                self.ref_idx_store_l0[mb_idx * 16 + blk] = sub_ref_l0[smb];
+                                self.ref_idx_store_l1[mb_idx * 16 + blk] = sub_ref_l1[smb];
                             }
                         }
                     }
@@ -2202,14 +2139,10 @@ impl SliceContext<'_> {
                             for c in (0..8).step_by(4) {
                                 let lr = (sy + r) / 4;
                                 let lc = (sx + c) / 4;
-                                if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                    .iter()
-                                    .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                {
-                                    self.mvd_store[mb_idx * 16 + blk] = [0, 0];
-                                    self.mvd_store_l1[mb_idx * 16 + blk] = [0, 0];
-                                    self.blk_is_direct[mb_idx * 16 + blk] = true;
-                                }
+                                let blk = OFFSET_TO_BLOCK[lr][lc];
+                                self.mvd_store[mb_idx * 16 + blk] = [0, 0];
+                                self.mvd_store_l1[mb_idx * 16 + blk] = [0, 0];
+                                self.blk_is_direct[mb_idx * 16 + blk] = true;
                             }
                         }
                     }
@@ -2283,13 +2216,9 @@ impl SliceContext<'_> {
                                 for c in (0..8).step_by(4) {
                                     let lr = (sy + r) / 4;
                                     let lc = (sx + c) / 4;
-                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                        .iter()
-                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                    {
-                                        self.mv_store_l0[mb_idx * 16 + blk] = [0, 0];
-                                        self.mvd_store[mb_idx * 16 + blk] = [0, 0];
-                                    }
+                                    let blk = OFFSET_TO_BLOCK[lr][lc];
+                                    self.mv_store_l0[mb_idx * 16 + blk] = [0, 0];
+                                    self.mvd_store[mb_idx * 16 + blk] = [0, 0];
                                 }
                             }
                             continue;
@@ -2339,13 +2268,9 @@ impl SliceContext<'_> {
                                 for c in (0..layout.sub_w).step_by(4) {
                                     let lr = (py + r) / 4;
                                     let lc = (px + c) / 4;
-                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                        .iter()
-                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                    {
-                                        self.mv_store_l0[mb_idx * 16 + blk] = mv;
-                                        self.mvd_store[mb_idx * 16 + blk] = [mvd_x, mvd_y];
-                                    }
+                                    let blk = OFFSET_TO_BLOCK[lr][lc];
+                                    self.mv_store_l0[mb_idx * 16 + blk] = mv;
+                                    self.mvd_store[mb_idx * 16 + blk] = [mvd_x, mvd_y];
                                 }
                             }
                         }
@@ -2364,13 +2289,9 @@ impl SliceContext<'_> {
                                 for c in (0..8).step_by(4) {
                                     let lr = (sy + r) / 4;
                                     let lc = (sx + c) / 4;
-                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                        .iter()
-                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                    {
-                                        self.mv_store_l1[mb_idx * 16 + blk] = [0, 0];
-                                        self.mvd_store_l1[mb_idx * 16 + blk] = [0, 0];
-                                    }
+                                    let blk = OFFSET_TO_BLOCK[lr][lc];
+                                    self.mv_store_l1[mb_idx * 16 + blk] = [0, 0];
+                                    self.mvd_store_l1[mb_idx * 16 + blk] = [0, 0];
                                 }
                             }
                             continue;
@@ -2420,13 +2341,9 @@ impl SliceContext<'_> {
                                 for c in (0..layout.sub_w).step_by(4) {
                                     let lr = (py + r) / 4;
                                     let lc = (px + c) / 4;
-                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                        .iter()
-                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                    {
-                                        self.mv_store_l1[mb_idx * 16 + blk] = mv;
-                                        self.mvd_store_l1[mb_idx * 16 + blk] = [mvd_x, mvd_y];
-                                    }
+                                    let blk = OFFSET_TO_BLOCK[lr][lc];
+                                    self.mv_store_l1[mb_idx * 16 + blk] = mv;
+                                    self.mvd_store_l1[mb_idx * 16 + blk] = [mvd_x, mvd_y];
                                 }
                             }
                         }
@@ -2443,10 +2360,7 @@ impl SliceContext<'_> {
                                 for c in (0..8).step_by(4) {
                                     let lr = (sy + r) / 4;
                                     let lc = (sx + c) / 4;
-                                    let blk = BLOCK_INDEX_TO_OFFSET
-                                        .iter()
-                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                        .unwrap_or(0);
+                                    let blk = OFFSET_TO_BLOCK[lr][lc];
                                     let ri_l0 = self.ref_idx_store_l0[base + blk];
                                     let ri_l1 = self.ref_idx_store_l1[base + blk];
                                     b_sub_parts[b_sub_count] = BSubPart {
@@ -2471,10 +2385,7 @@ impl SliceContext<'_> {
                                 let (dx, dy) = layout.offsets[oi];
                                 let px = sx + dx;
                                 let py = sy + dy;
-                                let blk0 = BLOCK_INDEX_TO_OFFSET
-                                    .iter()
-                                    .position(|&(br, bc)| br / 4 == py / 4 && bc / 4 == px / 4)
-                                    .unwrap_or(0);
+                                let blk0 = OFFSET_TO_BLOCK[py / 4][px / 4];
                                 let base = mb_idx * 16;
                                 b_sub_parts[b_sub_count] = BSubPart {
                                     x: px,

@@ -3,7 +3,7 @@
 //! Functions for deriving neighbor-dependent context values used in
 //! CABAC syntax element decoding and CAVLC nC computation.
 
-use crate::residual::BLOCK_INDEX_TO_OFFSET;
+use crate::residual::OFFSET_TO_BLOCK;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn cabac_amvd(
@@ -19,25 +19,15 @@ pub(crate) fn cabac_amvd(
     // Left neighbor
     let left_mvd = if px > 0 {
         // Within MB: block to the left at (py, px-4)
-        let lr = py / 4;
-        let lc = (px - 4) / 4;
-        BLOCK_INDEX_TO_OFFSET
-            .iter()
-            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-            .map(|blk| mvd_store[mb_idx * 16 + blk][comp].unsigned_abs() as u32)
-            .unwrap_or(0)
+        let blk = OFFSET_TO_BLOCK[py / 4][(px - 4) / 4];
+        mvd_store[mb_idx * 16 + blk][comp].unsigned_abs() as u32
     } else if !mb_idx.is_multiple_of(mb_width) {
         // Left MB: rightmost column, same row
         if mb_slice_id[mb_idx - 1] != cur_slice_id {
             0
         } else {
-            let lr = py / 4;
-            let lc = 3; // col 12-15
-            BLOCK_INDEX_TO_OFFSET
-                .iter()
-                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                .map(|blk| mvd_store[(mb_idx - 1) * 16 + blk][comp].unsigned_abs() as u32)
-                .unwrap_or(0)
+            let blk = OFFSET_TO_BLOCK[py / 4][3];
+            mvd_store[(mb_idx - 1) * 16 + blk][comp].unsigned_abs() as u32
         }
     } else {
         0
@@ -45,24 +35,14 @@ pub(crate) fn cabac_amvd(
 
     // Top neighbor
     let top_mvd = if py > 0 {
-        let lr = (py - 4) / 4;
-        let lc = px / 4;
-        BLOCK_INDEX_TO_OFFSET
-            .iter()
-            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-            .map(|blk| mvd_store[mb_idx * 16 + blk][comp].unsigned_abs() as u32)
-            .unwrap_or(0)
+        let blk = OFFSET_TO_BLOCK[(py - 4) / 4][px / 4];
+        mvd_store[mb_idx * 16 + blk][comp].unsigned_abs() as u32
     } else if mb_idx >= mb_width {
         if mb_slice_id[mb_idx - mb_width] != cur_slice_id {
             0
         } else {
-            let lr = 3;
-            let lc = px / 4;
-            BLOCK_INDEX_TO_OFFSET
-                .iter()
-                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                .map(|blk| mvd_store[(mb_idx - mb_width) * 16 + blk][comp].unsigned_abs() as u32)
-                .unwrap_or(0)
+            let blk = OFFSET_TO_BLOCK[3][px / 4];
+            mvd_store[(mb_idx - mb_width) * 16 + blk][comp].unsigned_abs() as u32
         }
     } else {
         0
@@ -88,74 +68,46 @@ pub(crate) fn cabac_neighbor_ref(
     is_b_slice: bool,
 ) -> (i8, i8) {
     let left_ref = if px > 0 {
-        let lr = py / 4;
-        let lc = (px - 4) / 4;
-        BLOCK_INDEX_TO_OFFSET
-            .iter()
-            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-            .map(|blk| {
-                if is_b_slice && blk_is_direct[mb_idx * 16 + blk] {
-                    0
-                } else {
-                    ref_idx_store[mb_idx * 16 + blk]
-                }
-            })
-            .unwrap_or(-1)
+        let blk = OFFSET_TO_BLOCK[py / 4][(px - 4) / 4];
+        if is_b_slice && blk_is_direct[mb_idx * 16 + blk] {
+            0
+        } else {
+            ref_idx_store[mb_idx * 16 + blk]
+        }
     } else if !mb_idx.is_multiple_of(mb_width) {
         if mb_slice_id[mb_idx - 1] != cur_slice_id {
             -1
         } else {
-            let lr = py / 4;
-            let lc = 3;
+            let blk = OFFSET_TO_BLOCK[py / 4][3];
             let neighbor_mb = mb_idx - 1;
-            BLOCK_INDEX_TO_OFFSET
-                .iter()
-                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                .map(|blk| {
-                    if is_b_slice && blk_is_direct[neighbor_mb * 16 + blk] {
-                        0
-                    } else {
-                        ref_idx_store[neighbor_mb * 16 + blk]
-                    }
-                })
-                .unwrap_or(-1)
+            if is_b_slice && blk_is_direct[neighbor_mb * 16 + blk] {
+                0
+            } else {
+                ref_idx_store[neighbor_mb * 16 + blk]
+            }
         }
     } else {
         -1
     };
 
     let top_ref = if py > 0 {
-        let lr = (py - 4) / 4;
-        let lc = px / 4;
-        BLOCK_INDEX_TO_OFFSET
-            .iter()
-            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-            .map(|blk| {
-                if is_b_slice && blk_is_direct[mb_idx * 16 + blk] {
-                    0
-                } else {
-                    ref_idx_store[mb_idx * 16 + blk]
-                }
-            })
-            .unwrap_or(-1)
+        let blk = OFFSET_TO_BLOCK[(py - 4) / 4][px / 4];
+        if is_b_slice && blk_is_direct[mb_idx * 16 + blk] {
+            0
+        } else {
+            ref_idx_store[mb_idx * 16 + blk]
+        }
     } else if mb_idx >= mb_width {
         if mb_slice_id[mb_idx - mb_width] != cur_slice_id {
             -1
         } else {
-            let lr = 3;
-            let lc = px / 4;
+            let blk = OFFSET_TO_BLOCK[3][px / 4];
             let neighbor_mb = mb_idx - mb_width;
-            BLOCK_INDEX_TO_OFFSET
-                .iter()
-                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                .map(|blk| {
-                    if is_b_slice && blk_is_direct[neighbor_mb * 16 + blk] {
-                        0
-                    } else {
-                        ref_idx_store[neighbor_mb * 16 + blk]
-                    }
-                })
-                .unwrap_or(-1)
+            if is_b_slice && blk_is_direct[neighbor_mb * 16 + blk] {
+                0
+            } else {
+                ref_idx_store[neighbor_mb * 16 + blk]
+            }
         }
     } else {
         -1

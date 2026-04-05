@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use crate::dpb::DecodedPicture;
 use crate::inter_pred;
-use crate::residual::BLOCK_INDEX_TO_OFFSET;
+use crate::residual::OFFSET_TO_BLOCK;
 use crate::slice::PredWeightTable;
 
 #[allow(clippy::too_many_arguments)]
@@ -735,9 +735,7 @@ pub(crate) fn get_mv_neighbor_left(
         // Left is within this MB
         let lr = py_off / 4;
         let lc = (px_off - 4) / 4;
-        let blk = BLOCK_INDEX_TO_OFFSET
-            .iter()
-            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)?;
+        let blk = OFFSET_TO_BLOCK[lr][lc];
         Some((
             mv_store_l0[mb_idx * 16 + blk],
             ref_idx_store_l0[mb_idx * 16 + blk],
@@ -750,9 +748,7 @@ pub(crate) fn get_mv_neighbor_left(
         }
         let lr = py_off / 4;
         let lc = 3; // rightmost 4x4 column
-        let blk = BLOCK_INDEX_TO_OFFSET
-            .iter()
-            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)?;
+        let blk = OFFSET_TO_BLOCK[lr][lc];
         Some((
             mv_store_l0[left_mb * 16 + blk],
             ref_idx_store_l0[left_mb * 16 + blk],
@@ -779,9 +775,7 @@ pub(crate) fn get_mv_neighbor_above(
         // Above is within this MB
         let lr = (py_off - 4) / 4;
         let lc = px_off / 4;
-        let blk = BLOCK_INDEX_TO_OFFSET
-            .iter()
-            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)?;
+        let blk = OFFSET_TO_BLOCK[lr][lc];
         Some((
             mv_store_l0[mb_idx * 16 + blk],
             ref_idx_store_l0[mb_idx * 16 + blk],
@@ -793,9 +787,7 @@ pub(crate) fn get_mv_neighbor_above(
         }
         let lr = 3; // bottom row
         let lc = px_off / 4;
-        let blk = BLOCK_INDEX_TO_OFFSET
-            .iter()
-            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)?;
+        let blk = OFFSET_TO_BLOCK[lr][lc];
         Some((
             mv_store_l0[above_mb * 16 + blk],
             ref_idx_store_l0[above_mb * 16 + blk],
@@ -844,9 +836,7 @@ pub(crate) fn get_mv_neighbor_above_right(
             }
             let lr = (py_off - 4) / 4;
             let lc = right_col / 4;
-            let blk = BLOCK_INDEX_TO_OFFSET
-                .iter()
-                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)?;
+            let blk = OFFSET_TO_BLOCK[lr][lc];
             Some((
                 mv_store_l0[mb_idx * 16 + blk],
                 ref_idx_store_l0[mb_idx * 16 + blk],
@@ -863,9 +853,7 @@ pub(crate) fn get_mv_neighbor_above_right(
             }
             let lr = 3;
             let lc = right_col / 4;
-            let blk = BLOCK_INDEX_TO_OFFSET
-                .iter()
-                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)?;
+            let blk = OFFSET_TO_BLOCK[lr][lc];
             Some((
                 mv_store_l0[above_mb * 16 + blk],
                 ref_idx_store_l0[above_mb * 16 + blk],
@@ -875,9 +863,7 @@ pub(crate) fn get_mv_neighbor_above_right(
             if mb_slice_id[above_right_mb] != cur_slice_id {
                 return None;
             }
-            let blk = BLOCK_INDEX_TO_OFFSET
-                .iter()
-                .position(|&(br, bc)| br / 4 == 3 && bc / 4 == 0)?;
+            let blk = OFFSET_TO_BLOCK[3][0];
             Some((
                 mv_store_l0[above_right_mb * 16 + blk],
                 ref_idx_store_l0[above_right_mb * 16 + blk],
@@ -908,9 +894,7 @@ pub(crate) fn get_mv_neighbor_above_left(
     if py_off > 0 && px_off > 0 {
         let lr = (py_off - 4) / 4;
         let lc = (px_off - 4) / 4;
-        let blk = BLOCK_INDEX_TO_OFFSET
-            .iter()
-            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)?;
+        let blk = OFFSET_TO_BLOCK[lr][lc];
         Some((
             mv_store_l0[mb_idx * 16 + blk],
             ref_idx_store_l0[mb_idx * 16 + blk],
@@ -921,9 +905,7 @@ pub(crate) fn get_mv_neighbor_above_left(
         if mb_slice_id[al_mb] != cur_slice_id {
             return None;
         }
-        let blk = BLOCK_INDEX_TO_OFFSET
-            .iter()
-            .position(|&(br, bc)| br / 4 == 3 && bc / 4 == 3)?;
+        let blk = OFFSET_TO_BLOCK[3][3];
         Some((
             mv_store_l0[al_mb * 16 + blk],
             ref_idx_store_l0[al_mb * 16 + blk],
@@ -934,9 +916,7 @@ pub(crate) fn get_mv_neighbor_above_left(
             return None;
         }
         let lc = (px_off - 4) / 4;
-        let blk = BLOCK_INDEX_TO_OFFSET
-            .iter()
-            .position(|&(br, bc)| br / 4 == 3 && bc / 4 == lc)?;
+        let blk = OFFSET_TO_BLOCK[3][lc];
         Some((
             mv_store_l0[above_mb * 16 + blk],
             ref_idx_store_l0[above_mb * 16 + blk],
@@ -947,9 +927,7 @@ pub(crate) fn get_mv_neighbor_above_left(
             return None;
         }
         let lr = (py_off - 4) / 4;
-        let blk = BLOCK_INDEX_TO_OFFSET
-            .iter()
-            .position(|&(br, bc)| br / 4 == lr && bc / 4 == 3)?;
+        let blk = OFFSET_TO_BLOCK[lr][3];
         Some((
             mv_store_l0[left_mb * 16 + blk],
             ref_idx_store_l0[left_mb * 16 + blk],

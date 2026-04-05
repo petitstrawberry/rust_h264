@@ -11,7 +11,8 @@ use crate::neighbor::{compute_nc, dequant_4x4_ac_raster, predict_i4x4_mode};
 use crate::residual::{
     chroma_qp, dequant_4x4_full, dequant_8x8, dequant_chroma_dc, dequant_luma_dc_i16x16,
     inverse_dct_4x4, inverse_dct_8x8, inverse_hadamard_2x2, inverse_hadamard_4x4,
-    BLOCK_INDEX_TO_OFFSET, CBP_INTER_TABLE, CBP_INTRA_TABLE, ZIGZAG_4X4, ZIGZAG_8X8_CAVLC,
+    BLOCK_INDEX_TO_OFFSET, CBP_INTER_TABLE, CBP_INTRA_TABLE, OFFSET_TO_BLOCK, ZIGZAG_4X4,
+    ZIGZAG_8X8_CAVLC,
 };
 use crate::slice_context::{SliceContext, SliceParams};
 
@@ -319,12 +320,8 @@ impl SliceContext<'_> {
                                 for c in (0..part_w).step_by(4) {
                                     let lr = (py_off + r) / 4;
                                     let lc = (px_off + c) / 4;
-                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                        .iter()
-                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                    {
-                                        self.ref_idx_store_l0[mb_idx * 16 + blk] = part_ref_l0[p];
-                                    }
+                                    let blk = OFFSET_TO_BLOCK[lr][lc];
+                                    self.ref_idx_store_l0[mb_idx * 16 + blk] = part_ref_l0[p];
                                 }
                             }
                             let mvd_x = reader.read_se()? as i16;
@@ -347,12 +344,8 @@ impl SliceContext<'_> {
                                 for c in (0..part_w).step_by(4) {
                                     let lr = (py_off + r) / 4;
                                     let lc = (px_off + c) / 4;
-                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                        .iter()
-                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                    {
-                                        self.mv_store_l0[mb_idx * 16 + blk] = mv_l0_parts[p];
-                                    }
+                                    let blk = OFFSET_TO_BLOCK[lr][lc];
+                                    self.mv_store_l0[mb_idx * 16 + blk] = mv_l0_parts[p];
                                 }
                             }
                         }
@@ -365,12 +358,8 @@ impl SliceContext<'_> {
                                 for c in (0..part_w).step_by(4) {
                                     let lr = (py_off + r) / 4;
                                     let lc = (px_off + c) / 4;
-                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                        .iter()
-                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                    {
-                                        self.ref_idx_store_l1[mb_idx * 16 + blk] = part_ref_l1[p];
-                                    }
+                                    let blk = OFFSET_TO_BLOCK[lr][lc];
+                                    self.ref_idx_store_l1[mb_idx * 16 + blk] = part_ref_l1[p];
                                 }
                             }
                             let mvd_x = reader.read_se()? as i16;
@@ -392,12 +381,8 @@ impl SliceContext<'_> {
                                 for c in (0..part_w).step_by(4) {
                                     let lr = (py_off + r) / 4;
                                     let lc = (px_off + c) / 4;
-                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                        .iter()
-                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                    {
-                                        self.mv_store_l1[mb_idx * 16 + blk] = mv_l1_parts[p];
-                                    }
+                                    let blk = OFFSET_TO_BLOCK[lr][lc];
+                                    self.mv_store_l1[mb_idx * 16 + blk] = mv_l1_parts[p];
                                 }
                             }
                         }
@@ -493,12 +478,8 @@ impl SliceContext<'_> {
                                 for c in (0..8).step_by(4) {
                                     let lr = (sy + r) / 4;
                                     let lc = (sx + c) / 4;
-                                    if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                        .iter()
-                                        .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                    {
-                                        ref_store[mb_idx * 16 + blk] = sub_ref[smb];
-                                    }
+                                    let blk = OFFSET_TO_BLOCK[lr][lc];
+                                    ref_store[mb_idx * 16 + blk] = sub_ref[smb];
                                 }
                             }
                         }
@@ -610,12 +591,8 @@ impl SliceContext<'_> {
                                     for c in (0..layout.sub_w).step_by(4) {
                                         let lr = (py + r) / 4;
                                         let lc = (px + c) / 4;
-                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                            .iter()
-                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                        {
-                                            self.mv_store_l0[mb_idx * 16 + blk] = mv;
-                                        }
+                                        let blk = OFFSET_TO_BLOCK[lr][lc];
+                                        self.mv_store_l0[mb_idx * 16 + blk] = mv;
                                     }
                                 }
                             }
@@ -655,12 +632,8 @@ impl SliceContext<'_> {
                                     for c in (0..layout.sub_w).step_by(4) {
                                         let lr = (py + r) / 4;
                                         let lc = (px + c) / 4;
-                                        if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                            .iter()
-                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                        {
-                                            self.mv_store_l1[mb_idx * 16 + blk] = mv;
-                                        }
+                                        let blk = OFFSET_TO_BLOCK[lr][lc];
+                                        self.mv_store_l1[mb_idx * 16 + blk] = mv;
                                     }
                                 }
                             }
@@ -674,12 +647,7 @@ impl SliceContext<'_> {
                         if sub_mb_types[layout.smb] == 0 {
                             // B_Direct_8x8: coalesce to 8x8 if all 4 blocks share MV/ref
                             let base = mb_idx * 16;
-                            let blk0 = BLOCK_INDEX_TO_OFFSET
-                                .iter()
-                                .position(|&(br, bc)| {
-                                    br / 4 == layout.sy / 4 && bc / 4 == layout.sx / 4
-                                })
-                                .unwrap_or(0);
+                            let blk0 = OFFSET_TO_BLOCK[layout.sy / 4][layout.sx / 4];
                             let mv0 = self.mv_store_l0[base + blk0];
                             let mv1 = self.mv_store_l1[base + blk0];
                             let r0 = self.ref_idx_store_l0[base + blk0];
@@ -709,10 +677,7 @@ impl SliceContext<'_> {
                                     for dc in (0..8).step_by(4) {
                                         let lr = (layout.sy + dr) / 4;
                                         let lc = (layout.sx + dc) / 4;
-                                        let blk = BLOCK_INDEX_TO_OFFSET
-                                            .iter()
-                                            .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                            .unwrap_or(0);
+                                        let blk = OFFSET_TO_BLOCK[lr][lc];
                                         let mv_l0 = self.mv_store_l0[base + blk];
                                         let mv_l1 = self.mv_store_l1[base + blk];
                                         let ri_l0 = self.ref_idx_store_l0[base + blk];
@@ -1232,13 +1197,9 @@ impl SliceContext<'_> {
                             for c in (0..spw).step_by(4) {
                                 let lr = (py + r) / 4;
                                 let lc = (px + c) / 4;
-                                if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                    .iter()
-                                    .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                                {
-                                    self.mv_store_l0[mb_idx * 16 + blk] = mv;
-                                    self.ref_idx_store_l0[mb_idx * 16 + blk] = ref_idx;
-                                }
+                                let blk = OFFSET_TO_BLOCK[lr][lc];
+                                self.mv_store_l0[mb_idx * 16 + blk] = mv;
+                                self.ref_idx_store_l0[mb_idx * 16 + blk] = ref_idx;
                             }
                         }
 
@@ -1297,13 +1258,9 @@ impl SliceContext<'_> {
                         for c in (0..part_w).step_by(4) {
                             let lr = (py_off + r) / 4;
                             let lc = (px_off + c) / 4;
-                            if let Some(blk) = BLOCK_INDEX_TO_OFFSET
-                                .iter()
-                                .position(|&(br, bc)| br / 4 == lr && bc / 4 == lc)
-                            {
-                                self.mv_store_l0[mb_idx * 16 + blk] = mv;
-                                self.ref_idx_store_l0[mb_idx * 16 + blk] = part_ref[p];
-                            }
+                            let blk = OFFSET_TO_BLOCK[lr][lc];
+                            self.mv_store_l0[mb_idx * 16 + blk] = mv;
+                            self.ref_idx_store_l0[mb_idx * 16 + blk] = part_ref[p];
                         }
                     }
 

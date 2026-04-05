@@ -15,12 +15,11 @@
 |---------|--------|-------------|-----|--------|
 | FFmpeg | P-only | 0.01s | ~30,000 | 20 MB |
 | FFmpeg | B-frames | 0.01s | ~30,000 | 20 MB |
-| rust_h264 | P-only | 1.60s | 188 | 12 MB |
-| rust_h264 | B-frames | 1.58s | 190 | 12 MB |
+| rust_h264 | P-only | 1.65s | 182 | 12 MB |
+| rust_h264 | B-frames | 1.40s | 186 | 12 MB |
 
 **FFmpeg is ~80-160× faster.** This is expected — FFmpeg has decades of hand-tuned
-NEON/SSE assembly for the hot paths. Our B-frame decode is slightly faster than
-P-only because B-frames have more skip MBs (less work per MB).
+NEON/SSE assembly for the hot paths.
 
 ## Profile Breakdown
 
@@ -57,14 +56,11 @@ Expected improvement: **3-5× for MC alone → ~1.5-2× overall**
 ### 2. CABAC decode (25%) — Medium impact, medium effort
 
 The CABAC arithmetic engine (`get_cabac`) is only 2.8% — the actual bottleneck is
-the surrounding code in `decode_cabac_mb`: stores to MV/ref/MVD arrays,
-`BLOCK_INDEX_TO_OFFSET` linear scans, and function call overhead.
+the surrounding code in `decode_cabac_mb`: stores to MV/ref/MVD arrays and
+function call overhead.
 
 **Approaches:**
-- **`BLOCK_INDEX_TO_OFFSET` lookup table:** Currently uses `.iter().position()`
-  (O(16) linear scan) called dozens of times per MB. Replace with a direct
-  `[usize; 4][4]` table mapping `(row/4, col/4) → block_index`. This alone
-  could save ~5% of CABAC overhead.
+- ~~**`BLOCK_INDEX_TO_OFFSET` lookup table:**~~ Done — see optimization #6 below.
 - **Inline `cabac_neighbor_*` functions:** The neighbor context lookups involve
   multiple function calls with many parameters. `#[inline(always)]` or manual
   inlining would reduce call overhead.
@@ -101,6 +97,20 @@ Replaced `Vec` heap allocations with stack arrays in hot paths:
 
 **Result: ~4% improvement** (1.70s → 1.63s)
 
+### 6. OFFSET_TO_BLOCK reverse lookup table (done)
+
+Replaced ~46 O(16) linear scans (`BLOCK_INDEX_TO_OFFSET.iter().position()`) with
+O(1) `OFFSET_TO_BLOCK[row][col]` table lookups across `neighbor.rs`,
+`decode_cabac.rs`, `decode_cavlc.rs`, and `mv_pred.rs`. These reverse lookups
+convert (row, col) grid coordinates to block indices and were called dozens of
+times per MB for neighbor context (amvd, ref_idx, coded_block_flag) and MV
+prediction.
+
+**Result: ~11% improvement on B-frames** (1.58s → 1.40s), P-only within noise
+(1.60s → 1.65s). The B-frame gain is larger because B-slices exercise the
+reverse lookup much more heavily: dual-list neighbor lookups, direct mode checks,
+and spatial/temporal MV derivation.
+
 ## Known Issues
 
 **Frame ordering bug (fixed):** The `dump_frames` example had a frame
@@ -125,11 +135,11 @@ when L0 is unavailable in `derive_spatial_direct_blk`.
 
 A pure-Rust decoder without SIMD can realistically achieve **~500 fps at 720p**
 (~3× current) through:
-1. BLOCK_INDEX_TO_OFFSET lookup table (+5%)
+1. ~~BLOCK_INDEX_TO_OFFSET lookup table (+5%)~~ Done — ~11% B-frame improvement
 2. Full-pel MC fast path (+10%)
 3. Loop unrolling / batch MC processing (+30%)
 4. Inline critical neighbor lookups (+5%)
 5. Reduce redundant array stores (+5%)
 
-For real-time 720p/30fps, the current 184 fps is already **6× realtime**.
+For real-time 720p/30fps, the current ~185 fps is already **6× realtime**.
 For 1080p/30fps, SIMD would be necessary.

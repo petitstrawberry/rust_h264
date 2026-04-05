@@ -343,6 +343,16 @@ pub const BLOCK_INDEX_TO_OFFSET: [(usize, usize); 16] = [
     (12, 12), // block 12-15 (bottom-right 8x8)
 ];
 
+/// Reverse lookup: `OFFSET_TO_BLOCK[row][col]` gives the block index for the
+/// 4x4 block at grid position (row, col) where row/col are in 0..4.
+/// Replaces O(16) linear scans of `BLOCK_INDEX_TO_OFFSET.iter().position()`.
+pub const OFFSET_TO_BLOCK: [[usize; 4]; 4] = [
+    [0, 1, 4, 5],   // row 0
+    [2, 3, 6, 7],   // row 1
+    [8, 9, 12, 13], // row 2
+    [10, 11, 14, 15], // row 3
+];
+
 /// coded_block_pattern mapping for I macroblocks (H.264 Table 9-4).
 /// Index is the code_number from ue(v); value is the CBP.
 /// Low 4 bits = luma CBP (one bit per 8x8 block), bits 4-5 = chroma CBP (0/1/2).
