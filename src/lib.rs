@@ -1,21 +1,34 @@
-pub mod bitstream;
-pub mod cabac;
+mod bitstream;
+mod cabac;
 mod cabac_tables;
-pub mod cavlc;
-pub mod deblock;
+mod cavlc;
+mod deblock;
 mod decode_cabac;
 mod decode_cavlc;
 pub mod decoder;
-pub mod dpb;
+mod dpb;
 pub mod error;
-pub mod inter_pred;
-pub mod intra_pred;
+mod inter_pred;
+mod intra_pred;
 mod mv_pred;
 pub mod nal;
 mod neighbor;
+#[cfg(feature = "dev-internals")]
 pub mod pps;
-pub mod residual;
-pub mod sei;
+#[cfg(not(feature = "dev-internals"))]
+mod pps;
+
+mod residual;
+mod sei;
+
+#[cfg(feature = "dev-internals")]
 pub mod slice;
+#[cfg(not(feature = "dev-internals"))]
+mod slice;
+
 mod slice_context;
+
+#[cfg(feature = "dev-internals")]
 pub mod sps;
+#[cfg(not(feature = "dev-internals"))]
+mod sps;

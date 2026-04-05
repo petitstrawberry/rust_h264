@@ -3,6 +3,27 @@ name = "rust_h264"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+description = "Pure Rust H.264/AVC video decoder"
+repository = "https://github.com/roticv/rust_h264"
+keywords = ["h264", "avc", "video", "decoder", "codec"]
+categories = ["multimedia::video"]
+exclude = ["testdata/", "examples/", "BENCHMARK.md"]
+
+[features]
+# Expose internal modules (sps, pps, slice) for debug/diagnostic examples.
+dev-internals = []
+
+[[example]]
+name = "check_pps"
+required-features = ["dev-internals"]
+
+[[example]]
+name = "compare_tests"
+required-features = ["dev-internals"]
+
+[[example]]
+name = "debug_cavlc"
+required-features = ["dev-internals"]
 
 [dev-dependencies]
 minifb = "0.28"
