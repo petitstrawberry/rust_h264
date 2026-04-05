@@ -32,72 +32,120 @@ fn avg(a: u8, b: u8) -> u8 {
     ((a as u16 + b as u16 + 1) >> 1) as u8
 }
 
+/// 6-tap FIR filter coefficient application on 6 consecutive samples.
+#[inline(always)]
+fn fir6(s: &[u8], i: usize) -> i32 {
+    s[i] as i32 - 5 * s[i + 1] as i32 + 20 * s[i + 2] as i32
+        + 20 * s[i + 3] as i32 - 5 * s[i + 4] as i32 + s[i + 5] as i32
+}
+
+/// 6-tap FIR on i32 intermediates (for hv second pass).
+#[inline(always)]
+fn fir6_i32(s0: i32, s1: i32, s2: i32, s3: i32, s4: i32, s5: i32) -> i32 {
+    s0 - 5 * s1 + 20 * s2 + 20 * s3 - 5 * s4 + s5
+}
+
 /// 6-tap horizontal half-pel filter at integer position (x, y).
-/// Returns clipped u8 result.
+/// Returns clipped u8 result. Used only for boundary blocks.
 fn half_pel_h(pic: &DecodedPicture, x: i32, y: i32) -> u8 {
     let s = |dx: i32| ref_luma(pic, x + dx, y);
     clip_u8((s(-2) - 5 * s(-1) + 20 * s(0) + 20 * s(1) - 5 * s(2) + s(3) + 16) >> 5)
 }
 
 /// 6-tap vertical half-pel filter at integer position (x, y).
+/// Used only for boundary blocks.
 fn half_pel_v(pic: &DecodedPicture, x: i32, y: i32) -> u8 {
     let s = |dy: i32| ref_luma(pic, x, y + dy);
     clip_u8((s(-2) - 5 * s(-1) + 20 * s(0) + 20 * s(1) - 5 * s(2) + s(3) + 16) >> 5)
 }
 
-/// Diagonal half-pel: 6-tap horizontal on 6 rows, then 6-tap vertical on
-/// the UNCLIPPED intermediates. Final result clipped after >> 10.
+/// Diagonal half-pel. Used only for boundary blocks.
 fn half_pel_hv(pic: &DecodedPicture, x: i32, y: i32) -> u8 {
-    // First pass: horizontal filter on 6 vertically adjacent rows
     let mut h = [0i32; 6];
     for (i, dy) in (-2..=3).enumerate() {
         let s = |dx: i32| ref_luma(pic, x + dx, y + dy);
         h[i] = s(-2) - 5 * s(-1) + 20 * s(0) + 20 * s(1) - 5 * s(2) + s(3);
-        // NOT clipped — intermediates stay as i32
     }
-    // Second pass: vertical filter on intermediates
     let val = h[0] - 5 * h[1] + 20 * h[2] + 20 * h[3] - 5 * h[4] + h[5];
     clip_u8((val + 512) >> 10)
 }
 
-/// Interpolate a single luma sample at quarter-pel position.
-/// `x`, `y` are integer-pel coordinates of the reference position.
-/// `frac_x`, `frac_y` are the fractional offsets (0..3).
+/// Per-pixel interpolation fallback for boundary blocks.
 fn luma_interp(pic: &DecodedPicture, x: i32, y: i32, frac_x: i32, frac_y: i32) -> u8 {
-    // Spec 8.4.2.2.1: 16 fractional positions (4x4 grid)
     match (frac_x, frac_y) {
-        // Integer position
         (0, 0) => ref_luma(pic, x, y) as u8,
-
-        // Half-pel positions
         (2, 0) => half_pel_h(pic, x, y),
         (0, 2) => half_pel_v(pic, x, y),
         (2, 2) => half_pel_hv(pic, x, y),
-
-        // Quarter-pel horizontal (average of integer and half-pel)
         (1, 0) => avg(ref_luma(pic, x, y) as u8, half_pel_h(pic, x, y)),
         (3, 0) => avg(half_pel_h(pic, x, y), ref_luma(pic, x + 1, y) as u8),
-
-        // Quarter-pel vertical
         (0, 1) => avg(ref_luma(pic, x, y) as u8, half_pel_v(pic, x, y)),
         (0, 3) => avg(half_pel_v(pic, x, y), ref_luma(pic, x, y + 1) as u8),
-
-        // Quarter-pel diagonal: average of half-pel neighbors
-        // Spec defines these as average of the two nearest half-pel samples
         (2, 1) => avg(half_pel_h(pic, x, y), half_pel_hv(pic, x, y)),
         (2, 3) => avg(half_pel_hv(pic, x, y), half_pel_h(pic, x, y + 1)),
         (1, 2) => avg(half_pel_v(pic, x, y), half_pel_hv(pic, x, y)),
         (3, 2) => avg(half_pel_hv(pic, x, y), half_pel_v(pic, x + 1, y)),
-
-        // Quarter-pel corner positions per spec Table 8-12:
-        // e = avg(b, h), g = avg(b, m), p = avg(h, s), r = avg(m, s)
         (1, 1) => avg(half_pel_h(pic, x, y), half_pel_v(pic, x, y)),
         (3, 1) => avg(half_pel_h(pic, x, y), half_pel_v(pic, x + 1, y)),
         (1, 3) => avg(half_pel_v(pic, x, y), half_pel_h(pic, x, y + 1)),
         (3, 3) => avg(half_pel_v(pic, x + 1, y), half_pel_h(pic, x, y + 1)),
-
         _ => unreachable!(),
     }
+}
+
+/// Row-based horizontal half-pel filter for in-bounds blocks.
+/// Reads `w` output pixels from row at `src` (which must have `w + 5` accessible bytes).
+#[inline(always)]
+fn row_half_pel_h(src: &[u8], out: &mut [u8], w: usize) {
+    for i in 0..w {
+        out[i] = clip_u8((fir6(src, i) + 16) >> 5);
+    }
+}
+
+/// Row-based vertical half-pel filter for in-bounds blocks.
+/// `rows` contains 6 row slices (y-2..y+3), each at least `w` bytes.
+#[inline(always)]
+fn row_half_pel_v(rows: [&[u8]; 6], out: &mut [u8], w: usize) {
+    for i in 0..w {
+        let val = rows[0][i] as i32 - 5 * rows[1][i] as i32
+            + 20 * rows[2][i] as i32 + 20 * rows[3][i] as i32
+            - 5 * rows[4][i] as i32 + rows[5][i] as i32;
+        out[i] = clip_u8((val + 16) >> 5);
+    }
+}
+
+/// Row-based diagonal half-pel (hv) for in-bounds blocks.
+/// `rows` contains 6 row slices (y-2..y+3), each with `w + 5` accessible bytes.
+#[inline(always)]
+fn row_half_pel_hv(rows: [&[u8]; 6], out: &mut [u8], w: usize) {
+    // First pass: horizontal filter on each of 6 rows → i32 intermediates
+    // We need w intermediate values per row
+    for i in 0..w {
+        let h0 = fir6(rows[0], i);
+        let h1 = fir6(rows[1], i);
+        let h2 = fir6(rows[2], i);
+        let h3 = fir6(rows[3], i);
+        let h4 = fir6(rows[4], i);
+        let h5 = fir6(rows[5], i);
+        let val = fir6_i32(h0, h1, h2, h3, h4, h5);
+        out[i] = clip_u8((val + 512) >> 10);
+    }
+}
+
+/// Check if a block with the given filter margins is fully within bounds.
+/// For half-pel filters, margin is 3 (needs x-2..x+w+2, y-2..y+h+2).
+/// For full-pel, margin_left/top=0, margin_right/bottom=0.
+#[inline(always)]
+fn block_in_bounds(
+    x: i32, y: i32, w: i32, h: i32,
+    pic_w: i32, pic_h: i32,
+    margin_left: i32, margin_top: i32,
+    margin_right: i32, margin_bottom: i32,
+) -> bool {
+    x - margin_left >= 0
+        && y - margin_top >= 0
+        && x + w + margin_right <= pic_w
+        && y + h + margin_bottom <= pic_h
 }
 
 /// Perform luma motion compensation for a block.
@@ -123,45 +171,289 @@ pub fn luma_mc(
     let x_int = x + (dx >> 2);
     let y_int = y + (dy >> 2);
 
-    // Full-pel fast path: direct copy from reference buffer when no interpolation needed
-    if frac_x == 0 && frac_y == 0 {
-        let w = ref_pic.width as i32;
-        let h = ref_pic.height as i32;
-        // Check if the entire block is within picture bounds
-        if x_int >= 0
-            && y_int >= 0
-            && x_int + block_w as i32 <= w
-            && y_int + block_h as i32 <= h
-        {
-            let stride = w as usize;
-            let mut src_off = y_int as usize * stride + x_int as usize;
-            for row in 0..block_h {
-                output[row * block_w..(row + 1) * block_w]
-                    .copy_from_slice(&ref_pic.y[src_off..src_off + block_w]);
-                src_off += stride;
+    let pic_w = ref_pic.width as i32;
+    let pic_h = ref_pic.height as i32;
+    let stride = ref_pic.width as usize;
+    let bw = block_w as i32;
+    let bh = block_h as i32;
+    let ref_y = &ref_pic.y;
+
+    // Determine margins needed for the filter type
+    // Half-pel filters need 2 pixels before and 3 after the block
+    let needs_h = frac_x != 0; // horizontal filter needed
+    let needs_v = frac_y != 0; // vertical filter needed
+    let margin_l = if needs_h { 2 } else { 0 };
+    let margin_r = if needs_h { 3 } else { 0 };
+    let margin_t = if needs_v { 2 } else { 0 };
+    let margin_b = if needs_v { 3 } else { 0 };
+
+    // Quarter-pel positions that average with an offset integer/half-pel sample
+    // may need +1 in a direction
+    let extra_r: i32 = match frac_x { 3 => 1, _ => 0 };
+    let extra_b: i32 = match frac_y { 3 => 1, _ => 0 };
+
+    if block_in_bounds(
+        x_int, y_int, bw + extra_r, bh + extra_b,
+        pic_w, pic_h, margin_l, margin_t, margin_r, margin_b,
+    ) {
+        // Fast path: entire block + filter margins are in bounds
+        // Access reference buffer directly without per-pixel clamping
+        luma_mc_inner(ref_y, stride, x_int as usize, y_int as usize,
+                      block_w, block_h, frac_x, frac_y, output);
+    } else {
+        // Boundary fallback: per-pixel with clamping
+        for row in 0..block_h {
+            for col in 0..block_w {
+                output[row * block_w + col] = luma_interp(
+                    ref_pic,
+                    x_int + col as i32,
+                    y_int + row as i32,
+                    frac_x,
+                    frac_y,
+                );
             }
-        } else {
-            // Near boundary: per-pixel with clamping
-            for row in 0..block_h {
-                for col in 0..block_w {
-                    output[row * block_w + col] =
-                        ref_luma(ref_pic, x_int + col as i32, y_int + row as i32) as u8;
+        }
+    }
+}
+
+/// Inner loop for in-bounds luma MC. All reference accesses are unchecked
+/// (bounds already verified by caller). Dispatches on fractional position
+/// once, then processes all rows with direct buffer access.
+fn luma_mc_inner(
+    ref_y: &[u8],
+    stride: usize,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    frac_x: i32,
+    frac_y: i32,
+    output: &mut [u8],
+) {
+    // Helper: get a row slice starting at (x + dx, y + dy) with length len
+    let row = |dy: isize, dx: isize, len: usize| -> &[u8] {
+        let off = (y as isize + dy) as usize * stride + (x as isize + dx) as usize;
+        &ref_y[off..off + len]
+    };
+
+    // Helper: get 6 vertically adjacent rows for vertical/diagonal filters
+    let vrows = |dx: isize, dy_base: isize, len: usize| -> [&[u8]; 6] {
+        [
+            row(dy_base - 2, dx, len),
+            row(dy_base - 1, dx, len),
+            row(dy_base, dx, len),
+            row(dy_base + 1, dx, len),
+            row(dy_base + 2, dx, len),
+            row(dy_base + 3, dx, len),
+        ]
+    };
+
+    match (frac_x, frac_y) {
+        (0, 0) => {
+            // Full-pel copy
+            for r in 0..h {
+                let src = row(r as isize, 0, w);
+                output[r * w..(r + 1) * w].copy_from_slice(src);
+            }
+        }
+        (2, 0) => {
+            // Half-pel horizontal
+            for r in 0..h {
+                let src = row(r as isize, -2, w + 5);
+                row_half_pel_h(src, &mut output[r * w..], w);
+            }
+        }
+        (0, 2) => {
+            // Half-pel vertical
+            for r in 0..h {
+                let rows = vrows(0, r as isize, w);
+                row_half_pel_v(rows, &mut output[r * w..], w);
+            }
+        }
+        (2, 2) => {
+            // Half-pel diagonal
+            for r in 0..h {
+                let rows = vrows(-2, r as isize, w + 5);
+                row_half_pel_hv(rows, &mut output[r * w..], w);
+            }
+        }
+        (1, 0) => {
+            // Quarter-pel: avg(integer, half_h)
+            for r in 0..h {
+                let int_row = row(r as isize, 0, w);
+                let src_h = row(r as isize, -2, w + 5);
+                for i in 0..w {
+                    let hp = clip_u8((fir6(src_h, i) + 16) >> 5);
+                    output[r * w + i] = avg(int_row[i], hp);
                 }
             }
         }
-        return;
-    }
-
-    for row in 0..block_h {
-        for col in 0..block_w {
-            output[row * block_w + col] = luma_interp(
-                ref_pic,
-                x_int + col as i32,
-                y_int + row as i32,
-                frac_x,
-                frac_y,
-            );
+        (3, 0) => {
+            // Quarter-pel: avg(half_h, integer+1)
+            for r in 0..h {
+                let int_row = row(r as isize, 1, w);
+                let src_h = row(r as isize, -2, w + 5);
+                for i in 0..w {
+                    let hp = clip_u8((fir6(src_h, i) + 16) >> 5);
+                    output[r * w + i] = avg(hp, int_row[i]);
+                }
+            }
         }
+        (0, 1) => {
+            // Quarter-pel: avg(integer, half_v)
+            for r in 0..h {
+                let int_row = row(r as isize, 0, w);
+                let rows = vrows(0, r as isize, w);
+                for i in 0..w {
+                    let val = rows[0][i] as i32 - 5 * rows[1][i] as i32
+                        + 20 * rows[2][i] as i32 + 20 * rows[3][i] as i32
+                        - 5 * rows[4][i] as i32 + rows[5][i] as i32;
+                    let hp = clip_u8((val + 16) >> 5);
+                    output[r * w + i] = avg(int_row[i], hp);
+                }
+            }
+        }
+        (0, 3) => {
+            // Quarter-pel: avg(half_v, integer_below)
+            for r in 0..h {
+                let int_row = row(r as isize + 1, 0, w);
+                let rows = vrows(0, r as isize, w);
+                for i in 0..w {
+                    let val = rows[0][i] as i32 - 5 * rows[1][i] as i32
+                        + 20 * rows[2][i] as i32 + 20 * rows[3][i] as i32
+                        - 5 * rows[4][i] as i32 + rows[5][i] as i32;
+                    let hp = clip_u8((val + 16) >> 5);
+                    output[r * w + i] = avg(hp, int_row[i]);
+                }
+            }
+        }
+        (2, 1) => {
+            // avg(half_h, half_hv)
+            for r in 0..h {
+                let src_h = row(r as isize, -2, w + 5);
+                let rows_hv = vrows(-2, r as isize, w + 5);
+                for i in 0..w {
+                    let h_val = clip_u8((fir6(src_h, i) + 16) >> 5);
+                    let h0 = fir6(rows_hv[0], i);
+                    let h1 = fir6(rows_hv[1], i);
+                    let h2 = fir6(rows_hv[2], i);
+                    let h3 = fir6(rows_hv[3], i);
+                    let h4 = fir6(rows_hv[4], i);
+                    let h5 = fir6(rows_hv[5], i);
+                    let hv_val = clip_u8((fir6_i32(h0, h1, h2, h3, h4, h5) + 512) >> 10);
+                    output[r * w + i] = avg(h_val, hv_val);
+                }
+            }
+        }
+        (2, 3) => {
+            // avg(half_hv, half_h_below)
+            for r in 0..h {
+                let src_h = row(r as isize + 1, -2, w + 5);
+                let rows_hv = vrows(-2, r as isize, w + 5);
+                for i in 0..w {
+                    let hv_val = clip_u8((fir6_i32(
+                        fir6(rows_hv[0], i), fir6(rows_hv[1], i),
+                        fir6(rows_hv[2], i), fir6(rows_hv[3], i),
+                        fir6(rows_hv[4], i), fir6(rows_hv[5], i),
+                    ) + 512) >> 10);
+                    let h_val = clip_u8((fir6(src_h, i) + 16) >> 5);
+                    output[r * w + i] = avg(hv_val, h_val);
+                }
+            }
+        }
+        (1, 2) => {
+            // avg(half_v, half_hv)
+            for r in 0..h {
+                let rows_v = vrows(0, r as isize, w);
+                let rows_hv = vrows(-2, r as isize, w + 5);
+                for i in 0..w {
+                    let v_val = clip_u8((rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
+                        + 20 * rows_v[2][i] as i32 + 20 * rows_v[3][i] as i32
+                        - 5 * rows_v[4][i] as i32 + rows_v[5][i] as i32 + 16) >> 5);
+                    let hv_val = clip_u8((fir6_i32(
+                        fir6(rows_hv[0], i), fir6(rows_hv[1], i),
+                        fir6(rows_hv[2], i), fir6(rows_hv[3], i),
+                        fir6(rows_hv[4], i), fir6(rows_hv[5], i),
+                    ) + 512) >> 10);
+                    output[r * w + i] = avg(v_val, hv_val);
+                }
+            }
+        }
+        (3, 2) => {
+            // avg(half_hv, half_v_right)
+            for r in 0..h {
+                let rows_v = vrows(1, r as isize, w);
+                let rows_hv = vrows(-2, r as isize, w + 5);
+                for i in 0..w {
+                    let hv_val = clip_u8((fir6_i32(
+                        fir6(rows_hv[0], i), fir6(rows_hv[1], i),
+                        fir6(rows_hv[2], i), fir6(rows_hv[3], i),
+                        fir6(rows_hv[4], i), fir6(rows_hv[5], i),
+                    ) + 512) >> 10);
+                    let v_val = clip_u8((rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
+                        + 20 * rows_v[2][i] as i32 + 20 * rows_v[3][i] as i32
+                        - 5 * rows_v[4][i] as i32 + rows_v[5][i] as i32 + 16) >> 5);
+                    output[r * w + i] = avg(hv_val, v_val);
+                }
+            }
+        }
+        (1, 1) => {
+            // avg(half_h, half_v)
+            for r in 0..h {
+                let src_h = row(r as isize, -2, w + 5);
+                let rows_v = vrows(0, r as isize, w);
+                for i in 0..w {
+                    let h_val = clip_u8((fir6(src_h, i) + 16) >> 5);
+                    let v_val = clip_u8((rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
+                        + 20 * rows_v[2][i] as i32 + 20 * rows_v[3][i] as i32
+                        - 5 * rows_v[4][i] as i32 + rows_v[5][i] as i32 + 16) >> 5);
+                    output[r * w + i] = avg(h_val, v_val);
+                }
+            }
+        }
+        (3, 1) => {
+            // avg(half_h, half_v_right)
+            for r in 0..h {
+                let src_h = row(r as isize, -2, w + 5);
+                let rows_v = vrows(1, r as isize, w);
+                for i in 0..w {
+                    let h_val = clip_u8((fir6(src_h, i) + 16) >> 5);
+                    let v_val = clip_u8((rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
+                        + 20 * rows_v[2][i] as i32 + 20 * rows_v[3][i] as i32
+                        - 5 * rows_v[4][i] as i32 + rows_v[5][i] as i32 + 16) >> 5);
+                    output[r * w + i] = avg(h_val, v_val);
+                }
+            }
+        }
+        (1, 3) => {
+            // avg(half_v, half_h_below)
+            for r in 0..h {
+                let src_h = row(r as isize + 1, -2, w + 5);
+                let rows_v = vrows(0, r as isize, w);
+                for i in 0..w {
+                    let v_val = clip_u8((rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
+                        + 20 * rows_v[2][i] as i32 + 20 * rows_v[3][i] as i32
+                        - 5 * rows_v[4][i] as i32 + rows_v[5][i] as i32 + 16) >> 5);
+                    let h_val = clip_u8((fir6(src_h, i) + 16) >> 5);
+                    output[r * w + i] = avg(v_val, h_val);
+                }
+            }
+        }
+        (3, 3) => {
+            // avg(half_v_right, half_h_below)
+            for r in 0..h {
+                let src_h = row(r as isize + 1, -2, w + 5);
+                let rows_v = vrows(1, r as isize, w);
+                for i in 0..w {
+                    let v_val = clip_u8((rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
+                        + 20 * rows_v[2][i] as i32 + 20 * rows_v[3][i] as i32
+                        - 5 * rows_v[4][i] as i32 + rows_v[5][i] as i32 + 16) >> 5);
+                    let h_val = clip_u8((fir6(src_h, i) + 16) >> 5);
+                    output[r * w + i] = avg(v_val, h_val);
+                }
+            }
+        }
+        _ => unreachable!(),
     }
 }
 

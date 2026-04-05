@@ -83,35 +83,56 @@ Sampled with macOS `sample` on 100-frame 1080p B-frame decode (2.10s user):
 | **CABAC engine** | **~4%** | `get_cabac` arithmetic decode |
 | Other | ~6% | MV prediction, bi-pred, dequant, malloc |
 
-**Profile is similar to 720p** but MC share increased (~55% vs 42%) because the
-larger frame size means more pixels to interpolate per MB while CABAC overhead
-per MB stays roughly constant. Spatial direct (12%) remains significant — with
-`direct_8x8_inference_flag`, only 4 unique MVs per MB are needed but we derive
-all 16.
+**Detailed leaf-level breakdown** (non-overlapping):
+
+| Function | % Time | Description |
+|----------|--------|-------------|
+| **`luma_mc` overhead** | **21.5%** | Per-pixel loop, `luma_interp` dispatch, `ref_luma` bounds clamping |
+| **`half_pel_h`** | **19.4%** | 6-tap horizontal FIR filter |
+| **`chroma_mc`** | **13.8%** | Bilinear 1/8-pel with per-pixel clamping |
+| **`decode_residual_cabac`** | **11.3%** | Significance map + coefficient level decode |
+| **`half_pel_v`** | **10.5%** | 6-tap vertical FIR filter |
+| **`half_pel_hv`** | **8.9%** | 2-pass 6-tap diagonal filter |
+| `derive_spatial_direct_blk` | 6.0% | Neighbor MV lookup + co-located check |
+| `get_cabac` | 4.6% | Arithmetic decode engine |
+| Other | 4.1% | DCT, dequant, weight, mvd, predict_mv |
+
+**Key insight:** `luma_mc` overhead (21.5%) is as expensive as `half_pel_h` (19.4%).
+This is the per-pixel `luma_interp` dispatch and `ref_luma` boundary clamping — not
+the filter math itself. A row-based approach that processes entire rows with a single
+bounds check would cut this significantly even without SIMD.
 
 ## Optimization Opportunities
 
-### 1. Luma MC half-pel filters (42%) — High impact, medium effort
+### 1. Luma MC (60% total) — High impact
 
-The 6-tap FIR filter (`half_pel_h`, `half_pel_v`, `half_pel_hv`) dominates.
-Each output pixel requires 6 multiplications + additions + clipping.
+Luma MC has two bottlenecks: the filter math (39%) and the per-pixel overhead (21%).
+
+**`luma_mc` overhead (21.5%):** The current code calls `luma_interp` → `half_pel_*`
+→ `ref_luma` per pixel. Each `ref_luma` call does bounds clamping. Restructuring to
+process entire rows with a single bounds check (is the entire row within bounds?)
+would eliminate most of the overhead.
+
+**`half_pel_h`/`half_pel_v`/`half_pel_hv` (38.8%):** The 6-tap FIR filter does
+6 multiplications + additions + clipping per pixel.
 
 **Approaches:**
-- **SIMD (NEON):** Process 8 or 16 pixels per instruction. FFmpeg achieves ~8× speedup
-  with NEON for these filters. Rust supports NEON via `std::arch::aarch64` intrinsics
-  or the `packed_simd` / `std::simd` (nightly) crate.
-- **Batch processing:** Current code processes one pixel at a time in a loop.
-  Restructuring to process entire rows would improve cache locality.
-- **Pre-computed filter tables:** For common block sizes (16×16, 8×8), unrolled
-  filter kernels avoid loop overhead.
+- **Row-based processing:** Process entire rows with one bounds check instead of
+  per-pixel clamping. Enables compiler auto-vectorization. Medium effort, no SIMD
+  dependency. Expected: **~15-20% overall improvement** (eliminates 21.5% overhead).
+- **SIMD (NEON):** Process 8 pixels per instruction with `vmull`/`vmlal`.
+  `std::arch::aarch64` intrinsics or `std::simd` (nightly). Expected: **3-5×
+  speedup for filter math → ~1.5-2× overall**.
 
-Expected improvement: **3-5× for MC alone → ~1.5-2× overall**
+### 2. Chroma MC (14%) — Medium impact
 
-### 2. CABAC decode (25%) — Medium impact, medium effort
+Same per-pixel overhead pattern as luma: `ref_chroma` boundary clamping per pixel.
+Row-based + NEON bilinear would help.
 
-The CABAC arithmetic engine (`get_cabac`) is only 2.8% — the actual bottleneck is
-the surrounding code in `decode_cabac_mb`: stores to MV/ref/MVD arrays and
-function call overhead.
+### 3. CABAC decode (16%) — Low impact, hard to optimize
+
+`decode_residual_cabac` (11.3%) and `get_cabac` (4.6%) are bit-serial.
+The actual bottleneck is the surrounding code in `decode_cabac_mb`.
 
 **Approaches:**
 - ~~**`BLOCK_INDEX_TO_OFFSET` lookup table:**~~ Done — see optimization #6 below.
@@ -187,8 +208,20 @@ per MB to 4 (one per 8x8 group), filling sub-blocks by copy. Also added
 
 **Result: negligible** (~0.5% at 1080p). The per-call cost was already low after
 the `OFFSET_TO_BLOCK` optimization, and LLVM was already inlining the neighbor
-functions in release mode. **Scalar optimizations are now exhausted** — the
-remaining bottleneck is MC (55% of 1080p time), which requires SIMD.
+functions in release mode.
+
+### 9. Row-based luma MC restructure (done)
+
+Restructured `luma_mc` to dispatch on `(frac_x, frac_y)` once per block instead
+of per pixel. In-bounds blocks use direct buffer slicing (`&ref_y[off..off+len]`)
+with row-based filter functions (`row_half_pel_h`, `row_half_pel_v`,
+`row_half_pel_hv`), eliminating per-pixel `ref_luma` clamping and `luma_interp`
+dispatch. Boundary blocks fall back to the original per-pixel path.
+
+**Result: negligible in release** (LLVM was already inlining and optimizing the
+per-pixel path to equivalent code at `-O3`). **29% faster in debug mode**
+(test suite: 6.38s → 4.52s), confirming the structural improvement. The new
+row-based functions (`row_half_pel_h` etc.) are natural NEON SIMD targets.
 
 ## Known Issues
 
@@ -214,18 +247,26 @@ when L0 is unavailable in `derive_spatial_direct_blk`.
 
 **Target: 1080p @ 60 fps** (currently 48 fps, need 1.25× speedup).
 
-### Scalar optimizations (exhausted)
+### Completed scalar optimizations
 
 1. ~~BLOCK_INDEX_TO_OFFSET lookup table~~ Done — ~11% B-frame improvement
 2. ~~Full-pel MC fast path~~ Done — ~2% (content-dependent)
 3. ~~Spatial direct MV dedup~~ Done — negligible (per-call cost already low)
 4. ~~`#[inline(always)]` on neighbor functions~~ Done — negligible (LLVM already inlining)
-5. Row-based half_pel processing — untried, but unlikely to reach 60fps alone
 
-### SIMD (required for 60fps target)
+### Remaining optimizations
 
-6. NEON intrinsics for `half_pel_h`/`half_pel_v` (55% of 1080p time) —
-   process 8 pixels per instruction, ~4-8× speedup for MC → ~2× overall
+5. ~~Row-based MC processing~~ Done — no release improvement (LLVM already
+   optimized), but code now structured for SIMD.
+
+6. **NEON SIMD for luma half-pel filters** — Replace `row_half_pel_h`/`v`/`hv`
+   with NEON intrinsics. Process 8 pixels per `vmull`/`vmlal`. Targets the
+   60% luma MC cost. Expected: **3-5× for MC → ~80-100 fps at 1080p**.
+
+7. **NEON SIMD for chroma MC** — 8-wide bilinear. Targets 14% chroma cost.
 
 **720p** is already **6× realtime** at 30fps (~190 fps).
-**1080p** is **1.6× realtime** at 30fps (~48 fps). SIMD is the only path to 60fps.
+**1080p** is **1.6× realtime** at 30fps (~48 fps).
+**SIMD is the only remaining path to 60fps at 1080p.** All scalar optimizations
+are exhausted — LLVM's optimizer eliminates the overhead we tried to remove
+manually. The row-based restructure provides clean SIMD insertion points.
