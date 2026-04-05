@@ -3,13 +3,17 @@
 ## Test Setup
 
 - **Platform:** Apple Silicon (ARM64), macOS
-- **Streams:** 1280×720, 300 frames, x264 `--preset medium --no-deblock`, CABAC
-  - P-only: `--bframes 0 --ref 1`
-  - B-frames: `--bframes 1 --ref 1 --no-weightb`
+- **Streams:**
+  - 720p: 1280×720, 300 frames, x264 `--preset medium --no-deblock`, CABAC
+    - P-only: `--bframes 0 --ref 1`
+    - B-frames: `--bframes 1 --ref 1 --no-weightb`
+  - 1080p: 1920×1080, 100 frames, mandelbrot source, x264 `--preset medium --no-deblock`, CABAC, `--bframes 3 --ref 2`
 - **FFmpeg:** Single-threaded (`-threads 1`), software decode, compiled with `-O3` + NEON assembly
 - **rust_h264:** `cargo build --release`, pure Rust, no SIMD
 
 ## Results
+
+### 720p (1280×720)
 
 | Decoder | Stream | Time (user) | FPS | Memory |
 |---------|--------|-------------|-----|--------|
@@ -18,8 +22,16 @@
 | rust_h264 | P-only | 1.61s | 186 | 12 MB |
 | rust_h264 | B-frames | 1.37s | 190 | 12 MB |
 
-**FFmpeg is ~80-160× faster.** This is expected — FFmpeg has decades of hand-tuned
-NEON/SSE assembly for the hot paths.
+### 1080p (1920×1080)
+
+| Decoder | Stream | Time (user) | FPS | vs 30fps | vs 60fps |
+|---------|--------|-------------|-----|----------|----------|
+| rust_h264 | B-frames (100f) | 2.10s | 48 | 1.6× realtime | 0.8× (too slow) |
+
+**FFmpeg is ~80-160× faster** at 720p. This is expected — FFmpeg has decades of
+hand-tuned NEON/SSE assembly for the hot paths.
+
+**Target: 60 fps at 1080p** requires ~1.25× speedup from current 48 fps.
 
 ## Profile Breakdown
 
@@ -56,6 +68,25 @@ direct MV derivation (9%) as a new significant cost. CABAC overhead dropped
 from 25% to 5% after the `OFFSET_TO_BLOCK` optimization — the reverse lookups
 were a major B-slice bottleneck since each B MB required dual-list neighbor
 queries.
+
+### 1080p profile (1920×1080, bframes=3 ref=2, CABAC)
+
+Sampled with macOS `sample` on 100-frame 1080p B-frame decode (2.10s user):
+
+| Component | % Time | Description |
+|-----------|--------|-------------|
+| **Luma MC** | **~55%** | `luma_mc` + `half_pel_h`/`half_pel_v`/`half_pel_hv` |
+| **Chroma MC** | **~13%** | Bilinear 1/8-pel interpolation |
+| **Spatial direct MV** | **~12%** | `derive_spatial_direct_blk` per-4x4-block |
+| **CABAC residual** | **~10%** | `decode_residual_cabac` coefficient parsing |
+| **CABAC engine** | **~4%** | `get_cabac` arithmetic decode |
+| Other | ~6% | MV prediction, bi-pred, dequant, malloc |
+
+**Profile is similar to 720p** but MC share increased (~55% vs 42%) because the
+larger frame size means more pixels to interpolate per MB while CABAC overhead
+per MB stays roughly constant. Spatial direct (12%) remains significant — with
+`direct_8x8_inference_flag`, only 4 unique MVs per MB are needed but we derive
+all 16.
 
 ## Optimization Opportunities
 
@@ -167,13 +198,23 @@ when L0 is unavailable in `derive_spatial_direct_blk`.
 
 ## Realistic Performance Target
 
-A pure-Rust decoder without SIMD can realistically achieve **~500 fps at 720p**
-(~3× current) through:
-1. ~~BLOCK_INDEX_TO_OFFSET lookup table (+5%)~~ Done — ~11% B-frame improvement
-2. ~~Full-pel MC fast path (+10%)~~ Done — ~2% (content-dependent)
-3. Loop unrolling / batch MC processing (+30%)
-4. Inline critical neighbor lookups (+5%)
-5. Reduce redundant array stores (+5%)
+**Target: 1080p @ 60 fps** (currently 48 fps, need 1.25× speedup).
 
-For real-time 720p/30fps, the current ~185 fps is already **6× realtime**.
-For 1080p/30fps, SIMD would be necessary.
+### Scalar optimizations (no SIMD)
+
+1. ~~BLOCK_INDEX_TO_OFFSET lookup table~~ Done — ~11% B-frame improvement
+2. ~~Full-pel MC fast path~~ Done — ~2% (content-dependent)
+3. Spatial direct MV dedup (+9%) — derive once per 8x8 instead of per 4x4
+   when `direct_8x8_inference_flag` is set (12% of 1080p time, ~75% reducible)
+4. `#[inline(always)]` on neighbor functions (+3-5%)
+5. Row-based half_pel processing (+5-10% of luma MC)
+
+Items 3-5 combined could reach ~55-60 fps at 1080p.
+
+### SIMD (for comfortable headroom)
+
+6. NEON intrinsics for `half_pel_h`/`half_pel_v` (55% of 1080p time) —
+   process 8 pixels per instruction, ~4-8× speedup for MC → ~2× overall
+
+**720p** is already **6× realtime** at 30fps (~185 fps).
+**1080p** is **1.6× realtime** at 30fps (~48 fps). SIMD needed for 60fps headroom.
