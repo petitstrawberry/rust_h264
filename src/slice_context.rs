@@ -234,8 +234,14 @@ impl SliceContext<'_> {
         let current_poc = sp.current_poc;
         let ref_pic_list_l0 = sp.ref_pic_list_l0;
         let ref_pic_list_l1 = sp.ref_pic_list_l1;
+        // When direct_8x8_inference_flag is set, all 4 blocks within each 8x8
+        // group get the same result: the neighbor-derived MV/ref uses MB-level
+        // position (0,0), and the co-located lookup maps to the same representative
+        // block per 8x8 group. Derive once per group and fill all 4 sub-blocks.
         if direct_spatial {
-            for blk in blk_start..blk_start + blk_count {
+            if direct_8x8_inference_flag && blk_count == 4 {
+                // Single 8x8 group: derive once, fill 4 blocks
+                let first_blk = blk_start;
                 let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) = derive_spatial_direct_blk(
                     self.mv_store_l0,
                     self.ref_idx_store_l0,
@@ -244,32 +250,121 @@ impl SliceContext<'_> {
                     mb_idx,
                     self.mb_width as usize,
                     ref_pic_list_l1.first().map(|p| p.as_ref()),
-                    blk,
+                    first_blk,
                     self.mb_slice_id,
                     self.this_slice_id,
                     direct_8x8_inference_flag,
                 );
-                self.mv_store_l0[mb_idx * 16 + blk] = mv_l0;
-                self.ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
-                self.mv_store_l1[mb_idx * 16 + blk] = mv_l1;
-                self.ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
+                let base = mb_idx * 16;
+                for blk in blk_start..blk_start + 4 {
+                    self.mv_store_l0[base + blk] = mv_l0;
+                    self.ref_idx_store_l0[base + blk] = ri_l0;
+                    self.mv_store_l1[base + blk] = mv_l1;
+                    self.ref_idx_store_l1[base + blk] = ri_l1;
+                }
+            } else if direct_8x8_inference_flag && blk_count == 16 {
+                // Full MB: derive once per 8x8 group (4 calls instead of 16)
+                let base = mb_idx * 16;
+                for group in 0..4 {
+                    let first_blk = group * 4;
+                    let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) = derive_spatial_direct_blk(
+                        self.mv_store_l0,
+                        self.ref_idx_store_l0,
+                        self.mv_store_l1,
+                        self.ref_idx_store_l1,
+                        mb_idx,
+                        self.mb_width as usize,
+                        ref_pic_list_l1.first().map(|p| p.as_ref()),
+                        first_blk,
+                        self.mb_slice_id,
+                        self.this_slice_id,
+                        direct_8x8_inference_flag,
+                    );
+                    for blk in first_blk..first_blk + 4 {
+                        self.mv_store_l0[base + blk] = mv_l0;
+                        self.ref_idx_store_l0[base + blk] = ri_l0;
+                        self.mv_store_l1[base + blk] = mv_l1;
+                        self.ref_idx_store_l1[base + blk] = ri_l1;
+                    }
+                }
+            } else {
+                // No inference flag: per-block derivation
+                for blk in blk_start..blk_start + blk_count {
+                    let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) = derive_spatial_direct_blk(
+                        self.mv_store_l0,
+                        self.ref_idx_store_l0,
+                        self.mv_store_l1,
+                        self.ref_idx_store_l1,
+                        mb_idx,
+                        self.mb_width as usize,
+                        ref_pic_list_l1.first().map(|p| p.as_ref()),
+                        blk,
+                        self.mb_slice_id,
+                        self.this_slice_id,
+                        direct_8x8_inference_flag,
+                    );
+                    self.mv_store_l0[mb_idx * 16 + blk] = mv_l0;
+                    self.ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
+                    self.mv_store_l1[mb_idx * 16 + blk] = mv_l1;
+                    self.ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
+                }
             }
         } else {
             let col_pic = &ref_pic_list_l1[0];
-            for blk in blk_start..blk_start + blk_count {
+            if direct_8x8_inference_flag && blk_count == 4 {
+                let first_blk = blk_start;
                 let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) = derive_temporal_direct_blk(
                     col_pic,
                     ref_pic_list_l0,
                     current_poc,
                     col_pic.pic_order_cnt,
                     mb_idx,
-                    blk,
+                    first_blk,
                     direct_8x8_inference_flag,
                 );
-                self.mv_store_l0[mb_idx * 16 + blk] = mv_l0;
-                self.ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
-                self.mv_store_l1[mb_idx * 16 + blk] = mv_l1;
-                self.ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
+                let base = mb_idx * 16;
+                for blk in blk_start..blk_start + 4 {
+                    self.mv_store_l0[base + blk] = mv_l0;
+                    self.ref_idx_store_l0[base + blk] = ri_l0;
+                    self.mv_store_l1[base + blk] = mv_l1;
+                    self.ref_idx_store_l1[base + blk] = ri_l1;
+                }
+            } else if direct_8x8_inference_flag && blk_count == 16 {
+                let base = mb_idx * 16;
+                for group in 0..4 {
+                    let first_blk = group * 4;
+                    let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) = derive_temporal_direct_blk(
+                        col_pic,
+                        ref_pic_list_l0,
+                        current_poc,
+                        col_pic.pic_order_cnt,
+                        mb_idx,
+                        first_blk,
+                        direct_8x8_inference_flag,
+                    );
+                    for blk in first_blk..first_blk + 4 {
+                        self.mv_store_l0[base + blk] = mv_l0;
+                        self.ref_idx_store_l0[base + blk] = ri_l0;
+                        self.mv_store_l1[base + blk] = mv_l1;
+                        self.ref_idx_store_l1[base + blk] = ri_l1;
+                    }
+                }
+            } else {
+                for blk in blk_start..blk_start + blk_count {
+                    let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) = derive_temporal_direct_blk(
+                        col_pic,
+                        ref_pic_list_l0,
+                        current_poc,
+                        col_pic.pic_order_cnt,
+                        mb_idx,
+                        blk,
+                        direct_8x8_inference_flag,
+                    );
+                    self.mv_store_l0[mb_idx * 16 + blk] = mv_l0;
+                    self.ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
+                    self.mv_store_l1[mb_idx * 16 + blk] = mv_l1;
+                    self.ref_idx_store_l1[mb_idx * 16 + blk] = ri_l1;
+                }
             }
         }
     }

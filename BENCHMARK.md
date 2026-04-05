@@ -26,12 +26,13 @@
 
 | Decoder | Stream | Time (user) | FPS | vs 30fps | vs 60fps |
 |---------|--------|-------------|-----|----------|----------|
-| rust_h264 | B-frames (100f) | 2.10s | 48 | 1.6× realtime | 0.8× (too slow) |
+| rust_h264 | B-frames (100f) | 2.09s | 48 | 1.6× realtime | 0.8× (too slow) |
 
 **FFmpeg is ~80-160× faster** at 720p. This is expected — FFmpeg has decades of
 hand-tuned NEON/SSE assembly for the hot paths.
 
 **Target: 60 fps at 1080p** requires ~1.25× speedup from current 48 fps.
+Scalar optimizations are exhausted — SIMD is needed.
 
 ## Profile Breakdown
 
@@ -176,6 +177,19 @@ per-pixel clamping for blocks fully within the picture.
 Modest because x264 `--preset medium` (subme=7) produces mostly sub-pel MVs.
 Streams with simpler motion estimation or static content would see larger gains.
 
+### 8. Spatial direct MV dedup + inlining (done)
+
+When `direct_8x8_inference_flag` is set, all 4 blocks within each 8x8 group
+derive the same spatial/temporal direct MVs. Reduced from 16 derivation calls
+per MB to 4 (one per 8x8 group), filling sub-blocks by copy. Also added
+`#[inline(always)]` to hot neighbor functions (`cabac_amvd`, `cabac_neighbor_ref`,
+`get_mv_neighbor_left/above/above_right/above_left`).
+
+**Result: negligible** (~0.5% at 1080p). The per-call cost was already low after
+the `OFFSET_TO_BLOCK` optimization, and LLVM was already inlining the neighbor
+functions in release mode. **Scalar optimizations are now exhausted** — the
+remaining bottleneck is MC (55% of 1080p time), which requires SIMD.
+
 ## Known Issues
 
 **Frame ordering bug (fixed):** The `dump_frames` example had a frame
@@ -200,21 +214,18 @@ when L0 is unavailable in `derive_spatial_direct_blk`.
 
 **Target: 1080p @ 60 fps** (currently 48 fps, need 1.25× speedup).
 
-### Scalar optimizations (no SIMD)
+### Scalar optimizations (exhausted)
 
 1. ~~BLOCK_INDEX_TO_OFFSET lookup table~~ Done — ~11% B-frame improvement
 2. ~~Full-pel MC fast path~~ Done — ~2% (content-dependent)
-3. Spatial direct MV dedup (+9%) — derive once per 8x8 instead of per 4x4
-   when `direct_8x8_inference_flag` is set (12% of 1080p time, ~75% reducible)
-4. `#[inline(always)]` on neighbor functions (+3-5%)
-5. Row-based half_pel processing (+5-10% of luma MC)
+3. ~~Spatial direct MV dedup~~ Done — negligible (per-call cost already low)
+4. ~~`#[inline(always)]` on neighbor functions~~ Done — negligible (LLVM already inlining)
+5. Row-based half_pel processing — untried, but unlikely to reach 60fps alone
 
-Items 3-5 combined could reach ~55-60 fps at 1080p.
-
-### SIMD (for comfortable headroom)
+### SIMD (required for 60fps target)
 
 6. NEON intrinsics for `half_pel_h`/`half_pel_v` (55% of 1080p time) —
    process 8 pixels per instruction, ~4-8× speedup for MC → ~2× overall
 
-**720p** is already **6× realtime** at 30fps (~185 fps).
-**1080p** is **1.6× realtime** at 30fps (~48 fps). SIMD needed for 60fps headroom.
+**720p** is already **6× realtime** at 30fps (~190 fps).
+**1080p** is **1.6× realtime** at 30fps (~48 fps). SIMD is the only path to 60fps.

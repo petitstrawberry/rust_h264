@@ -5,6 +5,7 @@
 
 use crate::residual::OFFSET_TO_BLOCK;
 
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn cabac_amvd(
     mvd_store: &[[i16; 2]],
@@ -53,6 +54,7 @@ pub(crate) fn cabac_amvd(
 
 #[allow(clippy::too_many_arguments)]
 /// CABAC ref_idx neighbor context for a partition.
+#[inline(always)]
 /// Returns (left_ref, top_ref) from neighbor blocks.
 /// For B-slices, direct-mode neighbors are treated as ref=0 (spec 9.3.3.1.1.4).
 pub(crate) fn cabac_neighbor_ref(

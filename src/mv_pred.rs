@@ -719,6 +719,7 @@ pub(crate) fn predict_mv(
 }
 
 /// Get MV/ref of the left neighbor for a partition.
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn get_mv_neighbor_left(
     mv_store_l0: &[[i16; 2]],
@@ -759,6 +760,7 @@ pub(crate) fn get_mv_neighbor_left(
 }
 
 /// Get MV/ref of the above neighbor for a partition.
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn get_mv_neighbor_above(
     mv_store_l0: &[[i16; 2]],
@@ -798,6 +800,7 @@ pub(crate) fn get_mv_neighbor_above(
 }
 
 /// Get MV/ref of the above-right neighbor for a partition.
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn get_mv_neighbor_above_right(
     mv_store_l0: &[[i16; 2]],
@@ -877,6 +880,7 @@ pub(crate) fn get_mv_neighbor_above_right(
 }
 
 /// Get MV/ref of the above-left neighbor for a partition (fallback for C).
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn get_mv_neighbor_above_left(
     mv_store_l0: &[[i16; 2]],
