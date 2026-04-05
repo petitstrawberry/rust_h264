@@ -53,8 +53,13 @@ fn main() {
         i += 1;
     }
 
-    let h264_data = std::fs::read(input_path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {}", input_path, e));
+    let h264_data = match std::fs::read(input_path) {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("Error: cannot read '{}': {}", input_path, e);
+            std::process::exit(1);
+        }
+    };
     let nals = parse_annex_b(&h264_data);
 
     // First pass: decode first frame to get dimensions for window creation.
