@@ -46,7 +46,7 @@ The decoder logic is split across several files for maintainability:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). Multi-reference (ref>1) with ref_pic_list_modification supported. Multi-slice frames fully supported for both CABAC and CAVLC (I, P, and B-frames byte-exact). 116 unit tests (73 byte-exact stream tests against FFmpeg), including x264 `--preset medium` with and without deblocking (320x240, 60 frames, ref=4, bframes=3), multi-slice streams with up to 4 slices per frame. Also verified byte-exact at 720p (1280x720, 300 frames, bframes=3 ref=4). Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). Multi-reference (ref>1) with ref_pic_list_modification supported. Multi-slice frames fully supported for both CABAC and CAVLC (I, P, and B-frames byte-exact). 119 unit tests (76 byte-exact stream tests against FFmpeg), including x264 `--preset medium` with and without deblocking (320x240, 60 frames, ref=4, bframes=3), multi-slice streams with up to 4 slices per frame, and 1080p streams (1920x1080, 10 frames, CABAC/CAVLC, with/without deblocking). Also verified byte-exact at 720p (1280x720, 300 frames, bframes=3 ref=4). Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
 
 ### Completed
 
@@ -177,7 +177,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (116 tests, all byte-exact against FFmpeg)
+**Test Coverage** (119 tests, all byte-exact against FFmpeg)
 - Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
   mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
   noise_16x16, scaling_test
@@ -230,6 +230,9 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   jm_poc_type2_test (64x64, 6-frame, JM CAVLC pic_order_cnt_type=2),
   jm_ipcm_cavlc_test (32x32, 4-frame, JM CAVLC I_PCM macroblocks QP=0),
   jm_ipcm_cabac_test (32x32, 4-frame, JM CABAC I_PCM macroblocks QP=0)
+- 1080p (SHA-256 hash comparison): 1080p_test (1920x1080, 10-frame, CABAC bframes=3 ref=2 no-deblock),
+  1080p_deblock_test (same with deblocking ON),
+  1080p_cavlc_test (CAVLC, bframes=3 ref=2 no-deblock)
 
 ### Not Yet Implemented
 

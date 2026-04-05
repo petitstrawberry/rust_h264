@@ -1747,4 +1747,30 @@ mod tests {
             "e795b2188acd5a6f4b819f588e388ab3af1357edb36a62a5f53ba24fbd9a57d4",
         );
     }
+
+    #[test]
+    fn test_1080p_deblock() {
+        // 1920x1080, 10 frames: mandelbrot source, x264 --preset medium,
+        // CABAC, bframes=3, ref=2, deblocking ON.
+        decode_and_compare_hash(
+            "1080p_deblock_test",
+            10,
+            1920,
+            1080,
+            "cb4ebf9c0e470717c7c2f0dd29f1afca172c362414803ee7a132844dd827e3f5",
+        );
+    }
+
+    #[test]
+    fn test_1080p_cavlc() {
+        // 1920x1080, 10 frames: mandelbrot source, x264 --preset medium,
+        // CAVLC, bframes=3, ref=2, no-deblock.
+        decode_and_compare_hash(
+            "1080p_cavlc_test",
+            10,
+            1920,
+            1080,
+            "d53999477dacff0905a38a3c1ff4e3ca210b634f968cf56c914b76a08eee99da",
+        );
+    }
 }
