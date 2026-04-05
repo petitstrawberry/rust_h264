@@ -123,6 +123,35 @@ pub fn luma_mc(
     let x_int = x + (dx >> 2);
     let y_int = y + (dy >> 2);
 
+    // Full-pel fast path: direct copy from reference buffer when no interpolation needed
+    if frac_x == 0 && frac_y == 0 {
+        let w = ref_pic.width as i32;
+        let h = ref_pic.height as i32;
+        // Check if the entire block is within picture bounds
+        if x_int >= 0
+            && y_int >= 0
+            && x_int + block_w as i32 <= w
+            && y_int + block_h as i32 <= h
+        {
+            let stride = w as usize;
+            let mut src_off = y_int as usize * stride + x_int as usize;
+            for row in 0..block_h {
+                output[row * block_w..(row + 1) * block_w]
+                    .copy_from_slice(&ref_pic.y[src_off..src_off + block_w]);
+                src_off += stride;
+            }
+        } else {
+            // Near boundary: per-pixel with clamping
+            for row in 0..block_h {
+                for col in 0..block_w {
+                    output[row * block_w + col] =
+                        ref_luma(ref_pic, x_int + col as i32, y_int + row as i32) as u8;
+                }
+            }
+        }
+        return;
+    }
+
     for row in 0..block_h {
         for col in 0..block_w {
             output[row * block_w + col] = luma_interp(
@@ -161,6 +190,37 @@ pub fn chroma_mc(
     let frac_y = dy.rem_euclid(8);
     let x_int = x + (dx >> 3);
     let y_int = y + (dy >> 3);
+
+    // Full-pel fast path: direct copy when no interpolation needed
+    if frac_x == 0 && frac_y == 0 {
+        let w = ref_width as i32;
+        let h = ref_height as i32;
+        if x_int >= 0
+            && y_int >= 0
+            && x_int + block_w as i32 <= w
+            && y_int + block_h as i32 <= h
+        {
+            let mut src_off = y_int as usize * ref_width + x_int as usize;
+            for row in 0..block_h {
+                output[row * block_w..(row + 1) * block_w]
+                    .copy_from_slice(&ref_plane[src_off..src_off + block_w]);
+                src_off += ref_width;
+            }
+        } else {
+            for row in 0..block_h {
+                for col in 0..block_w {
+                    output[row * block_w + col] = ref_chroma(
+                        ref_plane,
+                        ref_width,
+                        ref_height,
+                        x_int + col as i32,
+                        y_int + row as i32,
+                    ) as u8;
+                }
+            }
+        }
+        return;
+    }
 
     for row in 0..block_h {
         for col in 0..block_w {

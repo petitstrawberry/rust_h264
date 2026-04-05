@@ -15,8 +15,8 @@
 |---------|--------|-------------|-----|--------|
 | FFmpeg | P-only | 0.01s | ~30,000 | 20 MB |
 | FFmpeg | B-frames | 0.01s | ~30,000 | 20 MB |
-| rust_h264 | P-only | 1.65s | 182 | 12 MB |
-| rust_h264 | B-frames | 1.40s | 186 | 12 MB |
+| rust_h264 | P-only | 1.61s | 186 | 12 MB |
+| rust_h264 | B-frames | 1.37s | 190 | 12 MB |
 
 **FFmpeg is ~80-160× faster.** This is expected — FFmpeg has decades of hand-tuned
 NEON/SSE assembly for the hot paths.
@@ -34,6 +34,28 @@ Sampled with macOS `sample` command on the 720p P-only decode:
 | Inverse DCT | 3% | 4×4 integer IDCT |
 | finalize_mb_info | 2% | Per-MB metadata copy for deblocking |
 | Other | 1% | MV prediction, reconstruction, etc. |
+
+### B-frame profile (720p, bframes=3 ref=4, CABAC)
+
+Sampled with macOS `sample` on 300-frame 720p B-frame decode (1.40s user):
+
+| Component | % Time | Description |
+|-----------|--------|-------------|
+| **Luma MC** | **42%** | 6-tap FIR half-pel filters (25% in B_Skip, 16% in other inter) |
+| **Chroma MC** | **19%** | Bilinear 1/8-pel (13% B_Skip, 6% other inter) |
+| **Spatial direct MV** | **9%** | `derive_spatial_direct_blk` per-4x4-block derivation |
+| **Bi-pred averaging** | **7%** | L0+L1 pixel averaging in B_Skip |
+| **CABAC decode** | **5%** | Residual (2%), syntax elements (2%), neighbor/dequant (1%) |
+| Deblock/frame mgmt | 4% | Deblocking filter + DPB management |
+| Reconstruct | 2% | Luma/chroma reconstruction from residual |
+| Inverse DCT | 2% | 4×4 integer IDCT |
+| Other | 10% | MV prediction, malloc, unaccounted |
+
+**Key difference from P-only:** B_Skip dominates (55% of total), with spatial
+direct MV derivation (9%) as a new significant cost. CABAC overhead dropped
+from 25% to 5% after the `OFFSET_TO_BLOCK` optimization — the reverse lookups
+were a major B-slice bottleneck since each B MB required dual-list neighbor
+queries.
 
 ## Optimization Opportunities
 
@@ -77,10 +99,11 @@ per-pixel with multiplications.
 
 **Approaches:**
 - **SIMD:** Same NEON approach as luma MC.
-- **Strength reduction:** For full-pel chroma (frac=0), skip interpolation entirely
-  and use `copy_from_slice`. Currently the code always runs the bilinear formula.
+- ~~**Strength reduction:** For full-pel chroma (frac=0), skip interpolation entirely
+  and use `copy_from_slice`.~~ Done — see optimization #7 below.
 
-Expected improvement: **2-4× for chroma MC → ~5-10% overall**
+Expected improvement: **2-4× for chroma MC → ~5-10% overall** (SIMD only; full-pel
+fast path already implemented)
 
 ### 4. Inverse DCT (3%) — Low impact
 
@@ -111,6 +134,17 @@ prediction.
 reverse lookup much more heavily: dual-list neighbor lookups, direct mode checks,
 and spatial/temporal MV derivation.
 
+### 7. Full-pel MC fast path (done)
+
+Added early-exit fast paths in `luma_mc` and `chroma_mc`: when the fractional MV
+is zero (integer-pel position), skip the 6-tap FIR / bilinear interpolation and
+`copy_from_slice` directly from the reference buffer. Inner-bounds check avoids
+per-pixel clamping for blocks fully within the picture.
+
+**Result: ~2% improvement** (P-only 1.65s → 1.61s, B-frames 1.40s → 1.37s).
+Modest because x264 `--preset medium` (subme=7) produces mostly sub-pel MVs.
+Streams with simpler motion estimation or static content would see larger gains.
+
 ## Known Issues
 
 **Frame ordering bug (fixed):** The `dump_frames` example had a frame
@@ -136,7 +170,7 @@ when L0 is unavailable in `derive_spatial_direct_blk`.
 A pure-Rust decoder without SIMD can realistically achieve **~500 fps at 720p**
 (~3× current) through:
 1. ~~BLOCK_INDEX_TO_OFFSET lookup table (+5%)~~ Done — ~11% B-frame improvement
-2. Full-pel MC fast path (+10%)
+2. ~~Full-pel MC fast path (+10%)~~ Done — ~2% (content-dependent)
 3. Loop unrolling / batch MC processing (+30%)
 4. Inline critical neighbor lookups (+5%)
 5. Reduce redundant array stores (+5%)
