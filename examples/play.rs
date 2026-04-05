@@ -2,9 +2,9 @@
 ///
 /// Usage: cargo run --example play -- <input.h264> [--fps N] [--loop]
 ///
-/// Decodes all frames first, sorts by display order, then plays them
-/// in a window at the specified frame rate (default: 30 fps).
-/// Press Escape to quit. With --loop, playback repeats continuously.
+/// Streams decode: feeds NALs incrementally, displays each frame as it's
+/// decoded. Only keeps a small buffer of ARGB frames for display.
+/// Press Escape to quit. With --loop, playback repeats from the beginning.
 use minifb::{Key, Window, WindowOptions};
 use rust_h264::decoder::Decoder;
 use rust_h264::nal::{parse_annex_b, NalUnitType};
@@ -53,62 +53,41 @@ fn main() {
         i += 1;
     }
 
-    // Decode all frames
-    eprintln!("Decoding {}...", input_path);
     let h264_data = std::fs::read(input_path)
         .unwrap_or_else(|e| panic!("failed to read {}: {}", input_path, e));
     let nals = parse_annex_b(&h264_data);
+
+    // First pass: decode first frame to get dimensions for window creation.
+    // We need width/height before we can create the window.
     let mut decoder = Decoder::new();
-
-    let mut idr_count: u32 = 0;
-    let mut frames: Vec<(u32, i32, usize, rust_h264::decoder::Frame)> = Vec::new();
-    let mut decode_order: usize = 0;
-
-    for nal in &nals {
-        if nal.nal_unit_type == NalUnitType::SliceIdr {
-            idr_count += 1;
-        }
+    let mut first_frame = None;
+    let mut first_nal_idx = 0;
+    for (idx, nal) in nals.iter().enumerate() {
         match decoder.decode_nal(nal) {
             Ok(Some(f)) => {
-                frames.push((idr_count, f.pic_order_cnt, decode_order, f));
-                decode_order += 1;
+                first_frame = Some(f);
+                first_nal_idx = idx + 1;
+                break;
             }
             Ok(None) => {}
             Err(e) => {
                 eprintln!("Error decoding: {:?}", e);
-                break;
+                std::process::exit(1);
             }
         }
     }
 
-    if let Some(f) = decoder.flush() {
-        frames.push((idr_count, f.pic_order_cnt, decode_order, f));
-        let _ = decode_order;
-    }
-
-    if frames.is_empty() {
+    let first_frame = first_frame.unwrap_or_else(|| {
         eprintln!("No frames decoded.");
         std::process::exit(1);
-    }
+    });
 
-    // Sort by display order
-    frames.sort_by_key(|&(idr, poc, order, _)| (idr, poc, order));
-
-    let width = frames[0].3.width as usize;
-    let height = frames[0].3.height as usize;
+    let width = first_frame.width as usize;
+    let height = first_frame.height as usize;
     eprintln!(
-        "Decoded {} frames, {}x{}, playing at {} fps",
-        frames.len(),
-        width,
-        height,
-        fps
+        "Playing {} ({}x{}) at {} fps — streaming decode",
+        input_path, width, height, fps
     );
-
-    // Convert all frames to ARGB
-    let argb_frames: Vec<Vec<u32>> = frames
-        .iter()
-        .map(|(_, _, _, f)| yuv_to_argb(&f.y, &f.u, &f.v, width, height))
-        .collect();
 
     // Create window
     let scale = if width <= 128 && height <= 128 {
@@ -132,29 +111,81 @@ fn main() {
     .expect("failed to create window");
 
     let frame_duration = Duration::from_secs_f64(1.0 / fps);
-    let mut frame_idx = 0;
     let mut last_frame_time = Instant::now();
+    let mut frame_count = 0u64;
 
-    while window.is_open() && !window.is_key_down(Key::Escape) {
-        let now = Instant::now();
-        if now.duration_since(last_frame_time) >= frame_duration {
-            window
-                .update_with_buffer(&argb_frames[frame_idx], width, height)
-                .expect("failed to update window");
+    // Display first frame
+    let argb = yuv_to_argb(&first_frame.y, &first_frame.u, &first_frame.v, width, height);
+    window
+        .update_with_buffer(&argb, width, height)
+        .expect("failed to update window");
+    frame_count += 1;
+    let mut current_argb = argb;
 
-            frame_idx += 1;
-            if frame_idx >= argb_frames.len() {
-                if do_loop {
-                    frame_idx = 0;
-                } else {
-                    // Show last frame until window is closed
-                    frame_idx = argb_frames.len() - 1;
+    // Streaming decode: continue from where we left off
+    let mut nal_idx = first_nal_idx;
+
+    'outer: loop {
+        // Feed NALs until we get the next frame
+        let mut got_frame = false;
+        while nal_idx <= nals.len() && !got_frame {
+            let frame = if nal_idx < nals.len() {
+                match decoder.decode_nal(&nals[nal_idx]) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("Error decoding NAL {}: {:?}", nal_idx, e);
+                        nal_idx += 1;
+                        continue;
+                    }
                 }
+            } else {
+                // Past last NAL: flush
+                decoder.flush()
+            };
+            nal_idx += 1;
+
+            if let Some(f) = frame {
+                current_argb = yuv_to_argb(&f.y, &f.u, &f.v, width, height);
+                got_frame = true;
+                frame_count += 1;
             }
-            last_frame_time = now;
-        } else {
+        }
+
+        if !got_frame {
+            // End of stream
+            if do_loop {
+                // Reset decoder and start over
+                decoder = Decoder::new();
+                nal_idx = 0;
+                eprintln!("Looping... ({} frames played)", frame_count);
+                continue;
+            }
+            // Show last frame until window closed
+            while window.is_open() && !window.is_key_down(Key::Escape) {
+                window.update();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            break;
+        }
+
+        // Wait for frame timing
+        loop {
+            if !window.is_open() || window.is_key_down(Key::Escape) {
+                break 'outer;
+            }
+            let now = Instant::now();
+            if now.duration_since(last_frame_time) >= frame_duration {
+                last_frame_time = now;
+                break;
+            }
             window.update();
             std::thread::sleep(Duration::from_millis(1));
         }
+
+        window
+            .update_with_buffer(&current_argb, width, height)
+            .expect("failed to update window");
     }
+
+    eprintln!("Played {} frames", frame_count);
 }
