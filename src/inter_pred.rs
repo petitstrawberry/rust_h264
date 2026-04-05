@@ -5,6 +5,9 @@
 
 use crate::dpb::DecodedPicture;
 
+#[cfg(target_arch = "aarch64")]
+use std::arch::aarch64::*;
+
 /// Fetch a luma sample from the reference picture with boundary clipping.
 /// Out-of-bounds coordinates are clamped to the picture edge (spec 8.4.2.2.1).
 #[inline]
@@ -93,12 +96,54 @@ fn luma_interp(pic: &DecodedPicture, x: i32, y: i32, frac_x: i32, frac_y: i32) -
     }
 }
 
+/// NEON 6-tap horizontal half-pel filter for a row of `w` pixels.
+/// `src` must have `w + 5` accessible bytes. Processes 8 pixels at a time,
+/// with scalar tail for remaining pixels.
+#[cfg(target_arch = "aarch64")]
+#[inline(never)]
+fn neon_row_half_pel_h(src: &[u8], out: &mut [u8], w: usize) {
+    let mut i = 0;
+    while i + 8 <= w {
+        unsafe {
+            let p = src.as_ptr().add(i);
+            let s0 = vld1_u8(p);
+            let s1 = vld1_u8(p.add(1));
+            let s2 = vld1_u8(p.add(2));
+            let s3 = vld1_u8(p.add(3));
+            let s4 = vld1_u8(p.add(4));
+            let s5 = vld1_u8(p.add(5));
+            let sum_pos1 = vaddl_u8(s0, s5);
+            let sum_20 = vaddl_u8(s2, s3);
+            let sum_neg5 = vaddl_u8(s1, s4);
+            let mut acc = vreinterpretq_s16_u16(sum_pos1);
+            acc = vmlaq_n_s16(acc, vreinterpretq_s16_u16(sum_20), 20);
+            acc = vmlsq_n_s16(acc, vreinterpretq_s16_u16(sum_neg5), 5);
+            acc = vaddq_s16(acc, vdupq_n_s16(16));
+            let clamped = vqmovun_s16(vshrq_n_s16(acc, 5));
+            vst1_u8(out.as_mut_ptr().add(i), clamped);
+        }
+        i += 8;
+    }
+    // Scalar tail
+    while i < w {
+        out[i] = clip_u8((fir6(src, i) + 16) >> 5);
+        i += 1;
+    }
+}
+
 /// Row-based horizontal half-pel filter for in-bounds blocks.
 /// Reads `w` output pixels from row at `src` (which must have `w + 5` accessible bytes).
 #[inline(always)]
 fn row_half_pel_h(src: &[u8], out: &mut [u8], w: usize) {
-    for i in 0..w {
-        out[i] = clip_u8((fir6(src, i) + 16) >> 5);
+    #[cfg(target_arch = "aarch64")]
+    {
+        neon_row_half_pel_h(src, out, w);
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for i in 0..w {
+            out[i] = clip_u8((fir6(src, i) + 16) >> 5);
+        }
     }
 }
 

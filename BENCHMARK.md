@@ -19,20 +19,21 @@
 |---------|--------|-------------|-----|--------|
 | FFmpeg | P-only | 0.01s | ~30,000 | 20 MB |
 | FFmpeg | B-frames | 0.01s | ~30,000 | 20 MB |
-| rust_h264 | P-only | 1.61s | 186 | 12 MB |
-| rust_h264 | B-frames | 1.37s | 190 | 12 MB |
+| rust_h264 | P-only | 1.08s | 278 | 12 MB |
+| rust_h264 | B-frames | 0.87s | 299 | 12 MB |
 
 ### 1080p (1920×1080)
 
 | Decoder | Stream | Time (user) | FPS | vs 30fps | vs 60fps |
 |---------|--------|-------------|-----|----------|----------|
-| rust_h264 | B-frames (100f) | 2.09s | 48 | 1.6× realtime | 0.8× (too slow) |
+| rust_h264 | B-frames (100f) | 1.50s | 67 | 2.2× realtime | 1.1× (**target met**) |
 
-**FFmpeg is ~80-160× faster** at 720p. This is expected — FFmpeg has decades of
+**FFmpeg is ~50-110× faster** at 720p. This is expected — FFmpeg has decades of
 hand-tuned NEON/SSE assembly for the hot paths.
 
-**Target: 60 fps at 1080p** requires ~1.25× speedup from current 48 fps.
-Scalar optimizations are exhausted — SIMD is needed.
+**1080p @ 60fps target achieved** with NEON `half_pel_h` alone (one of three
+half-pel filters). Further SIMD on `half_pel_v` and `half_pel_hv` would
+increase headroom significantly.
 
 ## Profile Breakdown
 
@@ -223,50 +224,47 @@ per-pixel path to equivalent code at `-O3`). **29% faster in debug mode**
 (test suite: 6.38s → 4.52s), confirming the structural improvement. The new
 row-based functions (`row_half_pel_h` etc.) are natural NEON SIMD targets.
 
-## Known Issues
+### 10. NEON half_pel_h (done)
 
-**Frame ordering bug (fixed):** The `dump_frames` example had a frame
-reordering bug at IDR boundaries — `idr_count` was incremented when the
-IDR NAL was seen (before `decode_nal`), but `decode_nal` returns the
-PREVIOUS frame. This caused the last B-frame of the first GOP to be
-tagged with the second GOP's IDR count, placing it after the second
-IDR's frames in display order. Fixed by incrementing `idr_count` after
-`decode_nal` returns.
+Replaced the scalar `row_half_pel_h` with NEON intrinsics (`std::arch::aarch64`).
+Processes 8 pixels per iteration using `vld1_u8` (6 overlapping loads), `vaddl_u8`
+(widen to u16), `vmlaq_n_s16`/`vmlsq_n_s16` (multiply-accumulate with coefficients
+20 and -5), `vshrq_n_s16` (right shift by 5), and `vqmovun_s16` (saturating narrow
+to u8). Scalar tail handles remaining 0-7 pixels per row.
 
-**Spatial direct colZeroFlag L1 fallback (fixed):** At 720p with
-`ref=4 bframes=3` and smooth sinusoidal content, ±1 pixel diffs
-appeared in B-frames using spatial direct mode. Root cause: per spec
-8.4.1.2.2, when the co-located partition is L1-only (`PredFlagL0=0`),
-`mvCol`/`refIdxCol` should be derived from L1 data, not L0. Our code
-only stored and checked L0 data from the co-located picture. For L1-only
-co-located blocks (`ref_idx_l0 < 0`), we missed the colZeroFlag entirely.
-Fixed by storing L1 MV/ref data in `DecodedPicture` and using L1 data
-when L0 is unavailable in `derive_spatial_direct_blk`.
+Key insight: `#[inline(never)]` on the NEON function is critical — without it,
+LLVM's inliner absorbs the intrinsics into the enormous caller function and
+scalarizes them back. With `#[inline(never)]`, vector instructions are preserved.
+
+**Result: 28-37% improvement.** 1080p: 2.09s → 1.50s (48 → 67 fps).
+720p P-only: 1.61s → 1.08s (186 → 278 fps).
+720p B-frames: 1.37s → 0.87s (190 → 299 fps).
+**1080p @ 60fps target achieved.**
 
 ## Realistic Performance Target
 
-**Target: 1080p @ 60 fps** (currently 48 fps, need 1.25× speedup).
+**Target: 1080p @ 60 fps — ACHIEVED** (67 fps).
 
-### Completed scalar optimizations
+### Completed optimizations
 
-1. ~~BLOCK_INDEX_TO_OFFSET lookup table~~ Done — ~11% B-frame improvement
-2. ~~Full-pel MC fast path~~ Done — ~2% (content-dependent)
-3. ~~Spatial direct MV dedup~~ Done — negligible (per-call cost already low)
-4. ~~`#[inline(always)]` on neighbor functions~~ Done — negligible (LLVM already inlining)
+1. ~~BLOCK_INDEX_TO_OFFSET lookup table~~ — ~11% B-frame improvement
+2. ~~Full-pel MC fast path~~ — ~2% (content-dependent)
+3. ~~Spatial direct MV dedup~~ — negligible (per-call cost already low)
+4. ~~`#[inline(always)]` on neighbor functions~~ — negligible (LLVM already inlining)
+5. ~~Row-based MC processing~~ — no release improvement, but structured for SIMD
+6. ~~NEON `half_pel_h`~~ — **28-37% improvement**, 1080p: 48 → 67 fps
 
-### Remaining optimizations
+### Further SIMD opportunities
 
-5. ~~Row-based MC processing~~ Done — no release improvement (LLVM already
-   optimized), but code now structured for SIMD.
+7. **NEON `half_pel_v`** — Same 6-tap filter but vertical. 10.5% of pre-NEON
+   1080p time. Needs column gather from 6 rows.
 
-6. **NEON SIMD for luma half-pel filters** — Replace `row_half_pel_h`/`v`/`hv`
-   with NEON intrinsics. Process 8 pixels per `vmull`/`vmlal`. Targets the
-   60% luma MC cost. Expected: **3-5× for MC → ~80-100 fps at 1080p**.
+8. **NEON `half_pel_hv`** — 2-pass diagonal filter. 8.9% of pre-NEON time.
 
-7. **NEON SIMD for chroma MC** — 8-wide bilinear. Targets 14% chroma cost.
+9. **NEON chroma MC** — 8-wide bilinear. ~14% of pre-NEON time.
 
-**720p** is already **6× realtime** at 30fps (~190 fps).
-**1080p** is **1.6× realtime** at 30fps (~48 fps).
-**SIMD is the only remaining path to 60fps at 1080p.** All scalar optimizations
-are exhausted — LLVM's optimizer eliminates the overhead we tried to remove
-manually. The row-based restructure provides clean SIMD insertion points.
+10. **NEON bi-pred averaging** — `vrhadd_u8` does `(a+b+1)>>1` in one instruction.
+
+**720p** is **10× realtime** at 30fps (~299 fps).
+**1080p** is **2.2× realtime** at 30fps (67 fps), **1.1× at 60fps**.
+Items 7-9 would increase 1080p headroom to ~90-100+ fps.
