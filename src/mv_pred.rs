@@ -561,11 +561,6 @@ pub(crate) fn derive_temporal_direct_blk(
         ([mx_l0, my_l0], [mx_l1, my_l1])
     };
 
-    if mb_idx == 4 && blk <= 3 {
-        eprintln!("temporal_direct mb={} blk={}: col_ri={} col_mv={:?} col_ref_poc={} ref0={} poc0={} td={} tb={} -> mv_l0={:?} mv_l1={:?}",
-            mb_idx, blk, col_ref_idx, col_mv, col_ref_poc_val, ref0, poc0,
-            (col_poc - poc0).clamp(-128,127), (current_poc - poc0).clamp(-128,127), mv_l0, mv_l1);
-    }
     (mv_l0, mv_l1, ref0 as i8, 0, true, true)
 }
 
