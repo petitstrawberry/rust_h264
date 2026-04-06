@@ -147,15 +147,144 @@ fn row_half_pel_h(src: &[u8], out: &mut [u8], w: usize) {
     }
 }
 
-/// Row-based vertical half-pel filter for in-bounds blocks.
+/// NEON 6-tap vertical half-pel filter for a row of `w` pixels.
 /// `rows` contains 6 row slices (y-2..y+3), each at least `w` bytes.
-#[inline(always)]
-fn row_half_pel_v(rows: [&[u8]; 6], out: &mut [u8], w: usize) {
-    for i in 0..w {
+#[cfg(target_arch = "aarch64")]
+#[inline(never)]
+fn neon_row_half_pel_v(rows: [&[u8]; 6], out: &mut [u8], w: usize) {
+    let mut i = 0;
+    while i + 8 <= w {
+        unsafe {
+            let s0 = vld1_u8(rows[0].as_ptr().add(i));
+            let s1 = vld1_u8(rows[1].as_ptr().add(i));
+            let s2 = vld1_u8(rows[2].as_ptr().add(i));
+            let s3 = vld1_u8(rows[3].as_ptr().add(i));
+            let s4 = vld1_u8(rows[4].as_ptr().add(i));
+            let s5 = vld1_u8(rows[5].as_ptr().add(i));
+            let sum_pos1 = vaddl_u8(s0, s5);
+            let sum_20 = vaddl_u8(s2, s3);
+            let sum_neg5 = vaddl_u8(s1, s4);
+            let mut acc = vreinterpretq_s16_u16(sum_pos1);
+            acc = vmlaq_n_s16(acc, vreinterpretq_s16_u16(sum_20), 20);
+            acc = vmlsq_n_s16(acc, vreinterpretq_s16_u16(sum_neg5), 5);
+            acc = vaddq_s16(acc, vdupq_n_s16(16));
+            let clamped = vqmovun_s16(vshrq_n_s16(acc, 5));
+            vst1_u8(out.as_mut_ptr().add(i), clamped);
+        }
+        i += 8;
+    }
+    // Scalar tail
+    while i < w {
         let val = rows[0][i] as i32 - 5 * rows[1][i] as i32
             + 20 * rows[2][i] as i32 + 20 * rows[3][i] as i32
             - 5 * rows[4][i] as i32 + rows[5][i] as i32;
         out[i] = clip_u8((val + 16) >> 5);
+        i += 1;
+    }
+}
+
+/// NEON: compute vertical FIR for 8 pixels, return as clipped u8x8.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn neon_vfir6_8(rows: &[&[u8]; 6], i: usize) -> uint8x8_t {
+    let s0 = vld1_u8(rows[0].as_ptr().add(i));
+    let s1 = vld1_u8(rows[1].as_ptr().add(i));
+    let s2 = vld1_u8(rows[2].as_ptr().add(i));
+    let s3 = vld1_u8(rows[3].as_ptr().add(i));
+    let s4 = vld1_u8(rows[4].as_ptr().add(i));
+    let s5 = vld1_u8(rows[5].as_ptr().add(i));
+    let sum_pos1 = vaddl_u8(s0, s5);
+    let sum_20 = vaddl_u8(s2, s3);
+    let sum_neg5 = vaddl_u8(s1, s4);
+    let mut acc = vreinterpretq_s16_u16(sum_pos1);
+    acc = vmlaq_n_s16(acc, vreinterpretq_s16_u16(sum_20), 20);
+    acc = vmlsq_n_s16(acc, vreinterpretq_s16_u16(sum_neg5), 5);
+    acc = vaddq_s16(acc, vdupq_n_s16(16));
+    vqmovun_s16(vshrq_n_s16(acc, 5))
+}
+
+/// NEON: avg(a, half_v) for 8 pixels — vertical FIR then average with integer row.
+#[cfg(target_arch = "aarch64")]
+#[inline(never)]
+fn neon_row_avg_int_v(int_row: &[u8], rows: [&[u8]; 6], out: &mut [u8], w: usize) {
+    let mut i = 0;
+    while i + 8 <= w {
+        unsafe {
+            let int_val = vld1_u8(int_row.as_ptr().add(i));
+            let hp = neon_vfir6_8(&rows, i);
+            let result = vrhadd_u8(int_val, hp);
+            vst1_u8(out.as_mut_ptr().add(i), result);
+        }
+        i += 8;
+    }
+    while i < w {
+        let val = rows[0][i] as i32 - 5 * rows[1][i] as i32
+            + 20 * rows[2][i] as i32 + 20 * rows[3][i] as i32
+            - 5 * rows[4][i] as i32 + rows[5][i] as i32;
+        let hp = clip_u8((val + 16) >> 5);
+        out[i] = avg(int_row[i], hp);
+        i += 1;
+    }
+}
+
+/// NEON: avg(half_h, half_v) for 8 pixels — horizontal and vertical FIR then average.
+#[cfg(target_arch = "aarch64")]
+#[inline(never)]
+fn neon_row_avg_h_v(src_h: &[u8], rows_v: [&[u8]; 6], out: &mut [u8], w: usize) {
+    let mut i = 0;
+    while i + 8 <= w {
+        unsafe {
+            // Horizontal FIR
+            let p = src_h.as_ptr().add(i);
+            let h0 = vld1_u8(p);
+            let h1 = vld1_u8(p.add(1));
+            let h2 = vld1_u8(p.add(2));
+            let h3 = vld1_u8(p.add(3));
+            let h4 = vld1_u8(p.add(4));
+            let h5 = vld1_u8(p.add(5));
+            let hsum_pos1 = vaddl_u8(h0, h5);
+            let hsum_20 = vaddl_u8(h2, h3);
+            let hsum_neg5 = vaddl_u8(h1, h4);
+            let mut hacc = vreinterpretq_s16_u16(hsum_pos1);
+            hacc = vmlaq_n_s16(hacc, vreinterpretq_s16_u16(hsum_20), 20);
+            hacc = vmlsq_n_s16(hacc, vreinterpretq_s16_u16(hsum_neg5), 5);
+            hacc = vaddq_s16(hacc, vdupq_n_s16(16));
+            let h_val = vqmovun_s16(vshrq_n_s16(hacc, 5));
+
+            // Vertical FIR
+            let v_val = neon_vfir6_8(&rows_v, i);
+
+            let result = vrhadd_u8(h_val, v_val);
+            vst1_u8(out.as_mut_ptr().add(i), result);
+        }
+        i += 8;
+    }
+    while i < w {
+        let h_val = clip_u8((fir6(src_h, i) + 16) >> 5);
+        let v_val = clip_u8((rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
+            + 20 * rows_v[2][i] as i32 + 20 * rows_v[3][i] as i32
+            - 5 * rows_v[4][i] as i32 + rows_v[5][i] as i32 + 16) >> 5);
+        out[i] = avg(h_val, v_val);
+        i += 1;
+    }
+}
+
+/// Row-based vertical half-pel filter for in-bounds blocks.
+/// `rows` contains 6 row slices (y-2..y+3), each at least `w` bytes.
+#[inline(always)]
+fn row_half_pel_v(rows: [&[u8]; 6], out: &mut [u8], w: usize) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        neon_row_half_pel_v(rows, out, w);
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for i in 0..w {
+            let val = rows[0][i] as i32 - 5 * rows[1][i] as i32
+                + 20 * rows[2][i] as i32 + 20 * rows[3][i] as i32
+                - 5 * rows[4][i] as i32 + rows[5][i] as i32;
+            out[i] = clip_u8((val + 16) >> 5);
+        }
     }
 }
 
@@ -349,6 +478,9 @@ fn luma_mc_inner(
             for r in 0..h {
                 let int_row = row(r as isize, 0, w);
                 let rows = vrows(0, r as isize, w);
+                #[cfg(target_arch = "aarch64")]
+                { neon_row_avg_int_v(int_row, rows, &mut output[r * w..], w); }
+                #[cfg(not(target_arch = "aarch64"))]
                 for i in 0..w {
                     let val = rows[0][i] as i32 - 5 * rows[1][i] as i32
                         + 20 * rows[2][i] as i32 + 20 * rows[3][i] as i32
@@ -363,6 +495,9 @@ fn luma_mc_inner(
             for r in 0..h {
                 let int_row = row(r as isize + 1, 0, w);
                 let rows = vrows(0, r as isize, w);
+                #[cfg(target_arch = "aarch64")]
+                { neon_row_avg_int_v(int_row, rows, &mut output[r * w..], w); }
+                #[cfg(not(target_arch = "aarch64"))]
                 for i in 0..w {
                     let val = rows[0][i] as i32 - 5 * rows[1][i] as i32
                         + 20 * rows[2][i] as i32 + 20 * rows[3][i] as i32
@@ -447,6 +582,9 @@ fn luma_mc_inner(
             for r in 0..h {
                 let src_h = row(r as isize, -2, w + 5);
                 let rows_v = vrows(0, r as isize, w);
+                #[cfg(target_arch = "aarch64")]
+                { neon_row_avg_h_v(src_h, rows_v, &mut output[r * w..], w); }
+                #[cfg(not(target_arch = "aarch64"))]
                 for i in 0..w {
                     let h_val = clip_u8((fir6(src_h, i) + 16) >> 5);
                     let v_val = clip_u8((rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
@@ -461,6 +599,9 @@ fn luma_mc_inner(
             for r in 0..h {
                 let src_h = row(r as isize, -2, w + 5);
                 let rows_v = vrows(1, r as isize, w);
+                #[cfg(target_arch = "aarch64")]
+                { neon_row_avg_h_v(src_h, rows_v, &mut output[r * w..], w); }
+                #[cfg(not(target_arch = "aarch64"))]
                 for i in 0..w {
                     let h_val = clip_u8((fir6(src_h, i) + 16) >> 5);
                     let v_val = clip_u8((rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
@@ -475,6 +616,9 @@ fn luma_mc_inner(
             for r in 0..h {
                 let src_h = row(r as isize + 1, -2, w + 5);
                 let rows_v = vrows(0, r as isize, w);
+                #[cfg(target_arch = "aarch64")]
+                { neon_row_avg_h_v(src_h, rows_v, &mut output[r * w..], w); }
+                #[cfg(not(target_arch = "aarch64"))]
                 for i in 0..w {
                     let v_val = clip_u8((rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
                         + 20 * rows_v[2][i] as i32 + 20 * rows_v[3][i] as i32
@@ -489,6 +633,9 @@ fn luma_mc_inner(
             for r in 0..h {
                 let src_h = row(r as isize + 1, -2, w + 5);
                 let rows_v = vrows(1, r as isize, w);
+                #[cfg(target_arch = "aarch64")]
+                { neon_row_avg_h_v(src_h, rows_v, &mut output[r * w..], w); }
+                #[cfg(not(target_arch = "aarch64"))]
                 for i in 0..w {
                     let v_val = clip_u8((rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
                         + 20 * rows_v[2][i] as i32 + 20 * rows_v[3][i] as i32
