@@ -11,6 +11,101 @@ Yes, most devices have hardware h264 decoder, but if we want to be truly portabl
 - **Streaming:** The decoder exposes a streaming API. NAL units are fed incrementally and decoded frames are emitted as they become available.
 - **Performance:** The decoder aims to be fast, with performance relative to ffmpeg's software H.264 decoder as the target benchmark.
 
+## Usage
+
+```rust
+use rust_h264::decoder::Decoder;
+use rust_h264::nal::parse_annex_b;
+
+let h264_data = std::fs::read("input.h264").unwrap();
+let nals = parse_annex_b(&h264_data);
+let mut decoder = Decoder::new();
+
+for nal in &nals {
+    match decoder.decode_nal(nal) {
+        Ok(Some(frame)) => {
+            // `frame` is a decoded YUV420 picture:
+            //   frame.y, frame.u, frame.v  — pixel planes
+            //   frame.width, frame.height  — dimensions
+            //   frame.pic_order_cnt        — display order index
+        }
+        Ok(None) => {} // NAL consumed, no frame ready yet (e.g. SPS/PPS)
+        Err(e) => eprintln!("decode error: {:?}", e),
+    }
+}
+// Flush the last buffered frame
+if let Some(frame) = decoder.flush() {
+    // handle final frame
+}
+```
+
+### Important: frame ordering
+
+**`decode_nal` returns frames in decode order, not display order.** With
+B-frames, the decoder must buffer reference frames before it can decode
+the B-frames that depend on them. This means the output order differs
+from the intended display order.
+
+To display frames correctly, sort them by `pic_order_cnt` (POC). If the
+stream has multiple IDR boundaries (GOPs), you must also track IDR
+boundaries to avoid mixing frames from different GOPs:
+
+```rust
+use rust_h264::nal::NalUnitType;
+
+let mut idr_count: u32 = 0;
+let mut frames = Vec::new();
+
+for nal in &nals {
+    let is_idr = nal.nal_unit_type == NalUnitType::SliceIdr;
+
+    if let Ok(Some(frame)) = decoder.decode_nal(nal) {
+        // Push with CURRENT idr_count — this frame belongs to the
+        // previous picture, before the IDR boundary
+        frames.push((idr_count, frame));
+    }
+
+    // Increment AFTER decode_nal, because decode_nal returns the
+    // PREVIOUS frame when it sees a new picture header. If you
+    // increment before, the last B-frame of the old GOP gets tagged
+    // with the new GOP's count and sorts incorrectly.
+    if is_idr {
+        idr_count += 1;
+    }
+}
+if let Some(frame) = decoder.flush() {
+    frames.push((idr_count, frame));
+}
+
+// Sort by (GOP, POC) for display order
+frames.sort_by_key(|(idr, f)| (*idr, f.pic_order_cnt));
+```
+
+### Common pitfall: IDR count timing
+
+The most common mistake is incrementing `idr_count` **before** calling
+`decode_nal`. This causes the last frame of each GOP to be placed after
+the next IDR in display order, resulting in a visible glitch at every
+scene cut.
+
+**Wrong:**
+```rust
+if nal.nal_unit_type == NalUnitType::SliceIdr {
+    idr_count += 1;  // BUG: too early
+}
+let frame = decoder.decode_nal(nal)?;
+// frame belongs to the OLD GOP but gets the NEW idr_count
+```
+
+**Correct:**
+```rust
+let frame = decoder.decode_nal(nal)?;
+// Push frame with current idr_count first
+if nal.nal_unit_type == NalUnitType::SliceIdr {
+    idr_count += 1;  // After the previous frame is handled
+}
+```
+
 ## Tools
 
 ### Player
