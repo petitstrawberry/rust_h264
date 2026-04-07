@@ -2,11 +2,11 @@
 ///
 /// Usage: cargo run --example play -- <input.h264> [--fps N] [--loop]
 ///
-/// Streams decode: feeds NALs incrementally, displays each frame as it's
-/// decoded. Only keeps a small buffer of ARGB frames for display.
+/// Streams decode: feeds NALs incrementally, reorders by POC for correct
+/// display order, then displays each frame at the specified rate.
 /// Press Escape to quit. With --loop, playback repeats from the beginning.
 use minifb::{Key, Window, WindowOptions};
-use rust_h264::decoder::Decoder;
+use rust_h264::decoder::{Decoder, Frame};
 use rust_h264::nal::{parse_annex_b, NalUnitType};
 use std::time::{Duration, Instant};
 
@@ -28,6 +28,53 @@ fn yuv_to_argb(y: &[u8], u: &[u8], v: &[u8], width: usize, height: usize) -> Vec
         }
     }
     argb
+}
+
+/// Reorder buffer: collects decoded frames and emits them in display order (by POC).
+struct ReorderBuffer {
+    buf: Vec<(u32, Frame)>, // (idr_count, frame)
+    max_depth: usize,
+}
+
+impl ReorderBuffer {
+    fn new(max_depth: usize) -> Self {
+        Self {
+            buf: Vec::new(),
+            max_depth,
+        }
+    }
+
+    /// Push a decoded frame into the buffer.
+    fn push(&mut self, idr_count: u32, frame: Frame) {
+        self.buf.push((idr_count, frame));
+    }
+
+    /// If the buffer has enough frames, pop the lowest-POC one for display.
+    fn pop_if_ready(&mut self) -> Option<Frame> {
+        if self.buf.len() > self.max_depth {
+            self.pop_lowest()
+        } else {
+            None
+        }
+    }
+
+    /// Pop the frame with the lowest (idr_count, poc).
+    fn pop_lowest(&mut self) -> Option<Frame> {
+        if self.buf.is_empty() {
+            return None;
+        }
+        let min_idx = self.buf.iter().enumerate()
+            .min_by_key(|(_, (idr, f))| (*idr, f.pic_order_cnt))
+            .map(|(i, _)| i)
+            .unwrap();
+        Some(self.buf.remove(min_idx).1)
+    }
+
+    /// Flush all remaining frames in display order.
+    fn flush(&mut self) -> Vec<Frame> {
+        self.buf.sort_by_key(|(idr, f)| (*idr, f.pic_order_cnt));
+        self.buf.drain(..).map(|(_, f)| f).collect()
+    }
 }
 
 fn main() {
@@ -62,17 +109,24 @@ fn main() {
     };
     let nals = parse_annex_b(&h264_data);
 
-    // First pass: decode first frame to get dimensions for window creation.
-    // We need width/height before we can create the window.
+    // Decode enough frames to get dimensions and detect max B-frame depth
     let mut decoder = Decoder::new();
-    let mut first_frame = None;
-    let mut first_nal_idx = 0;
-    for (idx, nal) in nals.iter().enumerate() {
+    let mut idr_count: u32 = 0;
+    let mut reorder_buf = ReorderBuffer::new(4); // initial depth, will adjust
+    let mut first_frame_argb = None;
+    let mut width = 0;
+    let mut height = 0;
+    let mut nal_idx = 0;
+
+    // Feed NALs until we get the first displayable frame
+    while nal_idx < nals.len() {
+        let nal = &nals[nal_idx];
+        let is_idr = nal.nal_unit_type == NalUnitType::SliceIdr;
         match decoder.decode_nal(nal) {
             Ok(Some(f)) => {
-                first_frame = Some(f);
-                first_nal_idx = idx + 1;
-                break;
+                width = f.width as usize;
+                height = f.height as usize;
+                reorder_buf.push(idr_count, f);
             }
             Ok(None) => {}
             Err(e) => {
@@ -80,17 +134,37 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        if is_idr {
+            idr_count += 1;
+        }
+        if let Some(display_frame) = reorder_buf.pop_if_ready() {
+            first_frame_argb = Some(yuv_to_argb(
+                &display_frame.y, &display_frame.u, &display_frame.v,
+                width, height,
+            ));
+            nal_idx += 1;
+            break;
+        }
+        nal_idx += 1;
     }
 
-    let first_frame = first_frame.unwrap_or_else(|| {
+    // If reorder buffer hasn't emitted yet, flush to get first frame
+    if first_frame_argb.is_none() {
+        let flushed = reorder_buf.flush();
+        if let Some(f) = flushed.into_iter().next() {
+            width = f.width as usize;
+            height = f.height as usize;
+            first_frame_argb = Some(yuv_to_argb(&f.y, &f.u, &f.v, width, height));
+        }
+    }
+
+    let first_frame_argb = first_frame_argb.unwrap_or_else(|| {
         eprintln!("No frames decoded.");
         std::process::exit(1);
     });
 
-    let width = first_frame.width as usize;
-    let height = first_frame.height as usize;
     eprintln!(
-        "Playing {} ({}x{}) at {} fps — streaming decode",
+        "Playing {} ({}x{}) at {} fps — streaming decode, display-order",
         input_path, width, height, fps
     );
 
@@ -120,20 +194,38 @@ fn main() {
     let mut frame_count = 0u64;
 
     // Display first frame
-    let argb = yuv_to_argb(&first_frame.y, &first_frame.u, &first_frame.v, width, height);
     window
-        .update_with_buffer(&argb, width, height)
+        .update_with_buffer(&first_frame_argb, width, height)
         .expect("failed to update window");
     frame_count += 1;
-    let mut current_argb = argb;
-
-    // Streaming decode: continue from where we left off
-    let mut nal_idx = first_nal_idx;
+    let mut current_argb = first_frame_argb;
+    let mut flushing = false;
+    let mut flush_queue: Vec<Frame> = Vec::new();
 
     'outer: loop {
-        // Feed NALs until we get the next frame
-        let mut got_frame = false;
-        while nal_idx <= nals.len() && !got_frame {
+        // Get the next display-order frame
+        let mut display_frame = None;
+
+        // First drain any flush queue
+        if !flush_queue.is_empty() {
+            display_frame = Some(flush_queue.remove(0));
+        }
+
+        // Feed NALs until reorder buffer emits a frame
+        while display_frame.is_none() && !flushing {
+            if nal_idx > nals.len() {
+                // Already flushed decoder, now flush reorder buffer
+                flush_queue = reorder_buf.flush();
+                flushing = true;
+                if !flush_queue.is_empty() {
+                    display_frame = Some(flush_queue.remove(0));
+                }
+                break;
+            }
+
+            let is_idr = nal_idx < nals.len()
+                && nals[nal_idx].nal_unit_type == NalUnitType::SliceIdr;
+
             let frame = if nal_idx < nals.len() {
                 match decoder.decode_nal(&nals[nal_idx]) {
                     Ok(f) => f,
@@ -144,24 +236,45 @@ fn main() {
                     }
                 }
             } else {
-                // Past last NAL: flush
+                // Flush decoder
                 decoder.flush()
             };
             nal_idx += 1;
 
+            // Push returned frame with CURRENT idr_count (it belongs to the
+            // previous picture, before the IDR boundary)
             if let Some(f) = frame {
-                current_argb = yuv_to_argb(&f.y, &f.u, &f.v, width, height);
-                got_frame = true;
-                frame_count += 1;
+                reorder_buf.push(idr_count, f);
+                if display_frame.is_none() {
+                    if let Some(df) = reorder_buf.pop_if_ready() {
+                        display_frame = Some(df);
+                    }
+                }
+            }
+
+            // AFTER pushing the previous frame, handle IDR: increment count
+            // and flush the reorder buffer for the old GOP
+            if is_idr {
+                idr_count += 1;
+                let idr_flushed = reorder_buf.flush();
+                if !idr_flushed.is_empty() {
+                    flush_queue.extend(idr_flushed);
+                    if display_frame.is_none() {
+                        display_frame = Some(flush_queue.remove(0));
+                    }
+                }
             }
         }
 
-        if !got_frame {
-            // End of stream
+        // If flushing and no more frames, end of stream
+        if display_frame.is_none() {
             if do_loop {
-                // Reset decoder and start over
                 decoder = Decoder::new();
                 nal_idx = 0;
+                idr_count = 0;
+                flushing = false;
+                flush_queue.clear();
+                reorder_buf = ReorderBuffer::new(4);
                 eprintln!("Looping... ({} frames played)", frame_count);
                 continue;
             }
@@ -172,6 +285,10 @@ fn main() {
             }
             break;
         }
+
+        let f = display_frame.unwrap();
+        current_argb = yuv_to_argb(&f.y, &f.u, &f.v, width, height);
+        frame_count += 1;
 
         // Wait for frame timing
         loop {
