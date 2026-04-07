@@ -290,6 +290,7 @@ fn row_half_pel_v(rows: [&[u8]; 6], out: &mut [u8], w: usize) {
 
 /// Row-based diagonal half-pel (hv) for in-bounds blocks.
 /// `rows` contains 6 row slices (y-2..y+3), each with `w + 5` accessible bytes.
+#[allow(clippy::needless_range_loop)]
 #[inline(always)]
 fn row_half_pel_hv(rows: [&[u8]; 6], out: &mut [u8], w: usize) {
     // First pass: horizontal filter on each of 6 rows → i32 intermediates
@@ -309,6 +310,7 @@ fn row_half_pel_hv(rows: [&[u8]; 6], out: &mut [u8], w: usize) {
 /// Check if a block with the given filter margins is fully within bounds.
 /// For half-pel filters, margin is 3 (needs x-2..x+w+2, y-2..y+h+2).
 /// For full-pel, margin_left/top=0, margin_right/bottom=0.
+#[allow(clippy::too_many_arguments)]
 #[inline(always)]
 fn block_in_bounds(
     x: i32, y: i32, w: i32, h: i32,
@@ -393,6 +395,7 @@ pub fn luma_mc(
 /// Inner loop for in-bounds luma MC. All reference accesses are unchecked
 /// (bounds already verified by caller). Dispatches on fractional position
 /// once, then processes all rows with direct buffer access.
+#[allow(clippy::too_many_arguments)]
 fn luma_mc_inner(
     ref_y: &[u8],
     stride: usize,

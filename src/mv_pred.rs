@@ -528,7 +528,7 @@ pub(crate) fn derive_temporal_direct_blk(
 
     // Get co-located MV and ref_idx
     let col_mv = col_pic.mv_l0[col_base + col_blk];
-    let col_ref_idx = col_pic.ref_idx_l0[col_base + col_blk];
+    let _col_ref_idx = col_pic.ref_idx_l0[col_base + col_blk];
 
     // Map co-located ref_idx to current L0 ref_idx by matching POC (spec 8.4.1.2.3).
     // Look up the POC that the co-located picture referenced at col_ref_idx.
