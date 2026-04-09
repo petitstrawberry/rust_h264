@@ -7,7 +7,7 @@ description = "Pure Rust H.264/AVC video decoder"
 repository = "https://github.com/roticv/rust_h264"
 keywords = ["h264", "avc", "video", "decoder", "codec"]
 categories = ["multimedia::video"]
-exclude = ["testdata/", "examples/", "BENCHMARK.md"]
+exclude = ["testdata/", "examples/", "fuzz/", "BENCHMARK.md"]
 
 [features]
 # Expose internal modules (sps, pps, slice) for debug/diagnostic examples.

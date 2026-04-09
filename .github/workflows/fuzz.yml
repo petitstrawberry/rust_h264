@@ -1,0 +1,69 @@
+name: Fuzz
+
+# Periodic fuzzing job: runs each cargo-fuzz target for a few minutes to
+# catch panics on malformed input. Triggered weekly and on manual dispatch.
+#
+# To run locally for the same duration:
+#   cargo +nightly fuzz run <target> -- -max_total_time=180
+on:
+  schedule:
+    - cron: '0 6 * * 1' # 06:00 UTC every Monday
+  workflow_dispatch: {} # allow manual runs from the Actions tab
+  push:
+    paths:
+      - 'fuzz/**'
+      - '.github/workflows/fuzz.yml'
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - parse_annex_b
+          - parse_avcc
+          - parse_avcc_config
+          - decode_annex_b
+          - decode_avcc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            fuzz/target/
+          key: fuzz-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'fuzz/Cargo.toml') }}
+          restore-keys: |
+            fuzz-${{ runner.os }}-
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Seed corpus from test data (decode targets only)
+        if: startsWith(matrix.target, 'decode_')
+        run: |
+          mkdir -p fuzz/corpus/${{ matrix.target }}
+          cp testdata/*.h264 fuzz/corpus/${{ matrix.target }}/ 2>/dev/null || true
+
+      - name: Run fuzz target
+        run: |
+          # 3 minutes per target. Increase if you want deeper coverage.
+          cargo +nightly fuzz run ${{ matrix.target }} \
+            -- -max_total_time=180 -timeout=10
+
+      - name: Upload crash artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore
