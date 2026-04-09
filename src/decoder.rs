@@ -838,6 +838,170 @@ impl Decoder {
     }
 }
 
+/// H.264 decoder with built-in display-order reordering.
+///
+/// Wraps [`Decoder`] with a reorder buffer that emits frames in display order
+/// (sorted by picture order count) instead of decode order. This eliminates
+/// the need for callers to track GOP boundaries and sort frames manually,
+/// and avoids a common pitfall around IDR boundary handling.
+///
+/// Use this when you want to display, render, or write frames in their
+/// intended visual order. Use [`Decoder`] directly if you need raw decode
+/// order or want to manage reordering yourself.
+///
+/// # How it works
+///
+/// Internally tracks GOP boundaries (each IDR starts a new GOP) and buffers
+/// decoded frames. Frames are emitted in `(gop_id, pic_order_cnt)` order.
+/// On each IDR boundary, all buffered frames from the previous GOP are
+/// drained and returned. The buffer also has a maximum depth (16 frames)
+/// to bound latency for streams with infrequent IDRs.
+///
+/// # Example
+///
+/// ```no_run
+/// use rust_h264::decoder::OrderedDecoder;
+/// use rust_h264::nal::parse_annex_b;
+///
+/// let bitstream = std::fs::read("input.h264").unwrap();
+/// let nals = parse_annex_b(&bitstream);
+/// let mut decoder = OrderedDecoder::new();
+///
+/// for nal in &nals {
+///     // decode_nal returns 0 or more frames in display order
+///     for frame in decoder.decode_nal(nal).unwrap() {
+///         println!("Display POC={}", frame.pic_order_cnt);
+///     }
+/// }
+/// // Drain any remaining buffered frames
+/// for frame in decoder.flush() {
+///     println!("Final POC={}", frame.pic_order_cnt);
+/// }
+/// ```
+pub struct OrderedDecoder {
+    inner: Decoder,
+    /// Buffered frames awaiting display-order release. Each entry is
+    /// `(gop_id, frame)` so frames from different GOPs don't interleave.
+    buffer: Vec<(u32, Frame)>,
+    /// Monotonically incrementing GOP id, bumped on each IDR boundary.
+    gop_id: u32,
+    /// Maximum frames to keep in the buffer before forcing the lowest
+    /// (oldest) one out. Bounds reorder latency for streams with
+    /// infrequent IDRs.
+    max_depth: usize,
+}
+
+impl Default for OrderedDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OrderedDecoder {
+    /// Create a new ordering decoder with a default reorder buffer depth of
+    /// 16 frames (sufficient for any practical bframes setting).
+    pub fn new() -> Self {
+        Self {
+            inner: Decoder::new(),
+            buffer: Vec::new(),
+            gop_id: 0,
+            max_depth: 16,
+        }
+    }
+
+    /// Create a new ordering decoder with a custom maximum buffer depth.
+    /// Larger values give more reordering headroom for unusual bitstreams
+    /// but increase end-to-end latency.
+    pub fn with_max_depth(max_depth: usize) -> Self {
+        Self {
+            inner: Decoder::new(),
+            buffer: Vec::new(),
+            gop_id: 0,
+            max_depth: max_depth.max(1),
+        }
+    }
+
+    /// Feed a single NAL unit and return any frames that are now ready
+    /// for display, in display order.
+    ///
+    /// Most NALs return an empty `Vec` (parameter sets, mid-GOP slices that
+    /// don't yet free up the head of the buffer). When the internal buffer
+    /// fills up or when an IDR boundary completes a GOP, one or more frames
+    /// are released.
+    pub fn decode_nal(&mut self, nal: &NalUnit) -> Result<Vec<Frame>, DecodeError> {
+        let mut output = Vec::new();
+        let is_idr = nal.nal_unit_type == NalUnitType::SliceIdr;
+
+        // Decode the NAL. Note that decode_nal returns the PREVIOUS frame
+        // (the picture that just got finalized when this NAL started a new
+        // one), so the returned frame still belongs to the current gop_id.
+        if let Some(frame) = self.inner.decode_nal(nal)? {
+            self.buffer.push((self.gop_id, frame));
+        }
+
+        // After pushing, advance the GOP if this NAL was an IDR start.
+        // This must happen AFTER the push so the previous GOP's last frame
+        // gets the correct (old) gop_id.
+        if is_idr {
+            self.gop_id += 1;
+            // The previous GOP is now complete — drain everything from it
+            // in display order.
+            self.drain_completed_gops(&mut output);
+        }
+
+        // Bound buffer depth to limit reorder latency.
+        while self.buffer.len() > self.max_depth {
+            output.push(self.pop_lowest());
+        }
+
+        Ok(output)
+    }
+
+    /// Flush all remaining buffered frames at end-of-stream, in display order.
+    /// Call this once after the last `decode_nal`.
+    pub fn flush(&mut self) -> Vec<Frame> {
+        // First, get any final pending frame from the inner decoder.
+        if let Some(frame) = self.inner.flush() {
+            self.buffer.push((self.gop_id, frame));
+        }
+        // Drain everything in (gop, poc) order.
+        self.buffer
+            .sort_by_key(|(g, f)| (*g, f.pic_order_cnt));
+        self.buffer.drain(..).map(|(_, f)| f).collect()
+    }
+
+    /// Drain all frames whose `gop_id < self.gop_id`, sorted by display order,
+    /// into `output`.
+    fn drain_completed_gops(&mut self, output: &mut Vec<Frame>) {
+        let cur = self.gop_id;
+        // Stable partition: keep current-GOP frames, extract older ones.
+        let mut completed: Vec<(u32, Frame)> = Vec::new();
+        let mut remaining: Vec<(u32, Frame)> = Vec::with_capacity(self.buffer.len());
+        for entry in self.buffer.drain(..) {
+            if entry.0 < cur {
+                completed.push(entry);
+            } else {
+                remaining.push(entry);
+            }
+        }
+        completed.sort_by_key(|(g, f)| (*g, f.pic_order_cnt));
+        output.extend(completed.into_iter().map(|(_, f)| f));
+        self.buffer = remaining;
+    }
+
+    /// Remove and return the buffered frame with the lowest `(gop, poc)`.
+    fn pop_lowest(&mut self) -> Frame {
+        let idx = self
+            .buffer
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, (g, f))| (*g, f.pic_order_cnt))
+            .map(|(i, _)| i)
+            .unwrap();
+        self.buffer.remove(idx).1
+    }
+}
+
 /// Motion vector prediction for P_8x8 sub-partitions.
 /// `px`, `py`: sub-partition position within the macroblock (pixel coordinates).
 /// `spw`, `sph`: sub-partition dimensions.
@@ -1832,5 +1996,68 @@ mod tests {
             1080,
             "d53999477dacff0905a38a3c1ff4e3ca210b634f968cf56c914b76a08eee99da",
         );
+    }
+
+    /// Verify that OrderedDecoder produces the same display-order output as
+    /// manually decoding with Decoder + sorting by (idr_count, poc). Uses
+    /// preset_medium (320x240, 60 frames, ref=4, bframes=3) which exercises
+    /// B-frame reordering across multiple GOPs.
+    #[test]
+    fn test_ordered_decoder_matches_manual_sort() {
+        let h264_path = format!(
+            "{}/testdata/preset_medium.h264",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let h264_data = std::fs::read(&h264_path).unwrap();
+        let nals = parse_annex_b(&h264_data);
+
+        // Reference: manually decode + sort by (idr_count, poc)
+        let mut decoder = Decoder::new();
+        let mut idr_count: u32 = 0;
+        let mut frames: Vec<(u32, i32, Frame)> = Vec::new();
+        for nal in &nals {
+            let is_idr = nal.nal_unit_type == NalUnitType::SliceIdr;
+            if let Some(f) = decoder.decode_nal(nal).unwrap() {
+                frames.push((idr_count, f.pic_order_cnt, f));
+            }
+            if is_idr {
+                idr_count += 1;
+            }
+        }
+        if let Some(f) = decoder.flush() {
+            frames.push((idr_count, f.pic_order_cnt, f));
+        }
+        frames.sort_by_key(|(idr, poc, _)| (*idr, *poc));
+        let manual_yuv: Vec<u8> = frames
+            .iter()
+            .flat_map(|(_, _, f)| {
+                let mut v = Vec::new();
+                v.extend_from_slice(&f.y);
+                v.extend_from_slice(&f.u);
+                v.extend_from_slice(&f.v);
+                v
+            })
+            .collect();
+
+        // OrderedDecoder: same NALs, automatic ordering
+        let mut ordered = OrderedDecoder::new();
+        let mut ordered_frames: Vec<Frame> = Vec::new();
+        for nal in &nals {
+            ordered_frames.extend(ordered.decode_nal(nal).unwrap());
+        }
+        ordered_frames.extend(ordered.flush());
+        let ordered_yuv: Vec<u8> = ordered_frames
+            .iter()
+            .flat_map(|f| {
+                let mut v = Vec::new();
+                v.extend_from_slice(&f.y);
+                v.extend_from_slice(&f.u);
+                v.extend_from_slice(&f.v);
+                v
+            })
+            .collect();
+
+        assert_eq!(ordered_frames.len(), frames.len(), "frame count mismatch");
+        assert_eq!(ordered_yuv, manual_yuv, "OrderedDecoder output differs from manual sort");
     }
 }

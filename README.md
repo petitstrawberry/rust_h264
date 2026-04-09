@@ -13,42 +13,62 @@ Yes, most devices have hardware h264 decoder, but if we want to be truly portabl
 
 ## Usage
 
+The recommended entry point is `OrderedDecoder`, which buffers and emits
+frames in **display order** automatically — no manual sorting or GOP tracking.
+
 ```rust
-use rust_h264::decoder::Decoder;
+use rust_h264::decoder::OrderedDecoder;
 use rust_h264::nal::parse_annex_b;
 
 let h264_data = std::fs::read("input.h264").unwrap();
 let nals = parse_annex_b(&h264_data);
+let mut decoder = OrderedDecoder::new();
+
+for nal in &nals {
+    // decode_nal returns 0 or more frames in display order
+    for frame in decoder.decode_nal(nal).unwrap() {
+        // `frame` is a decoded YUV420 picture:
+        //   frame.y, frame.u, frame.v  — pixel planes
+        //   frame.width, frame.height  — dimensions
+        //   frame.pic_order_cnt        — POC (already display-ordered)
+    }
+}
+// Drain any remaining buffered frames at end-of-stream
+for frame in decoder.flush() {
+    // handle final frames
+}
+```
+
+### Low-level `Decoder` (decode order)
+
+If you need raw decode order — for example, to drive a custom reorder buffer
+or feed frames directly to an encoder that doesn't care about display order
+— use `Decoder` instead. It returns one frame at a time in **decode order**.
+
+```rust
+use rust_h264::decoder::Decoder;
+use rust_h264::nal::parse_annex_b;
+
+let nals = parse_annex_b(&std::fs::read("input.h264").unwrap());
 let mut decoder = Decoder::new();
 
 for nal in &nals {
     match decoder.decode_nal(nal) {
-        Ok(Some(frame)) => {
-            // `frame` is a decoded YUV420 picture:
-            //   frame.y, frame.u, frame.v  — pixel planes
-            //   frame.width, frame.height  — dimensions
-            //   frame.pic_order_cnt        — display order index
-        }
+        Ok(Some(frame)) => { /* handle frame in decode order */ }
         Ok(None) => {} // NAL consumed, no frame ready yet (e.g. SPS/PPS)
         Err(e) => eprintln!("decode error: {:?}", e),
     }
 }
-// Flush the last buffered frame
 if let Some(frame) = decoder.flush() {
     // handle final frame
 }
 ```
 
-### Important: frame ordering
-
-**`decode_nal` returns frames in decode order, not display order.** With
-B-frames, the decoder must buffer reference frames before it can decode
-the B-frames that depend on them. This means the output order differs
-from the intended display order.
-
-To display frames correctly, sort them by `pic_order_cnt` (POC). If the
-stream has multiple IDR boundaries (GOPs), you must also track IDR
-boundaries to avoid mixing frames from different GOPs:
+When using `Decoder` directly, you must manually sort by `pic_order_cnt`
+within each GOP if you want display order. **Be careful with IDR boundary
+tracking** — `decode_nal` returns the *previous* picture when called with
+the start of a new picture, so increment your GOP counter **after** the
+call, not before:
 
 ```rust
 use rust_h264::nal::NalUnitType;
@@ -58,53 +78,23 @@ let mut frames = Vec::new();
 
 for nal in &nals {
     let is_idr = nal.nal_unit_type == NalUnitType::SliceIdr;
-
     if let Ok(Some(frame)) = decoder.decode_nal(nal) {
         // Push with CURRENT idr_count — this frame belongs to the
         // previous picture, before the IDR boundary
         frames.push((idr_count, frame));
     }
-
-    // Increment AFTER decode_nal, because decode_nal returns the
-    // PREVIOUS frame when it sees a new picture header. If you
-    // increment before, the last B-frame of the old GOP gets tagged
-    // with the new GOP's count and sorts incorrectly.
     if is_idr {
-        idr_count += 1;
+        idr_count += 1;  // AFTER decode_nal, not before
     }
 }
 if let Some(frame) = decoder.flush() {
     frames.push((idr_count, frame));
 }
-
-// Sort by (GOP, POC) for display order
 frames.sort_by_key(|(idr, f)| (*idr, f.pic_order_cnt));
 ```
 
-### Common pitfall: IDR count timing
-
-The most common mistake is incrementing `idr_count` **before** calling
-`decode_nal`. This causes the last frame of each GOP to be placed after
-the next IDR in display order, resulting in a visible glitch at every
-scene cut.
-
-**Wrong:**
-```rust
-if nal.nal_unit_type == NalUnitType::SliceIdr {
-    idr_count += 1;  // BUG: too early
-}
-let frame = decoder.decode_nal(nal)?;
-// frame belongs to the OLD GOP but gets the NEW idr_count
-```
-
-**Correct:**
-```rust
-let frame = decoder.decode_nal(nal)?;
-// Push frame with current idr_count first
-if nal.nal_unit_type == NalUnitType::SliceIdr {
-    idr_count += 1;  // After the previous frame is handled
-}
-```
+This is exactly what `OrderedDecoder` does for you — prefer it unless you
+need decode order specifically.
 
 ### AVCC input (MP4/MKV containers)
 
@@ -113,12 +103,12 @@ for the `avcC` configuration box and `parse_avcc` for each sample. The decoder
 itself is unchanged — only the framing parser differs.
 
 ```rust
-use rust_h264::decoder::Decoder;
+use rust_h264::decoder::OrderedDecoder;
 use rust_h264::nal::{parse_avcc, parse_avcc_config};
 
 // Get the avcC box payload from your MP4 demuxer
 let config = parse_avcc_config(&avcc_box_payload).unwrap();
-let mut decoder = Decoder::new();
+let mut decoder = OrderedDecoder::new();
 
 // Feed SPS/PPS once at startup (they live in the avcC box, not in samples)
 for nal in config.sps_nals.iter().chain(config.pps_nals.iter()) {
@@ -128,10 +118,13 @@ for nal in config.sps_nals.iter().chain(config.pps_nals.iter()) {
 // For each sample (MP4 chunk), parse and decode its NALs
 for sample_data in mp4_samples {
     for nal in parse_avcc(&sample_data, config.length_size) {
-        if let Ok(Some(frame)) = decoder.decode_nal(&nal) {
-            // handle frame (apply same display-order sorting as Annex B)
+        for frame in decoder.decode_nal(&nal).unwrap() {
+            // frame is in display order
         }
     }
+}
+for frame in decoder.flush() {
+    // final buffered frames
 }
 ```
 

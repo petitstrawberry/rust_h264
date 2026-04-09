@@ -35,7 +35,7 @@ The decoder logic is split across several files for maintainability:
 
 | File | Lines | Content |
 |------|-------|---------|
-| `src/decoder.rs` | ~1,370 | Core `Decoder` struct, `decode_nal`, `decode_slice` MB loop, DPB/frame management |
+| `src/decoder.rs` | ~2,000 | `Decoder` (raw decode order), `OrderedDecoder` (display-order wrapper), `decode_nal`, `decode_slice` MB loop, DPB/frame management |
 | `src/decode_cabac.rs` | ~3,600 | CABAC MB decode: skip detection, mb_type dispatch, residual decode |
 | `src/decode_cavlc.rs` | ~2,070 | CAVLC MB decode: P/B inter, intra, residual decode |
 | `src/slice_context.rs` | ~920 | `SliceContext`/`SliceParams` structs + shared methods (skip, direct, reconstruct) |
@@ -44,9 +44,23 @@ The decoder logic is split across several files for maintainability:
 
 `SliceContext` bundles ~25 mutable per-MB arrays; `SliceParams` bundles read-only slice-level parameters. The `make_ctx!()` macro in `decoder.rs` constructs a `SliceContext` from local variables at each call site for zero-cost method dispatch.
 
+## Public API
+
+The crate exposes a minimal surface area:
+
+- `decoder::Decoder` — low-level streaming decoder; `decode_nal` returns one frame at a time in **decode order**.
+- `decoder::OrderedDecoder` — wraps `Decoder` with a built-in reorder buffer; `decode_nal` returns 0+ frames in **display order** (sorted by `(gop_id, pic_order_cnt)`). Recommended for most users — handles GOP tracking and the IDR-count timing pitfall internally.
+- `decoder::Frame` — decoded YUV 4:2:0 frame with `y`/`u`/`v` planes, `width`, `height`, `pic_order_cnt`.
+- `nal::parse_annex_b` — parser for start-code delimited bitstreams.
+- `nal::parse_avcc` + `nal::parse_avcc_config` + `nal::AvccConfig` — parser for length-prefixed bitstreams from MP4/MKV containers.
+- `nal::NalUnit`, `nal::NalUnitType` — parsed NAL unit types.
+- `error::DecodeError` — `UnexpectedEof`, `InvalidSyntax(&'static str)`, `Unsupported(&'static str)`.
+
+Everything else is `pub(crate)` or behind the `dev-internals` feature flag.
+
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). Multi-reference (ref>1) with ref_pic_list_modification supported. Multi-slice frames fully supported for both CABAC and CAVLC (I, P, and B-frames byte-exact). 125 unit tests (76 byte-exact stream tests against FFmpeg + AVCC parser tests), including x264 `--preset medium` with and without deblocking (320x240, 60 frames, ref=4, bframes=3), multi-slice streams with up to 4 slices per frame, and 1080p streams (1920x1080, 10 frames, CABAC/CAVLC, with/without deblocking). Also verified byte-exact at 720p (1280x720, 300 frames, bframes=3 ref=4). Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices. NEON SIMD acceleration on aarch64 for luma half-pel filters (~28% speedup) achieving 67 fps at 1080p.
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). Multi-reference (ref>1) with ref_pic_list_modification supported. Multi-slice frames fully supported for both CABAC and CAVLC (I, P, and B-frames byte-exact). 126 unit tests (76 byte-exact stream tests against FFmpeg + AVCC parser tests + OrderedDecoder roundtrip), including x264 `--preset medium` with and without deblocking (320x240, 60 frames, ref=4, bframes=3), multi-slice streams with up to 4 slices per frame, and 1080p streams (1920x1080, 10 frames, CABAC/CAVLC, with/without deblocking). Also verified byte-exact at 720p (1280x720, 300 frames, bframes=3 ref=4). Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices. NEON SIMD acceleration on aarch64 for luma half-pel filters (~28% speedup) achieving 67 fps at 1080p.
 
 ### Completed
 
@@ -180,7 +194,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (125 tests, all byte-exact against FFmpeg)
+**Test Coverage** (126 tests, all byte-exact against FFmpeg)
 - Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
   mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
   noise_16x16, scaling_test
