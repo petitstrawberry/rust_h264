@@ -77,20 +77,8 @@ pub fn parse_annex_b(data: &[u8]) -> Vec<NalUnit<'_>> {
             None => (data.len(), None),
         };
 
-        let nal_data = &data[i..nal_end.0];
-        if !nal_data.is_empty() {
-            let header = nal_data[0];
-            // forbidden_zero_bit (MSB) must be 0; skip invalid NAL units
-            if header & 0x80 == 0 {
-                let nal_ref_idc = (header >> 5) & 0x03;
-                let nal_unit_type = NalUnitType::from(header & 0x1F);
-                let rbsp = remove_emulation_prevention(&nal_data[1..]);
-                nals.push(NalUnit {
-                    nal_ref_idc,
-                    nal_unit_type,
-                    rbsp,
-                });
-            }
+        if let Some(nal) = parse_nal_bytes(&data[i..nal_end.0]) {
+            nals.push(nal);
         }
 
         match nal_end.1 {
@@ -99,6 +87,156 @@ pub fn parse_annex_b(data: &[u8]) -> Vec<NalUnit<'_>> {
         }
     }
 
+    nals
+}
+
+/// Parse a single NAL unit from raw bytes (header byte + payload).
+/// Returns `None` if the slice is empty or has the forbidden_zero_bit set.
+fn parse_nal_bytes(nal_data: &[u8]) -> Option<NalUnit<'_>> {
+    if nal_data.is_empty() {
+        return None;
+    }
+    let header = nal_data[0];
+    // forbidden_zero_bit (MSB) must be 0
+    if header & 0x80 != 0 {
+        return None;
+    }
+    let nal_ref_idc = (header >> 5) & 0x03;
+    let nal_unit_type = NalUnitType::from(header & 0x1F);
+    let rbsp = remove_emulation_prevention(&nal_data[1..]);
+    Some(NalUnit {
+        nal_ref_idc,
+        nal_unit_type,
+        rbsp,
+    })
+}
+
+/// Configuration parsed from an MP4 `avcC` (AVCDecoderConfigurationRecord) box.
+/// Contains the SPS/PPS NAL units that must be fed to the decoder before any
+/// sample data, plus the length-field size used by `parse_avcc`.
+#[derive(Debug)]
+pub struct AvccConfig<'a> {
+    /// Number of bytes used for length prefixes in sample data (1, 2, or 4).
+    pub length_size: usize,
+    /// SPS NAL units extracted from the configuration record.
+    pub sps_nals: Vec<NalUnit<'a>>,
+    /// PPS NAL units extracted from the configuration record.
+    pub pps_nals: Vec<NalUnit<'a>>,
+}
+
+/// Parse an MP4 `avcC` (AVCDecoderConfigurationRecord) box per ISO/IEC 14496-15.
+///
+/// The input is the raw box payload (not including the box header). Returns
+/// the SPS/PPS NAL units and the length-field size needed by `parse_avcc`.
+///
+/// Layout:
+/// ```text
+/// configurationVersion         u8 (must be 1)
+/// AVCProfileIndication         u8
+/// profile_compatibility        u8
+/// AVCLevelIndication           u8
+/// reserved (6 bits) | lengthSizeMinusOne (2 bits)  u8
+/// reserved (3 bits) | numOfSequenceParameterSets (5 bits)  u8
+/// for each SPS:
+///   sequenceParameterSetLength u16 (big-endian)
+///   sequenceParameterSetNALUnit
+/// numOfPictureParameterSets    u8
+/// for each PPS:
+///   pictureParameterSetLength  u16 (big-endian)
+///   pictureParameterSetNALUnit
+/// ```
+pub fn parse_avcc_config(data: &[u8]) -> Result<AvccConfig<'_>, &'static str> {
+    if data.len() < 7 {
+        return Err("avcC: too short");
+    }
+    if data[0] != 1 {
+        return Err("avcC: unsupported configurationVersion");
+    }
+    // data[1..4] are profile/compat/level — informational, not needed here
+    let length_size = ((data[4] & 0x03) + 1) as usize;
+    if length_size != 1 && length_size != 2 && length_size != 4 {
+        return Err("avcC: invalid lengthSizeMinusOne");
+    }
+    let num_sps = (data[5] & 0x1F) as usize;
+
+    let mut off = 6;
+    let mut sps_nals = Vec::with_capacity(num_sps);
+    for _ in 0..num_sps {
+        if off + 2 > data.len() {
+            return Err("avcC: truncated SPS length");
+        }
+        let len = u16::from_be_bytes([data[off], data[off + 1]]) as usize;
+        off += 2;
+        if off + len > data.len() {
+            return Err("avcC: truncated SPS data");
+        }
+        if let Some(nal) = parse_nal_bytes(&data[off..off + len]) {
+            sps_nals.push(nal);
+        }
+        off += len;
+    }
+
+    if off >= data.len() {
+        return Err("avcC: missing PPS count");
+    }
+    let num_pps = data[off] as usize;
+    off += 1;
+
+    let mut pps_nals = Vec::with_capacity(num_pps);
+    for _ in 0..num_pps {
+        if off + 2 > data.len() {
+            return Err("avcC: truncated PPS length");
+        }
+        let len = u16::from_be_bytes([data[off], data[off + 1]]) as usize;
+        off += 2;
+        if off + len > data.len() {
+            return Err("avcC: truncated PPS data");
+        }
+        if let Some(nal) = parse_nal_bytes(&data[off..off + len]) {
+            pps_nals.push(nal);
+        }
+        off += len;
+    }
+
+    Ok(AvccConfig {
+        length_size,
+        sps_nals,
+        pps_nals,
+    })
+}
+
+/// Parse a length-prefixed AVCC sample into NAL units.
+///
+/// `data` is the raw sample payload from an MP4 `mdat` chunk. `length_size`
+/// is the number of bytes used for each length prefix (1, 2, or 4 — typically
+/// 4, taken from `AvccConfig::length_size`).
+///
+/// Note: this only parses the per-sample NAL units. The SPS/PPS configuration
+/// is stored separately in the MP4 `avcC` box and must be parsed with
+/// `parse_avcc_config` and fed to the decoder before any sample NALs.
+pub fn parse_avcc(data: &[u8], length_size: usize) -> Vec<NalUnit<'_>> {
+    let mut nals = Vec::new();
+    if length_size != 1 && length_size != 2 && length_size != 4 {
+        return nals;
+    }
+    let mut i = 0;
+    while i + length_size <= data.len() {
+        let len = match length_size {
+            1 => data[i] as usize,
+            2 => u16::from_be_bytes([data[i], data[i + 1]]) as usize,
+            4 => u32::from_be_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]) as usize,
+            _ => unreachable!(),
+        };
+        i += length_size;
+        if i + len > data.len() {
+            // Truncated NAL — stop parsing
+            break;
+        }
+        if let Some(nal) = parse_nal_bytes(&data[i..i + len]) {
+            nals.push(nal);
+        }
+        i += len;
+    }
     nals
 }
 
@@ -186,5 +324,86 @@ mod tests {
             matches!(rbsp, Cow::Borrowed(_)),
             "should borrow when no EPB"
         );
+    }
+
+    #[test]
+    fn test_parse_avcc_two_nals_4byte_length() {
+        // Two NAL units with 4-byte length prefixes:
+        // SliceIdr (header byte 0x65 = nal_ref_idc=3, type=5) with payload [0xAA]
+        // Sps (header byte 0x67 = nal_ref_idc=3, type=7) with payload [0xBB, 0xCC]
+        let data = [
+            0x00, 0x00, 0x00, 0x02, // length = 2
+            0x65, 0xAA,             // IDR
+            0x00, 0x00, 0x00, 0x03, // length = 3
+            0x67, 0xBB, 0xCC,       // SPS
+        ];
+        let nals = parse_avcc(&data, 4);
+        assert_eq!(nals.len(), 2);
+        assert_eq!(nals[0].nal_unit_type, NalUnitType::SliceIdr);
+        assert_eq!(nals[0].nal_ref_idc, 3);
+        assert_eq!(&*nals[0].rbsp, &[0xAA]);
+        assert_eq!(nals[1].nal_unit_type, NalUnitType::Sps);
+        assert_eq!(&*nals[1].rbsp, &[0xBB, 0xCC]);
+    }
+
+    #[test]
+    fn test_parse_avcc_truncated() {
+        // Length says 10 bytes but only 2 follow → stop parsing
+        let data = [0x00, 0x00, 0x00, 0x0A, 0x65, 0xAA];
+        let nals = parse_avcc(&data, 4);
+        assert_eq!(nals.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_avcc_2byte_length() {
+        let data = [
+            0x00, 0x02, 0x65, 0xAA, // length=2, IDR + payload
+            0x00, 0x01, 0x67,       // length=1, SPS header only
+        ];
+        let nals = parse_avcc(&data, 2);
+        assert_eq!(nals.len(), 2);
+        assert_eq!(nals[0].nal_unit_type, NalUnitType::SliceIdr);
+        assert_eq!(nals[1].nal_unit_type, NalUnitType::Sps);
+    }
+
+    #[test]
+    fn test_parse_avcc_config_minimal() {
+        // Minimal avcC: 1 SPS, 1 PPS, length_size=4
+        // Bytes: version=1, profile=66, compat=0, level=30,
+        //        reserved+lengthSize: 0xFF (lengthSizeMinusOne=3 → length_size=4)
+        //        reserved+numSPS: 0xE1 (numSPS=1)
+        //        sps_len=4, sps=[0x67, 0x42, 0x00, 0x1E]
+        //        numPPS=1
+        //        pps_len=2, pps=[0x68, 0xCE]
+        let data = [
+            0x01, 0x42, 0x00, 0x1E,
+            0xFF,                       // lengthSizeMinusOne = 3
+            0xE1,                       // numOfSequenceParameterSets = 1
+            0x00, 0x04,                 // sps length
+            0x67, 0x42, 0x00, 0x1E,     // sps NAL (header + 3 bytes RBSP)
+            0x01,                       // numOfPictureParameterSets = 1
+            0x00, 0x02,                 // pps length
+            0x68, 0xCE,                 // pps NAL
+        ];
+        let cfg = parse_avcc_config(&data).unwrap();
+        assert_eq!(cfg.length_size, 4);
+        assert_eq!(cfg.sps_nals.len(), 1);
+        assert_eq!(cfg.sps_nals[0].nal_unit_type, NalUnitType::Sps);
+        assert_eq!(&*cfg.sps_nals[0].rbsp, &[0x42, 0x00, 0x1E]);
+        assert_eq!(cfg.pps_nals.len(), 1);
+        assert_eq!(cfg.pps_nals[0].nal_unit_type, NalUnitType::Pps);
+        assert_eq!(&*cfg.pps_nals[0].rbsp, &[0xCE]);
+    }
+
+    #[test]
+    fn test_parse_avcc_config_invalid_version() {
+        let data = [0x02, 0x42, 0x00, 0x1E, 0xFF, 0xE0, 0x00];
+        assert!(parse_avcc_config(&data).is_err());
+    }
+
+    #[test]
+    fn test_parse_avcc_config_truncated() {
+        let data = [0x01, 0x42];
+        assert!(parse_avcc_config(&data).is_err());
     }
 }

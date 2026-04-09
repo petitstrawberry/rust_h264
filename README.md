@@ -7,7 +7,7 @@ Yes, most devices have hardware h264 decoder, but if we want to be truly portabl
 
 ## Design
 
-- **Input:** Annex B bytestream format (start code delimited `00 00 00 01` / `00 00 01`). AVCC (length-prefixed) format is not supported — callers must convert to Annex B before feeding data to the decoder.
+- **Input:** Both Annex B (start code delimited `00 00 00 01` / `00 00 01`) and AVCC (length-prefixed, used inside MP4/MKV containers) bitstreams are supported. The decoder itself accepts `NalUnit` values; the choice of parser determines the input format.
 - **Streaming:** The decoder exposes a streaming API. NAL units are fed incrementally and decoded frames are emitted as they become available.
 - **Performance:** The decoder aims to be fast, with performance relative to ffmpeg's software H.264 decoder as the target benchmark.
 
@@ -105,6 +105,39 @@ if nal.nal_unit_type == NalUnitType::SliceIdr {
     idr_count += 1;  // After the previous frame is handled
 }
 ```
+
+### AVCC input (MP4/MKV containers)
+
+For length-prefixed bitstreams from MP4/MKV containers, use `parse_avcc_config`
+for the `avcC` configuration box and `parse_avcc` for each sample. The decoder
+itself is unchanged — only the framing parser differs.
+
+```rust
+use rust_h264::decoder::Decoder;
+use rust_h264::nal::{parse_avcc, parse_avcc_config};
+
+// Get the avcC box payload from your MP4 demuxer
+let config = parse_avcc_config(&avcc_box_payload).unwrap();
+let mut decoder = Decoder::new();
+
+// Feed SPS/PPS once at startup (they live in the avcC box, not in samples)
+for nal in config.sps_nals.iter().chain(config.pps_nals.iter()) {
+    decoder.decode_nal(nal).unwrap();
+}
+
+// For each sample (MP4 chunk), parse and decode its NALs
+for sample_data in mp4_samples {
+    for nal in parse_avcc(&sample_data, config.length_size) {
+        if let Ok(Some(frame)) = decoder.decode_nal(&nal) {
+            // handle frame (apply same display-order sorting as Annex B)
+        }
+    }
+}
+```
+
+`length_size` is taken from the `avcC` box (typically 4) and matches the
+`lengthSizeMinusOne + 1` field. The AVCC NAL payload is identical to Annex B
+(same NAL header, same RBSP, same emulation prevention handling).
 
 ## Tools
 

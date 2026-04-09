@@ -652,15 +652,6 @@ fn luma_mc_inner(
     }
 }
 
-/// Perform chroma motion compensation for one plane (U or V).
-///
-/// Chroma MVs use the same quarter-pel values as luma, but since chroma is
-/// half spatial resolution (4:2:0), these become eighth-pel for chroma.
-/// Uses bilinear interpolation (spec 8.4.2.2.2).
-///
-/// `x`, `y`: chroma block top-left in full chroma-pel coordinates.
-/// `dx`, `dy`: motion vector in eighth-pel units (= luma quarter-pel MV).
-#[allow(clippy::too_many_arguments)]
 /// NEON chroma bilinear interpolation: process the entire block at once.
 /// `ref_plane` indexed at `top_off` for top-left sample. Each row has stride
 /// `ref_width` and at least `block_w + 1` accessible bytes from the top-left.
@@ -721,6 +712,14 @@ fn neon_chroma_bilinear_block(
     }
 }
 
+/// Perform chroma motion compensation for one plane (U or V).
+///
+/// Chroma MVs use the same quarter-pel values as luma, but since chroma is
+/// half spatial resolution (4:2:0), these become eighth-pel for chroma.
+/// Uses bilinear interpolation (spec 8.4.2.2.2).
+///
+/// `x`, `y`: chroma block top-left in full chroma-pel coordinates.
+/// `dx`, `dy`: motion vector in eighth-pel units (= luma quarter-pel MV).
 #[allow(clippy::too_many_arguments)]
 pub fn chroma_mc(
     ref_plane: &[u8],
@@ -775,8 +774,8 @@ pub fn chroma_mc(
     let h_i32 = ref_height as i32;
     let in_bounds = x_int >= 0
         && y_int >= 0
-        && x_int + block_w as i32 + 1 <= w_i32
-        && y_int + block_h as i32 + 1 <= h_i32;
+        && (x_int + block_w as i32) < w_i32
+        && (y_int + block_h as i32) < h_i32;
 
     if in_bounds {
         let c00 = ((8 - frac_x) * (8 - frac_y)) as u8;

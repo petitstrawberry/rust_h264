@@ -25,7 +25,7 @@ This is a Rust project using Cargo:
 
 ## Design Decisions
 
-- **Input format:** Annex B bytestream (start code delimited), not AVCC (length-prefixed). Callers must provide raw Annex B NAL units.
+- **Input format:** Both Annex B (start code delimited) and AVCC (length-prefixed, MP4/MKV) are supported via `parse_annex_b` and `parse_avcc`/`parse_avcc_config` in `src/nal.rs`. The decoder itself accepts `NalUnit` values; the choice of parser determines the input format.
 - **Streaming API:** The decoder API is streaming — callers feed NAL units incrementally and receive decoded frames as they become available. No requirement to buffer an entire stream upfront.
 - **Performance:** The decoder should be fast. Prefer efficient algorithms, minimize allocations, and avoid unnecessary copies. Performance relative to ffmpeg's software decoder is a key benchmark.
 
@@ -46,7 +46,7 @@ The decoder logic is split across several files for maintainability:
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). Multi-reference (ref>1) with ref_pic_list_modification supported. Multi-slice frames fully supported for both CABAC and CAVLC (I, P, and B-frames byte-exact). 119 unit tests (76 byte-exact stream tests against FFmpeg), including x264 `--preset medium` with and without deblocking (320x240, 60 frames, ref=4, bframes=3), multi-slice streams with up to 4 slices per frame, and 1080p streams (1920x1080, 10 frames, CABAC/CAVLC, with/without deblocking). Also verified byte-exact at 720p (1280x720, 300 frames, bframes=3 ref=4). Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices.
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). Multi-reference (ref>1) with ref_pic_list_modification supported. Multi-slice frames fully supported for both CABAC and CAVLC (I, P, and B-frames byte-exact). 125 unit tests (76 byte-exact stream tests against FFmpeg + AVCC parser tests), including x264 `--preset medium` with and without deblocking (320x240, 60 frames, ref=4, bframes=3), multi-slice streams with up to 4 slices per frame, and 1080p streams (1920x1080, 10 frames, CABAC/CAVLC, with/without deblocking). Also verified byte-exact at 720p (1280x720, 300 frames, bframes=3 ref=4). Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices. NEON SIMD acceleration on aarch64 for luma half-pel filters (~28% speedup) achieving 67 fps at 1080p.
 
 ### Completed
 
@@ -127,9 +127,12 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - `transform_size_8x8_flag` context: `399 + neighbor_transform_size` with `mb_is_8x8dct` tracking
 
 **NAL Unit Parsing** (`src/nal.rs`)
-- Annex B start code detection (3-byte and 4-byte)
+- Annex B start code detection (3-byte and 4-byte) via `parse_annex_b`
+- AVCC length-prefixed parsing (1/2/4-byte length) via `parse_avcc`
+- `avcC` MP4 configuration record parsing via `parse_avcc_config`
 - Emulation prevention byte removal with zero-copy fast path (`Cow::Borrowed`)
 - forbidden_zero_bit validation
+- Shared `parse_nal_bytes()` helper used by both Annex B and AVCC paths
 
 **Bitstream Reader** (`src/bitstream.rs`)
 - MSB-first bit reading with `read_bit`, `read_bits`, `read_ue`, `read_se`, `read_te`
@@ -177,7 +180,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (119 tests, all byte-exact against FFmpeg)
+**Test Coverage** (125 tests, all byte-exact against FFmpeg)
 - Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
   mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
   noise_16x16, scaling_test
