@@ -661,6 +661,67 @@ fn luma_mc_inner(
 /// `x`, `y`: chroma block top-left in full chroma-pel coordinates.
 /// `dx`, `dy`: motion vector in eighth-pel units (= luma quarter-pel MV).
 #[allow(clippy::too_many_arguments)]
+/// NEON chroma bilinear interpolation: process the entire block at once.
+/// `ref_plane` indexed at `top_off` for top-left sample. Each row has stride
+/// `ref_width` and at least `block_w + 1` accessible bytes from the top-left.
+/// The block must occupy `block_h + 1` rows (top + bottom for each output row).
+#[cfg(target_arch = "aarch64")]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn neon_chroma_bilinear_block(
+    ref_plane: &[u8],
+    top_off: usize,
+    ref_width: usize,
+    block_w: usize,
+    block_h: usize,
+    output: &mut [u8],
+    c00: u8,
+    c01: u8,
+    c10: u8,
+    c11: u8,
+) {
+    unsafe {
+        // Hoist coefficient duplication outside the row loop
+        let v00 = vdup_n_u8(c00);
+        let v01 = vdup_n_u8(c01);
+        let v10 = vdup_n_u8(c10);
+        let v11 = vdup_n_u8(c11);
+
+        for r in 0..block_h {
+            let top_p = ref_plane.as_ptr().add(top_off + r * ref_width);
+            let bot_p = top_p.add(ref_width);
+            let out_p = output.as_mut_ptr().add(r * block_w);
+
+            let mut i = 0;
+            while i + 8 <= block_w {
+                let a = vld1_u8(top_p.add(i));
+                let b = vld1_u8(top_p.add(i + 1));
+                let c = vld1_u8(bot_p.add(i));
+                let d = vld1_u8(bot_p.add(i + 1));
+
+                let mut acc = vmull_u8(a, v00);
+                acc = vmlal_u8(acc, b, v01);
+                acc = vmlal_u8(acc, c, v10);
+                acc = vmlal_u8(acc, d, v11);
+                let res = vrshrn_n_u16(acc, 6);
+                vst1_u8(out_p.add(i), res);
+                i += 8;
+            }
+            // Scalar tail
+            while i < block_w {
+                let a = *top_p.add(i) as u32;
+                let b = *top_p.add(i + 1) as u32;
+                let c = *bot_p.add(i) as u32;
+                let d = *bot_p.add(i + 1) as u32;
+                let val = c00 as u32 * a + c01 as u32 * b + c10 as u32 * c + c11 as u32 * d;
+                *out_p.add(i) = ((val + 32) >> 6) as u8;
+                i += 1;
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn chroma_mc(
     ref_plane: &[u8],
     ref_width: usize,
@@ -709,6 +770,45 @@ pub fn chroma_mc(
         return;
     }
 
+    // In-bounds fast path: needs x_int..x_int+w+1 and y_int..y_int+h+1
+    let w_i32 = ref_width as i32;
+    let h_i32 = ref_height as i32;
+    let in_bounds = x_int >= 0
+        && y_int >= 0
+        && x_int + block_w as i32 + 1 <= w_i32
+        && y_int + block_h as i32 + 1 <= h_i32;
+
+    if in_bounds {
+        let c00 = ((8 - frac_x) * (8 - frac_y)) as u8;
+        let c01 = (frac_x * (8 - frac_y)) as u8;
+        let c10 = ((8 - frac_x) * frac_y) as u8;
+        let c11 = (frac_x * frac_y) as u8;
+
+        let x_u = x_int as usize;
+        let y_u = y_int as usize;
+        let top_off = y_u * ref_width + x_u;
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            neon_chroma_bilinear_block(ref_plane, top_off, ref_width,
+                                        block_w, block_h, output, c00, c01, c10, c11);
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        for row in 0..block_h {
+            let row_top = top_off + row * ref_width;
+            let row_bot = row_top + ref_width;
+            for i in 0..block_w {
+                let val = c00 as i32 * ref_plane[row_top + i] as i32
+                    + c01 as i32 * ref_plane[row_top + i + 1] as i32
+                    + c10 as i32 * ref_plane[row_bot + i] as i32
+                    + c11 as i32 * ref_plane[row_bot + i + 1] as i32;
+                output[row * block_w + i] = ((val + 32) >> 6) as u8;
+            }
+        }
+        return;
+    }
+
+    // Boundary fallback: per-pixel with clamping
     for row in 0..block_h {
         for col in 0..block_w {
             let xf = x_int + col as i32;
