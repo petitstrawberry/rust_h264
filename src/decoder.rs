@@ -239,6 +239,27 @@ impl Decoder {
         self.finalize_pending()
     }
 
+    /// Frame rate from the most recently parsed SPS's VUI timing info, as
+    /// `(numerator, denominator)`. Returns `None` if no SPS has been parsed
+    /// yet, if the SPS does not contain VUI timing info, or if the values
+    /// are zero.
+    ///
+    /// For example, a stream encoded at 29.97 fps would return
+    /// `Some((60000, 2002))`. Use [`frame_rate_f64`](Self::frame_rate_f64)
+    /// for a single floating-point value.
+    pub fn frame_rate(&self) -> Option<(u32, u32)> {
+        // Return the first SPS that has timing info. For typical streams
+        // there's only one SPS, so this is unambiguous.
+        self.sps_table.values().find_map(|s| s.frame_rate())
+    }
+
+    /// Frame rate as a single floating-point value. Convenience wrapper
+    /// around [`frame_rate`](Self::frame_rate).
+    pub fn frame_rate_f64(&self) -> Option<f64> {
+        let (n, d) = self.frame_rate()?;
+        Some(n as f64 / d as f64)
+    }
+
     /// Finalize the pending picture: apply deblocking, insert into DPB, return frame.
     fn finalize_pending(&mut self) -> Option<Frame> {
         let mut ps = self.pending.take()?;
@@ -968,6 +989,18 @@ impl OrderedDecoder {
         self.buffer
             .sort_by_key(|(g, f)| (*g, f.pic_order_cnt));
         self.buffer.drain(..).map(|(_, f)| f).collect()
+    }
+
+    /// Frame rate from the most recently parsed SPS's VUI timing info,
+    /// as `(numerator, denominator)`. See [`Decoder::frame_rate`] for details.
+    pub fn frame_rate(&self) -> Option<(u32, u32)> {
+        self.inner.frame_rate()
+    }
+
+    /// Frame rate as a single floating-point value.
+    /// See [`Decoder::frame_rate_f64`].
+    pub fn frame_rate_f64(&self) -> Option<f64> {
+        self.inner.frame_rate_f64()
     }
 
     /// Drain all frames whose `gop_id < self.gop_id`, sorted by display order,

@@ -72,9 +72,48 @@ pub struct Sps {
     pub frame_crop_bottom_offset: u32,
 
     pub vui_parameters_present_flag: bool,
+
+    /// VUI timing info: numerator of clock tick. Set when
+    /// `vui_parameters_present_flag` and `timing_info_present_flag` are both
+    /// true. The frame rate is `time_scale / (2 * num_units_in_tick)` for
+    /// progressive content (spec E.2.1).
+    pub num_units_in_tick: Option<u32>,
+    /// VUI timing info: denominator of clock tick (typically a multiple of
+    /// the frame rate, e.g. 60000 for 29.97 fps).
+    pub time_scale: Option<u32>,
+    /// VUI timing info: when set, frames are emitted at a fixed rate of
+    /// `time_scale / (2 * num_units_in_tick)`.
+    pub fixed_frame_rate_flag: bool,
 }
 
 impl Sps {
+    /// Frame rate from VUI timing info, if present, as `(numerator, denominator)`.
+    ///
+    /// For progressive content (the common case), this is
+    /// `time_scale / (2 * num_units_in_tick)`. For example, an x264 stream
+    /// at 29.97 fps would return `Some((60000, 2002))`.
+    ///
+    /// Returns `None` if the SPS does not contain VUI timing info, or if
+    /// the values are zero (which would be a division-by-zero).
+    pub fn frame_rate(&self) -> Option<(u32, u32)> {
+        let num_units = self.num_units_in_tick?;
+        let time_scale = self.time_scale?;
+        if num_units == 0 || time_scale == 0 {
+            return None;
+        }
+        // Spec E.2.1: clock_tick = num_units_in_tick / time_scale
+        // For progressive frame coding, each frame is 2 ticks → fps = time_scale / (2 * num_units_in_tick)
+        Some((time_scale, 2u32.saturating_mul(num_units)))
+    }
+
+    /// Frame rate as a single floating-point value, computed from
+    /// [`frame_rate`](Self::frame_rate). Returns `None` if VUI timing info
+    /// is not present.
+    pub fn frame_rate_f64(&self) -> Option<f64> {
+        let (num, den) = self.frame_rate()?;
+        Some(num as f64 / den as f64)
+    }
+
     /// Width in pixels (accounting for cropping).
     pub fn width(&self) -> u32 {
         let crop_x = if self.frame_cropping_flag {
@@ -237,7 +276,57 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, &'static str> {
     }
 
     let vui_parameters_present_flag = r.read_bit()? != 0;
-    // VUI parsing skipped for now
+    let mut num_units_in_tick: Option<u32> = None;
+    let mut time_scale: Option<u32> = None;
+    let mut fixed_frame_rate_flag = false;
+    if vui_parameters_present_flag {
+        // Parse just enough of the VUI to extract timing info (spec E.1.1).
+        // We read the early optional sub-flags so we can reach
+        // timing_info_present_flag, then parse the timing fields.
+        let aspect_ratio_info_present_flag = r.read_bit()? != 0;
+        if aspect_ratio_info_present_flag {
+            let aspect_ratio_idc = r.read_bits(8)? as u8;
+            if aspect_ratio_idc == 255 {
+                // Extended_SAR: sar_width (16) + sar_height (16)
+                r.skip_bits(16);
+                r.skip_bits(16);
+            }
+        }
+        let overscan_info_present_flag = r.read_bit()? != 0;
+        if overscan_info_present_flag {
+            r.skip_bits(1); // overscan_appropriate_flag
+        }
+        let video_signal_type_present_flag = r.read_bit()? != 0;
+        if video_signal_type_present_flag {
+            r.skip_bits(3); // video_format
+            r.skip_bits(1); // video_full_range_flag
+            let colour_description_present_flag = r.read_bit()? != 0;
+            if colour_description_present_flag {
+                r.skip_bits(8); // colour_primaries
+                r.skip_bits(8); // transfer_characteristics
+                r.skip_bits(8); // matrix_coefficients
+            }
+        }
+        let chroma_loc_info_present_flag = r.read_bit()? != 0;
+        if chroma_loc_info_present_flag {
+            let _ = r.read_ue()?; // chroma_sample_loc_type_top_field
+            let _ = r.read_ue()?; // chroma_sample_loc_type_bottom_field
+        }
+        let timing_info_present_flag = r.read_bit()? != 0;
+        if timing_info_present_flag {
+            // Both fields are 32 bits — read in two 16-bit halves since
+            // read_bits takes u8 and we want to be safe with bit ordering.
+            let hi = r.read_bits(16)?;
+            let lo = r.read_bits(16)?;
+            num_units_in_tick = Some((hi << 16) | lo);
+            let hi = r.read_bits(16)?;
+            let lo = r.read_bits(16)?;
+            time_scale = Some((hi << 16) | lo);
+            fixed_frame_rate_flag = r.read_bit()? != 0;
+        }
+        // The remaining VUI fields (HRD, bitstream_restriction, etc.) are
+        // not used by this decoder, so we stop parsing here.
+    }
 
     Ok(Sps {
         profile_idc,
@@ -278,6 +367,9 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, &'static str> {
         frame_crop_top_offset,
         frame_crop_bottom_offset,
         vui_parameters_present_flag,
+        num_units_in_tick,
+        time_scale,
+        fixed_frame_rate_flag,
     })
 }
 
@@ -335,5 +427,93 @@ mod tests {
         assert!(sps.frame_mbs_only_flag);
         assert_eq!(sps.max_num_ref_frames, 0);
         assert_eq!(sps.pic_order_cnt_type, 2);
+    }
+
+    #[test]
+    fn test_parse_sps_vui_frame_rate() {
+        // preset_medium.h264's SPS contains VUI timing info with
+        // num_units_in_tick=1, time_scale=60, which gives a frame rate of
+        // 60 / (2 * 1) = 30 fps per spec E.2.1. (Note that ffprobe's
+        // avg_frame_rate is derived from frame count / duration and may
+        // differ — this test verifies the SPS parser, not the avg rate.)
+        let data = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/preset_medium.h264"
+        ))
+        .unwrap();
+        let nals = parse_annex_b(&data);
+        let sps_nal = nals
+            .iter()
+            .find(|n| n.nal_unit_type == NalUnitType::Sps)
+            .unwrap();
+        let sps = parse_sps(&sps_nal.rbsp).unwrap();
+
+        assert!(sps.vui_parameters_present_flag);
+        assert_eq!(sps.num_units_in_tick, Some(1));
+        assert_eq!(sps.time_scale, Some(60));
+        let (num, den) = sps.frame_rate().expect("expected VUI timing info");
+        let fps = num as f64 / den as f64;
+        assert!(
+            (fps - 30.0).abs() < 1e-6,
+            "expected 30 fps, got {} ({}/{})",
+            fps, num, den
+        );
+        assert_eq!(sps.frame_rate_f64(), Some(30.0));
+    }
+
+    #[test]
+    fn test_frame_rate_returns_none_without_timing() {
+        // Construct a synthetic Sps with no timing info to verify
+        // frame_rate() returns None gracefully.
+        let mut sps = Sps {
+            profile_idc: 66,
+            constraint_set0_flag: false,
+            constraint_set1_flag: false,
+            constraint_set2_flag: false,
+            constraint_set3_flag: false,
+            constraint_set4_flag: false,
+            constraint_set5_flag: false,
+            level_idc: 30,
+            seq_parameter_set_id: 0,
+            chroma_format_idc: 1,
+            separate_colour_plane_flag: false,
+            bit_depth_luma_minus8: 0,
+            bit_depth_chroma_minus8: 0,
+            qpprime_y_zero_transform_bypass_flag: false,
+            seq_scaling_matrix_present_flag: false,
+            scaling_list_4x4: [[16; 16]; 6],
+            scaling_list_8x8: [[16; 64]; 2],
+            log2_max_frame_num_minus4: 0,
+            pic_order_cnt_type: 0,
+            log2_max_pic_order_cnt_lsb_minus4: 0,
+            delta_pic_order_always_zero_flag: false,
+            offset_for_non_ref_pic: 0,
+            offset_for_top_to_bottom_field: 0,
+            num_ref_frames_in_pic_order_cnt_cycle: 0,
+            offset_for_ref_frame: vec![],
+            max_num_ref_frames: 1,
+            gaps_in_frame_num_value_allowed_flag: false,
+            pic_width_in_mbs_minus1: 0,
+            pic_height_in_map_units_minus1: 0,
+            frame_mbs_only_flag: true,
+            mb_adaptive_frame_field_flag: false,
+            direct_8x8_inference_flag: true,
+            frame_cropping_flag: false,
+            frame_crop_left_offset: 0,
+            frame_crop_right_offset: 0,
+            frame_crop_top_offset: 0,
+            frame_crop_bottom_offset: 0,
+            vui_parameters_present_flag: false,
+            num_units_in_tick: None,
+            time_scale: None,
+            fixed_frame_rate_flag: false,
+        };
+        assert!(sps.frame_rate().is_none());
+        assert!(sps.frame_rate_f64().is_none());
+
+        // Also: zero values should yield None (avoid division by zero)
+        sps.num_units_in_tick = Some(0);
+        sps.time_scale = Some(60);
+        assert!(sps.frame_rate().is_none());
     }
 }

@@ -85,14 +85,14 @@ fn main() {
     }
     let input_path = &args[1];
 
-    let mut fps = 30.0f64;
+    let mut fps_override: Option<f64> = None;
     let mut do_loop = false;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
             "--fps" => {
                 i += 1;
-                fps = args[i].parse().unwrap_or(30.0);
+                fps_override = args[i].parse().ok();
             }
             "--loop" => do_loop = true,
             _ => eprintln!("Unknown option: {}", args[i]),
@@ -163,9 +163,18 @@ fn main() {
         std::process::exit(1);
     });
 
+    // Pick frame rate: explicit --fps wins, then SPS VUI timing, then 30 fps.
+    let (fps, fps_source) = if let Some(rate) = fps_override {
+        (rate, "user override")
+    } else if let Some(rate) = decoder.frame_rate_f64() {
+        (rate, "SPS VUI timing")
+    } else {
+        (30.0, "default (no VUI timing)")
+    };
+
     eprintln!(
-        "Playing {} ({}x{}) at {} fps — streaming decode, display-order",
-        input_path, width, height, fps
+        "Playing {} ({}x{}) at {} fps ({}) — streaming decode, display-order",
+        input_path, width, height, fps, fps_source
     );
 
     // Create window
@@ -198,7 +207,8 @@ fn main() {
         .update_with_buffer(&first_frame_argb, width, height)
         .expect("failed to update window");
     frame_count += 1;
-    let mut current_argb = first_frame_argb;
+    let mut current_argb;
+    let _ = first_frame_argb; // already displayed
     let mut flushing = false;
     let mut flush_queue: Vec<Frame> = Vec::new();
 
