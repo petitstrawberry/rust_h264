@@ -15,14 +15,29 @@ use crate::slice_context::{SliceContext, SliceParams};
 use crate::sps::{parse_sps, Sps};
 
 /// A decoded YUV 4:2:0 frame.
+///
+/// The Y plane is `width × height` bytes; the U and V planes are each
+/// `(width/2) × (height/2)` bytes (4:2:0 chroma subsampling). Pixels are
+/// stored row-major with no inter-row padding (stride == width).
+///
+/// Frames returned by [`Decoder::decode_nal`] are emitted in **decode order**,
+/// not display order. To present them in the intended order, sort by
+/// `pic_order_cnt` within each GOP. See the crate-level documentation for the
+/// recommended pattern (and a common pitfall around IDR boundary handling).
 #[derive(Debug, Clone)]
 pub struct Frame {
+    /// Display width in luma samples.
     pub width: u32,
+    /// Display height in luma samples.
     pub height: u32,
+    /// Luma plane, `width * height` bytes, row-major.
     pub y: Vec<u8>,
+    /// Cb chroma plane, `(width/2) * (height/2)` bytes, row-major.
     pub u: Vec<u8>,
+    /// Cr chroma plane, `(width/2) * (height/2)` bytes, row-major.
     pub v: Vec<u8>,
-    /// Picture order count (for display ordering).
+    /// Picture order count — the H.264 spec's display ordering value.
+    /// Use this to sort frames into display order within a GOP.
     pub pic_order_cnt: i32,
 }
 
@@ -78,6 +93,35 @@ struct PictureState {
     mb_height: u32,
 }
 
+/// Streaming H.264 decoder.
+///
+/// Feed NAL units one at a time with [`decode_nal`](Self::decode_nal) and
+/// receive decoded frames as they become available. Call [`flush`](Self::flush)
+/// at end-of-stream to retrieve any final buffered frame.
+///
+/// Internally maintains parameter set tables (SPS, PPS), a Decoded Picture
+/// Buffer (DPB), and any in-progress slice state.
+///
+/// # Example
+///
+/// ```no_run
+/// use rust_h264::decoder::Decoder;
+/// use rust_h264::nal::parse_annex_b;
+///
+/// let bitstream = std::fs::read("input.h264").unwrap();
+/// let nals = parse_annex_b(&bitstream);
+/// let mut decoder = Decoder::new();
+///
+/// for nal in &nals {
+///     if let Ok(Some(frame)) = decoder.decode_nal(nal) {
+///         println!("Decoded {}x{} frame, POC={}",
+///                  frame.width, frame.height, frame.pic_order_cnt);
+///     }
+/// }
+/// if let Some(frame) = decoder.flush() {
+///     println!("Final frame, POC={}", frame.pic_order_cnt);
+/// }
+/// ```
 pub struct Decoder {
     sps_table: HashMap<u32, Sps>,
     pps_table: HashMap<u32, Pps>,
@@ -93,6 +137,7 @@ impl Default for Decoder {
 }
 
 impl Decoder {
+    /// Create a new decoder with empty parameter set tables and DPB.
     pub fn new() -> Self {
         Self {
             sps_table: HashMap::new(),
@@ -102,7 +147,19 @@ impl Decoder {
         }
     }
 
-    /// Feed a NAL unit to the decoder. Returns a decoded frame if one is produced.
+    /// Feed a single NAL unit to the decoder.
+    ///
+    /// Returns:
+    /// - `Ok(Some(frame))` — a decoded frame is ready (in **decode order**;
+    ///   sort by `pic_order_cnt` for display order). Note that the returned
+    ///   frame belongs to the *previous* picture: when this NAL starts a new
+    ///   picture, the decoder finalizes the previous one and returns it.
+    /// - `Ok(None)` — the NAL was consumed but no frame is ready yet
+    ///   (e.g., SPS, PPS, SEI, or the first slice of a multi-slice picture).
+    /// - `Err(e)` — the NAL was malformed or used an unsupported feature.
+    ///
+    /// Call [`flush`](Self::flush) after the last NAL to retrieve any
+    /// remaining buffered frame.
     pub fn decode_nal(&mut self, nal: &NalUnit) -> Result<Option<Frame>, DecodeError> {
         match nal.nal_unit_type {
             NalUnitType::Sps => {
@@ -174,7 +231,10 @@ impl Decoder {
         }
     }
 
-    /// Flush the decoder — finalize any pending frame. Call after all NALs are fed.
+    /// Finalize any pending picture and return it. Call this after the last
+    /// NAL has been fed via [`decode_nal`](Self::decode_nal) to retrieve the
+    /// final frame, which is otherwise held internally awaiting a new picture
+    /// to trigger its release.
     pub fn flush(&mut self) -> Option<Frame> {
         self.finalize_pending()
     }

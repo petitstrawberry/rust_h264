@@ -1,6 +1,21 @@
+//! H.264 NAL unit framing — Annex B and AVCC parsers.
+//!
+//! Provides two parser entry points:
+//!
+//! - [`parse_annex_b`] for start-code delimited bitstreams
+//!   (`.h264` files, RTP payloads, broadcast TS).
+//! - [`parse_avcc`] + [`parse_avcc_config`] for length-prefixed bitstreams
+//!   (NAL units inside MP4/MKV containers).
+//!
+//! Both produce [`NalUnit`] values that can be fed directly to
+//! [`Decoder::decode_nal`](crate::decoder::Decoder::decode_nal).
+
 use std::borrow::Cow;
 
-/// NAL unit types relevant to SPS/PPS parsing.
+/// H.264 NAL unit type identifier (spec Table 7-1).
+///
+/// Only the types this decoder cares about are named explicitly; everything
+/// else falls into [`NalUnitType::Other`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NalUnitType {
     Slice,               // 1
@@ -38,17 +53,45 @@ impl From<u8> for NalUnitType {
     }
 }
 
+/// A parsed H.264 NAL unit.
+///
+/// Contains the unit type, reference indicator, and the Raw Byte Sequence
+/// Payload (RBSP) — which is the NAL payload with emulation prevention bytes
+/// removed.
+///
+/// The `rbsp` field is a [`Cow`]: when no emulation prevention bytes are
+/// present (the common case), it borrows directly from the input slice with
+/// no allocation.
 #[derive(Debug)]
 pub struct NalUnit<'a> {
+    /// `nal_ref_idc` from the NAL header (0..3). Non-zero means the NAL
+    /// belongs to a reference picture.
     pub nal_ref_idc: u8,
+    /// NAL unit type from the NAL header (5 bits).
     pub nal_unit_type: NalUnitType,
-    /// RBSP data (emulation prevention bytes removed, or borrowed directly
+    /// RBSP payload (emulation prevention bytes removed, or borrowed directly
     /// from the input when no emulation prevention bytes are present).
     pub rbsp: Cow<'a, [u8]>,
 }
 
 /// Split an Annex B bytestream into NAL units.
-/// Handles both 3-byte (00 00 01) and 4-byte (00 00 00 01) start codes.
+///
+/// Handles both 3-byte (`00 00 01`) and 4-byte (`00 00 00 01`) start codes
+/// and removes emulation prevention bytes from each NAL's RBSP payload.
+/// NALs with the `forbidden_zero_bit` set are skipped.
+///
+/// # Example
+///
+/// ```no_run
+/// use rust_h264::nal::parse_annex_b;
+///
+/// let bitstream = std::fs::read("video.h264").unwrap();
+/// let nals = parse_annex_b(&bitstream);
+/// for nal in &nals {
+///     println!("{:?}, ref_idc={}, {} bytes",
+///              nal.nal_unit_type, nal.nal_ref_idc, nal.rbsp.len());
+/// }
+/// ```
 pub fn parse_annex_b(data: &[u8]) -> Vec<NalUnit<'_>> {
     let mut nals = Vec::new();
     // Find first start code
@@ -112,15 +155,48 @@ fn parse_nal_bytes(nal_data: &[u8]) -> Option<NalUnit<'_>> {
 }
 
 /// Configuration parsed from an MP4 `avcC` (AVCDecoderConfigurationRecord) box.
-/// Contains the SPS/PPS NAL units that must be fed to the decoder before any
-/// sample data, plus the length-field size used by `parse_avcc`.
+///
+/// In MP4/MKV containers, the SPS and PPS parameter sets are stored
+/// out-of-band in the `avcC` configuration box rather than inline with the
+/// sample data. After parsing the box, callers must feed the SPS/PPS NALs
+/// to the decoder once before decoding any samples, then use [`parse_avcc`]
+/// (with [`length_size`](Self::length_size)) to parse the length-prefixed
+/// NALs from each sample.
+///
+/// # Example
+///
+/// ```no_run
+/// use rust_h264::decoder::Decoder;
+/// use rust_h264::nal::{parse_avcc, parse_avcc_config};
+///
+/// // Get this from your MP4 demuxer's `avcC` box
+/// let avcc_box: &[u8] = unimplemented!();
+/// let cfg = parse_avcc_config(avcc_box).unwrap();
+///
+/// let mut decoder = Decoder::new();
+/// // Feed parameter sets once at startup
+/// for nal in cfg.sps_nals.iter().chain(cfg.pps_nals.iter()) {
+///     decoder.decode_nal(nal).unwrap();
+/// }
+///
+/// // For each MP4 sample, decode its NALs
+/// let sample: &[u8] = unimplemented!();
+/// for nal in parse_avcc(sample, cfg.length_size) {
+///     if let Ok(Some(frame)) = decoder.decode_nal(&nal) {
+///         // handle frame
+///     }
+/// }
+/// ```
 #[derive(Debug)]
 pub struct AvccConfig<'a> {
     /// Number of bytes used for length prefixes in sample data (1, 2, or 4).
+    /// Pass this value to [`parse_avcc`] when parsing samples.
     pub length_size: usize,
-    /// SPS NAL units extracted from the configuration record.
+    /// SPS NAL units extracted from the configuration record. Feed these to
+    /// the decoder before any sample data.
     pub sps_nals: Vec<NalUnit<'a>>,
-    /// PPS NAL units extracted from the configuration record.
+    /// PPS NAL units extracted from the configuration record. Feed these to
+    /// the decoder before any sample data.
     pub pps_nals: Vec<NalUnit<'a>>,
 }
 

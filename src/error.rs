@@ -1,13 +1,25 @@
+//! Error type returned by the decoder.
+
 use std::fmt;
 
 /// Errors produced by the H.264 decoder.
+///
+/// Returned by [`Decoder::decode_nal`](crate::decoder::Decoder::decode_nal)
+/// when a NAL unit cannot be parsed or uses an unsupported feature.
+///
+/// Implements [`std::error::Error`] and [`Display`](fmt::Display) for
+/// integration with standard error handling patterns.
 #[derive(Debug)]
 pub enum DecodeError {
-    /// Bitstream ended unexpectedly during parsing.
+    /// The bitstream ended in the middle of a syntax element. Usually
+    /// indicates a truncated NAL unit or a parser bug.
     UnexpectedEof,
-    /// A syntactic element in the bitstream has an invalid value.
+    /// A syntactic element in the bitstream has an invalid value (out of
+    /// range, reserved value, etc.). Usually indicates a malformed bitstream.
     InvalidSyntax(&'static str),
-    /// The stream uses a feature this decoder doesn't support yet.
+    /// The stream uses an H.264 feature this decoder does not yet implement
+    /// (e.g. interlaced coding, High 10/4:2:2/4:4:4 profiles, SP/SI slices,
+    /// slice groups / FMO).
     Unsupported(&'static str),
 }
 
