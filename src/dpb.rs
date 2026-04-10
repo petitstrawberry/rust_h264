@@ -198,7 +198,7 @@ impl Dpb {
         frame_num: u32,
         max_pic_num: u32,
     ) {
-        if ops.is_empty() {
+        if ops.is_empty() || ref_list.is_empty() {
             return;
         }
         let num_active = ref_list.len();
@@ -206,6 +206,12 @@ impl Dpb {
         let mut ref_idx_lx = 0usize;
 
         for &(idc, val) in ops {
+            // Per spec 8.2.4.3.1, ref_idx_lx must stay in [0, num_active - 1].
+            // A malformed bitstream may encode more RPLM commands than there
+            // are slots — bail out instead of indexing out of bounds.
+            if ref_idx_lx >= num_active {
+                return;
+            }
             if idc == 2 {
                 // Long-term ref reordering (spec 8.2.4.3.2)
                 let long_term_pic_num = val; // long_term_pic_num directly
@@ -652,5 +658,25 @@ mod tests {
         assert_eq!(l1[2].pic_order_cnt, 4);
         assert_eq!(l1[3].pic_order_cnt, 2);
         assert_eq!(l1[4].pic_order_cnt, 0);
+    }
+
+    /// Regression test for a fuzz-discovered panic.
+    ///
+    /// `apply_ref_list_modification` panicked with "index out of bounds"
+    /// when a malformed bitstream contained more RPLM commands than there
+    /// were active reference slots. `ref_idx_lx` grew past `num_active`,
+    /// causing an out-of-bounds index after the shift-right + push.
+    ///
+    /// Fix: bail out of the loop when `ref_idx_lx >= num_active`.
+    #[test]
+    fn test_fuzz_regression_rplm_too_many_ops_no_panic() {
+        // Build a ref list with 2 entries
+        let mut ref_list = vec![make_pic(0, 0), make_pic(1, 2)];
+        // Feed 10 RPLM ops (far more than the 2 active slots)
+        // idc=0 means "subtract abs_diff_pic_num from pred_pic_num"
+        // With val=0 → abs_diff=1 → pic_num = pred - 1
+        let ops: Vec<(u32, u32)> = (0..10).map(|_| (0u32, 0u32)).collect();
+        // This must not panic
+        Dpb::apply_ref_list_modification(&mut ref_list, &ops, 5, 16);
     }
 }
