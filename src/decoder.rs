@@ -2163,4 +2163,43 @@ mod tests {
         }
         let _ = decoder.flush();
     }
+
+    /// Regression test for a fuzz-discovered panic.
+    ///
+    /// libFuzzer found this input on the `decode_avcc` target: it triggered
+    /// `index out of bounds: the len is 7 but the index is 7` at
+    /// `cabac.rs:180` because `CabacReader::new()` accessed
+    /// `data[byte_offset]` and `data[byte_offset + 1]` without bounds
+    /// checking. A malformed bitstream with a CABAC init position near
+    /// the end of the buffer caused the panic.
+    ///
+    /// Fix: replaced direct indexing with `data.get().unwrap_or(0)` so
+    /// missing bytes are treated as zero.
+    #[test]
+    fn test_fuzz_regression_cabac_init_past_end() {
+        let path = format!(
+            "{}/testdata/fuzz_regressions/decode_avcc_cabac_init_oob.bin",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let data = std::fs::read(&path).unwrap();
+        if data.len() < 2 {
+            return;
+        }
+        let split = (data[0] as usize).min(data.len() - 1);
+        let avcc_box = &data[1..1 + split];
+        let sample_data = &data[1 + split..];
+
+        let cfg = match crate::nal::parse_avcc_config(avcc_box) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let mut decoder = Decoder::new();
+        for nal in cfg.sps_nals.iter().chain(cfg.pps_nals.iter()) {
+            let _ = decoder.decode_nal(nal);
+        }
+        for nal in crate::nal::parse_avcc(sample_data, cfg.length_size) {
+            let _ = decoder.decode_nal(&nal);
+        }
+        let _ = decoder.flush();
+    }
 }

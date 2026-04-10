@@ -176,9 +176,13 @@ pub struct CabacReader<'a> {
 impl<'a> CabacReader<'a> {
     /// Initialize the CABAC decoder from RBSP data at a given byte position.
     /// Matches the standard CABAC initialization with 16-bit buffering.
+    /// If `byte_offset` is too close to the end of `data`, the missing bytes
+    /// are treated as zero (graceful degradation for truncated bitstreams).
     pub fn new(data: &'a [u8], byte_offset: usize) -> Self {
-        let mut low: u32 = (data[byte_offset] as u32) << 18;
-        low = low.wrapping_add((data[byte_offset + 1] as u32) << 10);
+        let b0 = data.get(byte_offset).copied().unwrap_or(0) as u32;
+        let b1 = data.get(byte_offset + 1).copied().unwrap_or(0) as u32;
+        let mut low: u32 = b0 << 18;
+        low = low.wrapping_add(b1 << 10);
         let pos = byte_offset + 2;
         // Use the 2-byte aligned initialization: add fixed offset (1 << 9)
         // instead of reading a third byte. The first refill fetches actual
