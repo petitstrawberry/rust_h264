@@ -111,9 +111,13 @@ pub(crate) fn predict_mv_sub(
 }
 
 /// Safely index a ref pic list, clamping out-of-range indices to the last entry.
+/// Returns `None` if the list is empty (malformed bitstream).
 #[inline]
-pub(crate) fn ref_pic_safe(list: &[Rc<DecodedPicture>], idx: i8) -> &Rc<DecodedPicture> {
-    &list[(idx as usize).min(list.len() - 1)]
+pub(crate) fn ref_pic_safe(list: &[Rc<DecodedPicture>], idx: i8) -> Option<&Rc<DecodedPicture>> {
+    if list.is_empty() {
+        return None;
+    }
+    Some(&list[(idx.max(0) as usize).min(list.len() - 1)])
 }
 
 /// Bundles weighted prediction parameters for a slice, avoiding long argument lists.

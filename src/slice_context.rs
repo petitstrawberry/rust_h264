@@ -402,8 +402,10 @@ impl SliceContext<'_> {
             if bp0 && bp1 {
                 let mut p0 = [0u8; 16];
                 let mut p1 = [0u8; 16];
+                let Some(ref_l0) = ref_pic_safe(ref_pic_list_l0, r0) else { return; };
+                let Some(ref_l1) = ref_pic_safe(ref_pic_list_l1, r1) else { return; };
                 inter_pred::luma_mc(
-                    ref_pic_safe(ref_pic_list_l0, r0),
+                    ref_l0,
                     bx as i32,
                     by as i32,
                     mv0[0] as i32,
@@ -413,7 +415,7 @@ impl SliceContext<'_> {
                     &mut p0,
                 );
                 inter_pred::luma_mc(
-                    ref_pic_safe(ref_pic_list_l1, r1),
+                    ref_l1,
                     bx as i32,
                     by as i32,
                     mv1[0] as i32,
@@ -424,8 +426,9 @@ impl SliceContext<'_> {
                 );
                 wctx.apply_bi(&p0, &p1, &mut blk_pred, r0 as usize, r1 as usize, false, 0);
             } else if bp0 {
+                let Some(ref_pic) = ref_pic_safe(ref_pic_list_l0, r0) else { return; };
                 inter_pred::luma_mc(
-                    ref_pic_safe(ref_pic_list_l0, r0),
+                    ref_pic,
                     bx as i32,
                     by as i32,
                     mv0[0] as i32,
@@ -438,8 +441,9 @@ impl SliceContext<'_> {
                     wctx.apply_uni(&mut blk_pred, 0, r0 as usize, false, 0);
                 }
             } else if bp1 {
+                let Some(ref_pic) = ref_pic_safe(ref_pic_list_l1, r1) else { return; };
                 inter_pred::luma_mc(
-                    ref_pic_safe(ref_pic_list_l1, r1),
+                    ref_pic,
                     bx as i32,
                     by as i32,
                     mv1[0] as i32,
@@ -485,8 +489,8 @@ impl SliceContext<'_> {
                 if bp0 && bp1 {
                     let mut c0 = [0u8; 16];
                     let mut c1 = [0u8; 16];
-                    let rl0 = ref_pic_safe(ref_pic_list_l0, r0);
-                    let rl1 = ref_pic_safe(ref_pic_list_l1, r1);
+                    let Some(rl0) = ref_pic_safe(ref_pic_list_l0, r0) else { return; };
+                    let Some(rl1) = ref_pic_safe(ref_pic_list_l1, r1) else { return; };
                     let cr0 = if plane_idx == 0 { &rl0.u } else { &rl0.v };
                     let cr1 = if plane_idx == 0 { &rl1.u } else { &rl1.v };
                     inter_pred::chroma_mc(
@@ -523,7 +527,7 @@ impl SliceContext<'_> {
                         plane_idx,
                     );
                 } else if bp0 {
-                    let ref_pic = ref_pic_safe(ref_pic_list_l0, r0);
+                    let Some(ref_pic) = ref_pic_safe(ref_pic_list_l0, r0) else { return; };
                     let cr = if plane_idx == 0 {
                         &ref_pic.u
                     } else {
@@ -545,7 +549,7 @@ impl SliceContext<'_> {
                         wctx.apply_uni(&mut cblk_pred, 0, r0 as usize, true, plane_idx);
                     }
                 } else if bp1 {
-                    let ref_pic = ref_pic_safe(ref_pic_list_l1, r1);
+                    let Some(ref_pic) = ref_pic_safe(ref_pic_list_l1, r1) else { return; };
                     let cr = if plane_idx == 0 {
                         &ref_pic.u
                     } else {

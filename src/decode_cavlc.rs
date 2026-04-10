@@ -833,7 +833,8 @@ impl SliceContext<'_> {
                     let mut pred_l0 = vec![0u8; sub_part.w * sub_part.h];
                     let mut pred_l1 = vec![0u8; sub_part.w * sub_part.h];
                     inter_pred::luma_mc(
-                        ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0),
+                        ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0)
+                            .ok_or(DecodeError::InvalidSyntax("empty ref list"))?,
                         (mb_x + sub_part.x) as i32,
                         (mb_y + sub_part.y) as i32,
                         sub_part.mv_l0[0] as i32,
@@ -843,7 +844,8 @@ impl SliceContext<'_> {
                         &mut pred_l0,
                     );
                     inter_pred::luma_mc(
-                        ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1),
+                        ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1)
+                            .ok_or(DecodeError::InvalidSyntax("empty ref list"))?,
                         (mb_x + sub_part.x) as i32,
                         (mb_y + sub_part.y) as i32,
                         sub_part.mv_l1[0] as i32,
@@ -863,7 +865,8 @@ impl SliceContext<'_> {
                     );
                 } else if sub_part.pred_l0 {
                     inter_pred::luma_mc(
-                        ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0),
+                        ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0)
+                            .ok_or(DecodeError::InvalidSyntax("empty ref list"))?,
                         (mb_x + sub_part.x) as i32,
                         (mb_y + sub_part.y) as i32,
                         sub_part.mv_l0[0] as i32,
@@ -883,7 +886,8 @@ impl SliceContext<'_> {
                     }
                 } else if sub_part.pred_l1 {
                     inter_pred::luma_mc(
-                        ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1),
+                        ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1)
+                            .ok_or(DecodeError::InvalidSyntax("empty ref list"))?,
                         (mb_x + sub_part.x) as i32,
                         (mb_y + sub_part.y) as i32,
                         sub_part.mv_l1[0] as i32,
@@ -1017,8 +1021,10 @@ impl SliceContext<'_> {
 
                     let mut part_pred = [0u8; 64];
                     if sub_part.pred_l0 && sub_part.pred_l1 {
-                        let ref_l0 = ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0);
-                        let ref_l1 = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1);
+                        let ref_l0 = ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0)
+                            .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
+                        let ref_l1 = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1)
+                            .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
                         let cr_l0 = if scale_idx == 4 { &ref_l0.u } else { &ref_l0.v };
                         let cr_l1 = if scale_idx == 4 { &ref_l1.u } else { &ref_l1.v };
                         let mut c_l0 = vec![0u8; cw * ch];

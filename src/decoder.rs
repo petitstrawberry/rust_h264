@@ -2259,4 +2259,24 @@ mod tests {
         }
         let _ = decoder.flush();
     }
+
+    /// Regression test for a fuzz-discovered panic.
+    ///
+    /// `attempt to subtract with overflow` at `mv_pred.rs:116` because
+    /// `ref_pic_safe` used `.len() - 1` on an empty ref list. Changed
+    /// `ref_pic_safe` to return `Option` and fixed all ~20 callers.
+    #[test]
+    fn test_fuzz_regression_ref_pic_safe_empty_list() {
+        let path = format!(
+            "{}/testdata/fuzz_regressions/decode_annex_b_ref_pic_safe_empty.h264",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let data = std::fs::read(&path).unwrap();
+        let nals = parse_annex_b(&data);
+        let mut decoder = Decoder::new();
+        for nal in &nals {
+            let _ = decoder.decode_nal(nal);
+        }
+        let _ = decoder.flush();
+    }
 }
