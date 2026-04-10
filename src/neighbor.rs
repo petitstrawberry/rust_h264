@@ -458,9 +458,9 @@ pub(crate) fn dequant_4x4_ac_raster(block: &mut [i32; 16], qp: i32, scale: &[u8;
                     .unwrap();
                 let v = LEVEL_SCALE[qp_rem][pc] * scale[scan_idx] as i32;
                 if qp_per >= 4 {
-                    block[idx] = (block[idx] * v) << (qp_per - 4);
+                    block[idx] = block[idx].wrapping_mul(v).wrapping_shl((qp_per - 4) as u32);
                 } else {
-                    block[idx] = (block[idx] * v + (1 << (3 - qp_per))) >> (4 - qp_per);
+                    block[idx] = (block[idx].wrapping_mul(v).wrapping_add(1 << (3 - qp_per))) >> (4 - qp_per);
                 }
             }
         }

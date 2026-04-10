@@ -2190,4 +2190,10 @@ mod tests {
     fn test_fuzz_regression_rplm_pic_num_underflow() {
         fuzz_decode_annex_b("decode_annex_b_rplm_pic_num_underflow.h264");
     }
+
+    /// Dequant multiply overflow (residual.rs / neighbor.rs)
+    #[test]
+    fn test_fuzz_regression_dequant_mul_overflow() {
+        fuzz_decode_avcc("decode_avcc_dequant_mul_overflow.bin");
+    }
 }

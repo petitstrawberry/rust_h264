@@ -125,9 +125,9 @@ pub fn dequant_4x4(block: &mut [i32; 16], qp: i32, scale: &[u8; 16]) {
             let (r, c) = ZIGZAG_4X4[idx];
             let v = LEVEL_SCALE[qp_rem][position_category(r, c)] * scale[idx] as i32;
             if qp_per >= 4 {
-                block[idx] = (block[idx] * v) << (qp_per - 4);
+                block[idx] = block[idx].wrapping_mul(v).wrapping_shl((qp_per - 4) as u32);
             } else {
-                block[idx] = (block[idx] * v + (1 << (3 - qp_per))) >> (4 - qp_per);
+                block[idx] = (block[idx].wrapping_mul(v).wrapping_add(1 << (3 - qp_per))) >> (4 - qp_per);
             }
         }
     }
@@ -142,7 +142,7 @@ pub fn dequant_luma_dc_i16x16(dc: &mut [i32; 16], qp: i32, scale_dc: u8) {
 
     if qp_per >= 6 {
         for d in dc.iter_mut() {
-            *d = (*d * v) << (qp_per - 6);
+            *d = d.wrapping_mul(v).wrapping_shl((qp_per - 6) as u32);
         }
     } else {
         let round = 1 << (5 - qp_per);
@@ -161,7 +161,7 @@ pub fn dequant_chroma_dc(dc: &mut [i32; 4], qp: i32, scale_dc: u8) {
 
     if qp_per >= 5 {
         for d in dc.iter_mut() {
-            *d = (*d * v) << (qp_per - 5);
+            *d = d.wrapping_mul(v).wrapping_shl((qp_per - 5) as u32);
         }
     } else {
         let round = 1 << (4 - qp_per);
@@ -241,9 +241,9 @@ pub fn dequant_8x8(block: &mut [i32; 64], qp: i32, scale: &[u8; 64]) {
             let cat = DEQUANT_8X8_POS_CAT[(r % 4) * 4 + (c % 4)];
             let v = LEVEL_SCALE_8X8[qp_rem][cat] * scale[r * 8 + c] as i32;
             if qp_per >= 6 {
-                *coeff = (*coeff * v) << (qp_per - 6);
+                *coeff = coeff.wrapping_mul(v).wrapping_shl((qp_per - 6) as u32);
             } else {
-                *coeff = (*coeff * v + (1 << (5 - qp_per))) >> (6 - qp_per);
+                *coeff = (coeff.wrapping_mul(v).wrapping_add(1 << (5 - qp_per))) >> (6 - qp_per);
             }
         }
     }
@@ -389,9 +389,9 @@ pub fn dequant_4x4_full(block: &mut [i32; 16], qp: i32, scale: &[u8; 16]) {
                     .unwrap();
                 let v = LEVEL_SCALE[qp_rem][pc] * scale[scan_idx] as i32;
                 if qp_per >= 4 {
-                    block[idx] = (block[idx] * v) << (qp_per - 4);
+                    block[idx] = block[idx].wrapping_mul(v).wrapping_shl((qp_per - 4) as u32);
                 } else {
-                    block[idx] = (block[idx] * v + (1 << (3 - qp_per))) >> (4 - qp_per);
+                    block[idx] = (block[idx].wrapping_mul(v).wrapping_add(1 << (3 - qp_per))) >> (4 - qp_per);
                 }
             }
         }
