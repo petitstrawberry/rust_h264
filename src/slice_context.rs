@@ -310,7 +310,9 @@ impl SliceContext<'_> {
                 }
             }
         } else {
-            let col_pic = &ref_pic_list_l1[0];
+            let Some(col_pic) = ref_pic_list_l1.first() else {
+                return; // malformed: temporal direct requires L1 ref list
+            };
             if direct_8x8_inference_flag && blk_count == 4 {
                 let first_blk = blk_start;
                 let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) = derive_temporal_direct_blk(

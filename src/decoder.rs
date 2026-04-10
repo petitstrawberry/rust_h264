@@ -2279,4 +2279,36 @@ mod tests {
         }
         let _ = decoder.flush();
     }
+
+    /// Regression test for a fuzz-discovered panic.
+    ///
+    /// `index out of bounds: the len is 0 but the index is 0` at
+    /// `slice_context.rs:313` because temporal direct mode accessed
+    /// `ref_pic_list_l1[0]` on an empty L1 list.
+    #[test]
+    fn test_fuzz_regression_temporal_direct_empty_l1() {
+        let path = format!(
+            "{}/testdata/fuzz_regressions/decode_avcc_temporal_direct_empty_l1.bin",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let data = std::fs::read(&path).unwrap();
+        if data.len() < 2 {
+            return;
+        }
+        let split = (data[0] as usize).min(data.len() - 1);
+        let avcc_box = &data[1..1 + split];
+        let sample_data = &data[1 + split..];
+        let cfg = match crate::nal::parse_avcc_config(avcc_box) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let mut decoder = Decoder::new();
+        for nal in cfg.sps_nals.iter().chain(cfg.pps_nals.iter()) {
+            let _ = decoder.decode_nal(nal);
+        }
+        for nal in crate::nal::parse_avcc(sample_data, cfg.length_size) {
+            let _ = decoder.decode_nal(&nal);
+        }
+        let _ = decoder.flush();
+    }
 }
