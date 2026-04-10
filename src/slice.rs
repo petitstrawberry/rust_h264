@@ -198,6 +198,10 @@ pub fn parse_slice_header(
     let weight_table = if needs_weight_table {
         let luma_log2_weight_denom = r.read_ue()?;
         let chroma_log2_weight_denom = r.read_ue()?;
+        // Spec constrains these to [0, 7]. Clamp to prevent shift overflow.
+        if luma_log2_weight_denom > 7 || chroma_log2_weight_denom > 7 {
+            return Err("log2_weight_denom out of range");
+        }
         let luma_def = 1i32 << luma_log2_weight_denom;
         let chroma_def = 1i32 << chroma_log2_weight_denom;
 
