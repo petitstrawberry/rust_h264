@@ -2123,4 +2123,44 @@ mod tests {
         }
         let _ = decoder.flush();
     }
+
+    /// Regression test for a fuzz-discovered panic.
+    ///
+    /// libFuzzer found this input on the `decode_avcc` target: it triggered
+    /// `index out of bounds: the len is 3 but the index is 13824` at
+    /// `cabac.rs:352` because the slice header's `cabac_init_idc` was parsed
+    /// without range validation. Per spec 7.4.3 the value must be in [0, 2],
+    /// but the parser accepted any `ue(v)` value.
+    ///
+    /// Fix: validate `cabac_init_idc <= 2` in the slice header parser, and
+    /// also defensively clamp to 2 inside `init_cabac_states` so any future
+    /// caller bug can't trigger the same panic.
+    #[test]
+    fn test_fuzz_regression_cabac_init_idc_out_of_range() {
+        let path = format!(
+            "{}/testdata/fuzz_regressions/decode_avcc_cabac_init_idc_oob.bin",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let data = std::fs::read(&path).unwrap();
+        // Mirror the decode_avcc fuzz target: first byte is the avcC/sample split.
+        if data.len() < 2 {
+            return;
+        }
+        let split = (data[0] as usize).min(data.len() - 1);
+        let avcc_box = &data[1..1 + split];
+        let sample_data = &data[1 + split..];
+
+        let cfg = match crate::nal::parse_avcc_config(avcc_box) {
+            Ok(c) => c,
+            Err(_) => return, // input doesn't even parse as avcC; that's fine
+        };
+        let mut decoder = Decoder::new();
+        for nal in cfg.sps_nals.iter().chain(cfg.pps_nals.iter()) {
+            let _ = decoder.decode_nal(nal);
+        }
+        for nal in crate::nal::parse_avcc(sample_data, cfg.length_size) {
+            let _ = decoder.decode_nal(&nal);
+        }
+        let _ = decoder.flush();
+    }
 }

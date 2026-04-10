@@ -306,12 +306,17 @@ pub fn parse_slice_header(
     }
 
     // cabac_init_idc: parsed when entropy_coding_mode_flag=1 and slice is not I/SI
-    // (spec 7.3.3: comes before slice_qp_delta)
+    // (spec 7.3.3: comes before slice_qp_delta). Spec 7.4.3 constrains the
+    // value to the range [0, 2].
     let cabac_init_idc = if pps.entropy_coding_mode_flag
         && slice_type != SliceType::I
         && slice_type != SliceType::Si
     {
-        r.read_ue()?
+        let v = r.read_ue()?;
+        if v > 2 {
+            return Err("cabac_init_idc out of range");
+        }
+        v
     } else {
         0
     };

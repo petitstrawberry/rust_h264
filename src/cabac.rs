@@ -344,12 +344,14 @@ impl<'a> CabacReader<'a> {
 
 /// Initialize CABAC context states for a slice (spec 9.3.1.1).
 /// Returns array of 1024 context state values initialized from QP and slice type.
+/// `cabac_init_idc` is clamped to the valid range [0, 2] per spec 7.4.3.
 pub fn init_cabac_states(slice_qp: i32, is_i_slice: bool, cabac_init_idc: u32) -> [u8; 1024] {
     let qp = slice_qp.clamp(0, 51);
+    let idc = (cabac_init_idc as usize).min(2);
     let tab: &[[i8; 2]; 1024] = if is_i_slice {
         &CABAC_CONTEXT_INIT_I
     } else {
-        &CABAC_CONTEXT_INIT_PB[cabac_init_idc as usize]
+        &CABAC_CONTEXT_INIT_PB[idc]
     };
 
     let mut states = [0u8; 1024];
