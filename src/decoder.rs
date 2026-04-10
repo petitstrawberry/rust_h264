@@ -2094,221 +2094,94 @@ mod tests {
         assert_eq!(ordered_yuv, manual_yuv, "OrderedDecoder output differs from manual sort");
     }
 
-    /// Regression test for a fuzz-discovered panic.
-    ///
-    /// libFuzzer found this input on first run of the `decode_annex_b` target:
-    /// it triggered an "attempt to subtract with overflow" panic at
-    /// `decode_cabac.rs:1135` because a P-slice referenced an empty
-    /// `ref_pic_list` (no reference frame had been decoded for the slice).
-    /// The unchecked `sp.ref_pic_list.len() - 1` underflowed.
-    ///
-    /// Fix: replaced the `.min(.len() - 1)` pattern with a checked
-    /// `.get().or_else(.last()).ok_or(InvalidSyntax)` at all five sites in
-    /// `decode_cabac.rs` and `decode_cavlc.rs`. The decoder now returns
-    /// `DecodeError::InvalidSyntax` instead of panicking.
+    /// Decode an Annex B fuzz regression file. Must not panic.
+    fn fuzz_decode_annex_b(name: &str) {
+        let path = format!(
+            "{}/testdata/fuzz_regressions/{}",
+            env!("CARGO_MANIFEST_DIR"),
+            name
+        );
+        let data = std::fs::read(&path).unwrap();
+        let nals = parse_annex_b(&data);
+        let mut decoder = Decoder::new();
+        for nal in &nals {
+            let _ = decoder.decode_nal(nal);
+        }
+        let _ = decoder.flush();
+    }
+
+    /// Decode an AVCC fuzz regression file. The first byte selects the
+    /// avcC/sample split point, mirroring the `decode_avcc` fuzz target.
+    /// Must not panic.
+    fn fuzz_decode_avcc(name: &str) {
+        let path = format!(
+            "{}/testdata/fuzz_regressions/{}",
+            env!("CARGO_MANIFEST_DIR"),
+            name
+        );
+        let data = std::fs::read(&path).unwrap();
+        if data.len() < 2 {
+            return;
+        }
+        let split = (data[0] as usize).min(data.len() - 1);
+        let avcc_box = &data[1..1 + split];
+        let sample_data = &data[1 + split..];
+        let cfg = match crate::nal::parse_avcc_config(avcc_box) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let mut decoder = Decoder::new();
+        for nal in cfg.sps_nals.iter().chain(cfg.pps_nals.iter()) {
+            let _ = decoder.decode_nal(nal);
+        }
+        for nal in crate::nal::parse_avcc(sample_data, cfg.length_size) {
+            let _ = decoder.decode_nal(&nal);
+        }
+        let _ = decoder.flush();
+    }
+
+    // --- Fuzz regression tests ---
+    // Each test replays a crash input found by libFuzzer and verifies no panic.
+
+    /// Empty ref_pic_list underflow (decode_cabac.rs / decode_cavlc.rs)
     #[test]
     fn test_fuzz_regression_empty_ref_list_no_panic() {
-        let path = format!(
-            "{}/testdata/fuzz_regressions/decode_annex_b_subtract_overflow.h264",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let data = std::fs::read(&path).unwrap();
-        let nals = parse_annex_b(&data);
-        let mut decoder = Decoder::new();
-        // The goal is just to verify no panic. The decoder may return Ok or
-        // Err on individual NALs — both are fine, as long as it doesn't
-        // crash the process.
-        for nal in &nals {
-            let _ = decoder.decode_nal(nal);
-        }
-        let _ = decoder.flush();
+        fuzz_decode_annex_b("decode_annex_b_subtract_overflow.h264");
     }
 
-    /// Regression test for a fuzz-discovered panic.
-    ///
-    /// libFuzzer found this input on the `decode_avcc` target: it triggered
-    /// `index out of bounds: the len is 3 but the index is 13824` at
-    /// `cabac.rs:352` because the slice header's `cabac_init_idc` was parsed
-    /// without range validation. Per spec 7.4.3 the value must be in [0, 2],
-    /// but the parser accepted any `ue(v)` value.
-    ///
-    /// Fix: validate `cabac_init_idc <= 2` in the slice header parser, and
-    /// also defensively clamp to 2 inside `init_cabac_states` so any future
-    /// caller bug can't trigger the same panic.
+    /// cabac_init_idc out of range (cabac.rs / slice.rs)
     #[test]
     fn test_fuzz_regression_cabac_init_idc_out_of_range() {
-        let path = format!(
-            "{}/testdata/fuzz_regressions/decode_avcc_cabac_init_idc_oob.bin",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let data = std::fs::read(&path).unwrap();
-        // Mirror the decode_avcc fuzz target: first byte is the avcC/sample split.
-        if data.len() < 2 {
-            return;
-        }
-        let split = (data[0] as usize).min(data.len() - 1);
-        let avcc_box = &data[1..1 + split];
-        let sample_data = &data[1 + split..];
-
-        let cfg = match crate::nal::parse_avcc_config(avcc_box) {
-            Ok(c) => c,
-            Err(_) => return, // input doesn't even parse as avcC; that's fine
-        };
-        let mut decoder = Decoder::new();
-        for nal in cfg.sps_nals.iter().chain(cfg.pps_nals.iter()) {
-            let _ = decoder.decode_nal(nal);
-        }
-        for nal in crate::nal::parse_avcc(sample_data, cfg.length_size) {
-            let _ = decoder.decode_nal(&nal);
-        }
-        let _ = decoder.flush();
+        fuzz_decode_avcc("decode_avcc_cabac_init_idc_oob.bin");
     }
 
-    /// Regression test for a fuzz-discovered panic.
-    ///
-    /// libFuzzer found this input on the `decode_avcc` target: it triggered
-    /// `index out of bounds: the len is 7 but the index is 7` at
-    /// `cabac.rs:180` because `CabacReader::new()` accessed
-    /// `data[byte_offset]` and `data[byte_offset + 1]` without bounds
-    /// checking. A malformed bitstream with a CABAC init position near
-    /// the end of the buffer caused the panic.
-    ///
-    /// Fix: replaced direct indexing with `data.get().unwrap_or(0)` so
-    /// missing bytes are treated as zero.
+    /// CABAC reader init past end of buffer (cabac.rs)
     #[test]
     fn test_fuzz_regression_cabac_init_past_end() {
-        let path = format!(
-            "{}/testdata/fuzz_regressions/decode_avcc_cabac_init_oob.bin",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let data = std::fs::read(&path).unwrap();
-        if data.len() < 2 {
-            return;
-        }
-        let split = (data[0] as usize).min(data.len() - 1);
-        let avcc_box = &data[1..1 + split];
-        let sample_data = &data[1 + split..];
-
-        let cfg = match crate::nal::parse_avcc_config(avcc_box) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        let mut decoder = Decoder::new();
-        for nal in cfg.sps_nals.iter().chain(cfg.pps_nals.iter()) {
-            let _ = decoder.decode_nal(nal);
-        }
-        for nal in crate::nal::parse_avcc(sample_data, cfg.length_size) {
-            let _ = decoder.decode_nal(&nal);
-        }
-        let _ = decoder.flush();
+        fuzz_decode_avcc("decode_avcc_cabac_init_oob.bin");
     }
 
-    /// Regression test for a fuzz-discovered panic.
-    ///
-    /// libFuzzer found this input on the `decode_annex_b` target: it triggered
-    /// `attempt to subtract with overflow` at `cavlc.rs:94` because the CAVLC
-    /// coefficient placement loop's `pos` variable underflowed when
-    /// `run_before` values from a corrupted bitstream exceeded the remaining
-    /// scan position.
-    ///
-    /// Fix: check `step > pos` before subtracting and return an error.
+    /// CAVLC coefficient position underflow (cavlc.rs)
     #[test]
     fn test_fuzz_regression_cavlc_pos_underflow() {
-        let path = format!(
-            "{}/testdata/fuzz_regressions/decode_annex_b_cavlc_pos_underflow.h264",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let data = std::fs::read(&path).unwrap();
-        let nals = parse_annex_b(&data);
-        let mut decoder = Decoder::new();
-        for nal in &nals {
-            let _ = decoder.decode_nal(nal);
-        }
-        let _ = decoder.flush();
+        fuzz_decode_annex_b("decode_annex_b_cavlc_pos_underflow.h264");
     }
 
-    /// Regression test for a fuzz-discovered panic.
-    ///
-    /// `attempt to shift left with overflow` at `slice.rs:202` because
-    /// `luma_log2_weight_denom` / `chroma_log2_weight_denom` were parsed
-    /// as `ue(v)` without range validation. Spec constrains them to [0, 7].
+    /// log2_weight_denom shift overflow (slice.rs)
     #[test]
     fn test_fuzz_regression_weight_denom_shift_overflow() {
-        let path = format!(
-            "{}/testdata/fuzz_regressions/decode_avcc_weight_denom_overflow.bin",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let data = std::fs::read(&path).unwrap();
-        if data.len() < 2 {
-            return;
-        }
-        let split = (data[0] as usize).min(data.len() - 1);
-        let avcc_box = &data[1..1 + split];
-        let sample_data = &data[1 + split..];
-
-        let cfg = match crate::nal::parse_avcc_config(avcc_box) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        let mut decoder = Decoder::new();
-        for nal in cfg.sps_nals.iter().chain(cfg.pps_nals.iter()) {
-            let _ = decoder.decode_nal(nal);
-        }
-        for nal in crate::nal::parse_avcc(sample_data, cfg.length_size) {
-            let _ = decoder.decode_nal(&nal);
-        }
-        let _ = decoder.flush();
+        fuzz_decode_avcc("decode_avcc_weight_denom_overflow.bin");
     }
 
-    /// Regression test for a fuzz-discovered panic.
-    ///
-    /// `attempt to subtract with overflow` at `mv_pred.rs:116` because
-    /// `ref_pic_safe` used `.len() - 1` on an empty ref list. Changed
-    /// `ref_pic_safe` to return `Option` and fixed all ~20 callers.
+    /// ref_pic_safe empty list underflow (mv_pred.rs)
     #[test]
     fn test_fuzz_regression_ref_pic_safe_empty_list() {
-        let path = format!(
-            "{}/testdata/fuzz_regressions/decode_annex_b_ref_pic_safe_empty.h264",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let data = std::fs::read(&path).unwrap();
-        let nals = parse_annex_b(&data);
-        let mut decoder = Decoder::new();
-        for nal in &nals {
-            let _ = decoder.decode_nal(nal);
-        }
-        let _ = decoder.flush();
+        fuzz_decode_annex_b("decode_annex_b_ref_pic_safe_empty.h264");
     }
 
-    /// Regression test for a fuzz-discovered panic.
-    ///
-    /// `index out of bounds: the len is 0 but the index is 0` at
-    /// `slice_context.rs:313` because temporal direct mode accessed
-    /// `ref_pic_list_l1[0]` on an empty L1 list.
+    /// Temporal direct mode empty L1 list (slice_context.rs)
     #[test]
     fn test_fuzz_regression_temporal_direct_empty_l1() {
-        let path = format!(
-            "{}/testdata/fuzz_regressions/decode_avcc_temporal_direct_empty_l1.bin",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let data = std::fs::read(&path).unwrap();
-        if data.len() < 2 {
-            return;
-        }
-        let split = (data[0] as usize).min(data.len() - 1);
-        let avcc_box = &data[1..1 + split];
-        let sample_data = &data[1 + split..];
-        let cfg = match crate::nal::parse_avcc_config(avcc_box) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        let mut decoder = Decoder::new();
-        for nal in cfg.sps_nals.iter().chain(cfg.pps_nals.iter()) {
-            let _ = decoder.decode_nal(nal);
-        }
-        for nal in crate::nal::parse_avcc(sample_data, cfg.length_size) {
-            let _ = decoder.decode_nal(&nal);
-        }
-        let _ = decoder.flush();
+        fuzz_decode_avcc("decode_avcc_temporal_direct_empty_l1.bin");
     }
 }
