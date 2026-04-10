@@ -88,13 +88,17 @@ pub fn parse_residual_block_cavlc(
     // Place remaining coefficients toward DC, parsing run_before for each
     #[allow(clippy::needless_range_loop)]
     for i in 1..tc {
-        if zeros_left > 0 {
+        let step = if zeros_left > 0 {
             let rb = parse_run_before(reader, zeros_left as u8)? as i32;
             zeros_left -= rb;
-            pos -= 1 + rb as usize;
+            1 + rb as usize
         } else {
-            pos -= 1;
+            1
+        };
+        if step > pos {
+            return Err("CAVLC coefficient position underflow");
         }
+        pos -= step;
         coeffs[pos] = levels[i];
     }
 
