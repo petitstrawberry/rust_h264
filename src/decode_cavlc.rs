@@ -1389,8 +1389,13 @@ impl SliceContext<'_> {
 
             // Motion compensate and add residual for each sub-partition
             for sub_part in &sub_parts {
-                let ref_pic =
-                    &sp.ref_pic_list[(sub_part.ref_idx as usize).min(sp.ref_pic_list.len() - 1)];
+                let ref_pic = sp
+                    .ref_pic_list
+                    .get(sub_part.ref_idx as usize)
+                    .or_else(|| sp.ref_pic_list.last())
+                    .ok_or(DecodeError::InvalidSyntax(
+                        "P sub-partition references empty ref_pic_list",
+                    ))?;
                 let mut luma_pred = [0u8; 256];
                 inter_pred::luma_mc(
                     ref_pic,
@@ -1517,8 +1522,13 @@ impl SliceContext<'_> {
                         if cw == 0 || ch == 0 {
                             continue;
                         }
-                        let part_ref_pic = &sp.ref_pic_list
-                            [(sub_part.ref_idx as usize).min(sp.ref_pic_list.len() - 1)];
+                        let part_ref_pic = sp
+                            .ref_pic_list
+                            .get(sub_part.ref_idx as usize)
+                            .or_else(|| sp.ref_pic_list.last())
+                            .ok_or(DecodeError::InvalidSyntax(
+                                "P sub-partition chroma references empty ref_pic_list",
+                            ))?;
                         let chroma_ref = if scale_idx == 4 {
                             &part_ref_pic.u
                         } else {

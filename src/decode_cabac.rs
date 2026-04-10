@@ -938,8 +938,13 @@ impl SliceContext<'_> {
                                 }
                             }
                             // MC
-                            let ref_pic =
-                                &sp.ref_pic_list[(ref_idx as usize).min(sp.ref_pic_list.len() - 1)];
+                            let ref_pic = sp
+                                .ref_pic_list
+                                .get(ref_idx as usize)
+                                .or_else(|| sp.ref_pic_list.last())
+                                .ok_or(DecodeError::InvalidSyntax(
+                                    "P-slice references empty ref_pic_list",
+                                ))?;
                             let mut luma_pred = [0u8; 256]; // stack: max 16x16
                             inter_pred::luma_mc(
                                 ref_pic,
@@ -969,8 +974,13 @@ impl SliceContext<'_> {
                     let cy = mb_y / 2;
                     for smb in 0..4 {
                         let (sy, sx) = sub_mb_origins[smb];
-                        let ref_pic = &sp.ref_pic_list
-                            [(sub_ref[smb] as usize).min(sp.ref_pic_list.len() - 1)];
+                        let ref_pic = sp
+                            .ref_pic_list
+                            .get(sub_ref[smb] as usize)
+                            .or_else(|| sp.ref_pic_list.last())
+                            .ok_or(DecodeError::InvalidSyntax(
+                                "P_8x8 references empty ref_pic_list",
+                            ))?;
                         let sub_parts: &[(usize, usize, usize, usize)] = match sub_mb_types[smb] {
                             0 => &[(0, 0, 8, 8)],
                             1 => &[(0, 0, 8, 4), (0, 4, 8, 4)],
@@ -1131,8 +1141,13 @@ impl SliceContext<'_> {
                         }
 
                         // MC
-                        let ref_pic =
-                            &sp.ref_pic_list[(part_ref[p] as usize).min(sp.ref_pic_list.len() - 1)];
+                        let ref_pic = sp
+                            .ref_pic_list
+                            .get(part_ref[p] as usize)
+                            .or_else(|| sp.ref_pic_list.last())
+                            .ok_or(DecodeError::InvalidSyntax(
+                                "P 16x8/8x16 references empty ref_pic_list",
+                            ))?;
                         let mut luma_pred = [0u8; 256]; // stack: max 16x16
                         inter_pred::luma_mc(
                             ref_pic,

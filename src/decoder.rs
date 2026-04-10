@@ -2093,4 +2093,34 @@ mod tests {
         assert_eq!(ordered_frames.len(), frames.len(), "frame count mismatch");
         assert_eq!(ordered_yuv, manual_yuv, "OrderedDecoder output differs from manual sort");
     }
+
+    /// Regression test for a fuzz-discovered panic.
+    ///
+    /// libFuzzer found this input on first run of the `decode_annex_b` target:
+    /// it triggered an "attempt to subtract with overflow" panic at
+    /// `decode_cabac.rs:1135` because a P-slice referenced an empty
+    /// `ref_pic_list` (no reference frame had been decoded for the slice).
+    /// The unchecked `sp.ref_pic_list.len() - 1` underflowed.
+    ///
+    /// Fix: replaced the `.min(.len() - 1)` pattern with a checked
+    /// `.get().or_else(.last()).ok_or(InvalidSyntax)` at all five sites in
+    /// `decode_cabac.rs` and `decode_cavlc.rs`. The decoder now returns
+    /// `DecodeError::InvalidSyntax` instead of panicking.
+    #[test]
+    fn test_fuzz_regression_empty_ref_list_no_panic() {
+        let path = format!(
+            "{}/testdata/fuzz_regressions/decode_annex_b_subtract_overflow.h264",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let data = std::fs::read(&path).unwrap();
+        let nals = parse_annex_b(&data);
+        let mut decoder = Decoder::new();
+        // The goal is just to verify no panic. The decoder may return Ok or
+        // Err on individual NALs — both are fine, as long as it doesn't
+        // crash the process.
+        for nal in &nals {
+            let _ = decoder.decode_nal(nal);
+        }
+        let _ = decoder.flush();
+    }
 }
