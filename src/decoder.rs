@@ -2184,4 +2184,10 @@ mod tests {
     fn test_fuzz_regression_temporal_direct_empty_l1() {
         fuzz_decode_avcc("decode_avcc_temporal_direct_empty_l1.bin");
     }
+
+    /// RPLM pic_num modular arithmetic underflow (dpb.rs)
+    #[test]
+    fn test_fuzz_regression_rplm_pic_num_underflow() {
+        fuzz_decode_annex_b("decode_annex_b_rplm_pic_num_underflow.h264");
+    }
 }

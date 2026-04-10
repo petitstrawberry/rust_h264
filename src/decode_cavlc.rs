@@ -1069,7 +1069,8 @@ impl SliceContext<'_> {
                         } else {
                             (sp.ref_pic_list_l1, sub_part.ref_idx_l1, sub_part.mv_l1)
                         };
-                        let ref_pic = &ref_list[ref_idx as usize];
+                        let ref_pic = ref_pic_safe(ref_list, ref_idx)
+                            .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
                         let cr = if scale_idx == 4 {
                             &ref_pic.u
                         } else {

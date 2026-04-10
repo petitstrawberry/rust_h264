@@ -247,16 +247,19 @@ impl Dpb {
                 continue; // idc=3 terminates the loop (handled by caller)
             }
             let abs_diff = val + 1;
+            // Spec 8.2.4.3.1: modular arithmetic on pic_num. Use wrapping
+            // ops to handle malformed streams where abs_diff exceeds the
+            // valid range without panicking.
             let pic_num = if idc == 0 {
                 if pred_pic_num >= abs_diff {
                     pred_pic_num - abs_diff
                 } else {
-                    pred_pic_num + max_pic_num - abs_diff
+                    pred_pic_num.wrapping_add(max_pic_num).wrapping_sub(abs_diff)
                 }
             } else {
-                let sum = pred_pic_num + abs_diff;
+                let sum = pred_pic_num.wrapping_add(abs_diff);
                 if sum >= max_pic_num {
-                    sum - max_pic_num
+                    sum.wrapping_sub(max_pic_num)
                 } else {
                     sum
                 }
