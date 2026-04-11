@@ -423,7 +423,7 @@ impl Decoder {
             .compute_poc(sps, &header, nal.nal_unit_type, nal.nal_ref_idc);
 
         // Build reference picture lists
-        let max_pic_num = 1u32 << (sps.log2_max_frame_num_minus4 + 4);
+        let max_pic_num = 1u32 << (sps.log2_max_frame_num_minus4 + 4).min(31);
         let mut ref_pic_list = if is_p_slice {
             let mut refs = self.dpb.short_term_ref_list();
             // Pad ref list if shorter than num_ref_idx_l0_active (spec 8.2.4.2.1:
@@ -2302,5 +2302,11 @@ mod tests {
     #[test]
     fn test_fuzz_regression_crop_overrun() {
         fuzz_decode_avcc("decode_avcc_crop_overrun.bin");
+    }
+
+    /// max_pic_num shift overflow (decoder.rs:426)
+    #[test]
+    fn test_fuzz_regression_frame_num_shift_overflow() {
+        fuzz_decode_avcc("decode_avcc_frame_num_shift_overflow.bin");
     }
 }
