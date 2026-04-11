@@ -555,7 +555,9 @@ impl Decoder {
         // For continuation slices (first_mb > 0), reuse the pending state
         // so per-MB data from earlier slices is visible for MV prediction,
         // CABAC neighbor contexts, and deblocking.
-        let is_continuation = header.first_mb_in_slice > 0 && self.pending.is_some();
+        let is_continuation = header.first_mb_in_slice > 0
+            && self.pending.is_some()
+            && self.pending.as_ref().unwrap().mb_slice_id.len() == total_mbs;
         let ps = if is_continuation {
             self.pending.take().unwrap()
         } else {
@@ -2314,5 +2316,11 @@ mod tests {
     #[test]
     fn test_fuzz_regression_deblock_mul_overflow() {
         fuzz_decode_avcc("decode_avcc_deblock_mul_overflow.bin");
+    }
+
+    /// Continuation slice with SPS dimension mismatch (decoder.rs:763)
+    #[test]
+    fn test_fuzz_regression_continuation_mismatch() {
+        fuzz_decode_avcc("decode_avcc_continuation_mismatch.bin");
     }
 }
