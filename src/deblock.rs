@@ -538,6 +538,10 @@ fn filter_edge_v_inner(
     for i in 0..count {
         let row = y + i;
         let idx_q0 = row * stride + x;
+        // Guard against frame buffer overrun from malformed streams
+        if x < 3 || idx_q0 + 3 >= plane.len() {
+            continue;
+        }
         let idx_p0 = idx_q0 - 1;
 
         let p0 = plane[idx_p0] as i32;
@@ -641,6 +645,10 @@ fn filter_edge_h_inner(
     for i in 0..count {
         let col = x + i;
         let idx_q0 = y * stride + col;
+        // Guard against frame buffer overrun from malformed streams
+        if y < 3 || idx_q0 + 3 * stride >= plane.len() {
+            continue;
+        }
         let idx_p0 = idx_q0 - stride;
 
         let p0 = plane[idx_p0] as i32;

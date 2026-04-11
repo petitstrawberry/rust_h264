@@ -2258,4 +2258,10 @@ mod tests {
     fn test_fuzz_regression_chroma_mc_ref_plane_overrun() {
         fuzz_decode_annex_b("chroma_mc_ref_plane_overrun.bin");
     }
+
+    /// Deblock filter frame buffer overrun (deblock.rs:543)
+    #[test]
+    fn test_fuzz_regression_deblock_frame_overrun() {
+        fuzz_decode_avcc("decode_avcc_deblock_overrun.bin");
+    }
 }
