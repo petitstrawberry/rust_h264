@@ -2214,4 +2214,10 @@ mod tests {
     fn test_fuzz_regression_sps_crop_underflow() {
         fuzz_decode_avcc("decode_avcc_sps_crop_underflow.bin");
     }
+
+    /// CABAC I_PCM frame buffer index out of bounds (decode_cabac.rs:2934)
+    #[test]
+    fn test_fuzz_regression_cabac_ipcm_frame_overrun() {
+        fuzz_decode_annex_b("bug15_cabac_ipcm_frame_overrun.bin");
+    }
 }
