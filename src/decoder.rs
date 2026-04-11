@@ -2329,4 +2329,10 @@ mod tests {
     fn test_fuzz_regression_scaling_list_overflow() {
         fuzz_decode_avcc("decode_avcc_scaling_list_overflow.bin");
     }
+
+    /// Dequant DC multiply overflow (residual.rs:150)
+    #[test]
+    fn test_fuzz_regression_dequant_dc_mul_overflow() {
+        fuzz_decode_avcc("decode_avcc_dequant_dc_mul_overflow.bin");
+    }
 }

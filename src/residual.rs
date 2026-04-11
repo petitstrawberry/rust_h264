@@ -147,7 +147,7 @@ pub fn dequant_luma_dc_i16x16(dc: &mut [i32; 16], qp: i32, scale_dc: u8) {
     } else {
         let round = 1 << (5 - qp_per);
         for d in dc.iter_mut() {
-            *d = (*d * v + round) >> (6 - qp_per);
+            *d = (d.wrapping_mul(v).wrapping_add(round)) >> (6 - qp_per);
         }
     }
 }
@@ -166,7 +166,7 @@ pub fn dequant_chroma_dc(dc: &mut [i32; 4], qp: i32, scale_dc: u8) {
     } else {
         let round = 1 << (4 - qp_per);
         for d in dc.iter_mut() {
-            *d = (*d * v + round) >> (5 - qp_per);
+            *d = (d.wrapping_mul(v).wrapping_add(round)) >> (5 - qp_per);
         }
     }
 }
