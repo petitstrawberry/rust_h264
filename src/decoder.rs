@@ -2252,4 +2252,10 @@ mod tests {
     fn test_fuzz_regression_sps_width_overflow() {
         fuzz_decode_avcc("decode_avcc_sps_width_overflow.bin");
     }
+
+    /// Chroma MC ref_plane index out of bounds (inter_pred.rs:813)
+    #[test]
+    fn test_fuzz_regression_chroma_mc_ref_plane_overrun() {
+        fuzz_decode_annex_b("chroma_mc_ref_plane_overrun.bin");
+    }
 }

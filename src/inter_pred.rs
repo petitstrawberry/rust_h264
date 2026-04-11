@@ -800,6 +800,12 @@ pub fn chroma_mc(
         let y_u = y_int as usize;
         let top_off = y_u * ref_width + x_u;
 
+        // Guard against ref_plane size mismatch (e.g. SPS change in malformed stream)
+        let last_idx = top_off + block_h * ref_width + block_w;
+        if last_idx >= ref_plane.len() {
+            return; // ref plane too small, skip MC
+        }
+
         #[cfg(target_arch = "aarch64")]
         {
             neon_chroma_bilinear_block(ref_plane, top_off, ref_width,
