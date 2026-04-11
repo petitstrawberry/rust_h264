@@ -2323,4 +2323,10 @@ mod tests {
     fn test_fuzz_regression_continuation_mismatch() {
         fuzz_decode_avcc("decode_avcc_continuation_mismatch.bin");
     }
+
+    /// SPS scaling list delta add overflow (sps.rs:396)
+    #[test]
+    fn test_fuzz_regression_scaling_list_overflow() {
+        fuzz_decode_avcc("decode_avcc_scaling_list_overflow.bin");
+    }
 }

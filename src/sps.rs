@@ -393,7 +393,7 @@ pub fn parse_scaling_list<const N: usize>(
     for entry in scaling_list.iter_mut().take(size) {
         if next_scale != 0 {
             let delta = r.read_se()?;
-            next_scale = (last_scale + delta + 256) % 256;
+            next_scale = (last_scale.wrapping_add(delta).wrapping_add(256)).rem_euclid(256);
         }
         let val = if next_scale == 0 {
             last_scale
