@@ -354,6 +354,9 @@ impl Decoder {
 
         // Crop frame from coded dimensions (MB-aligned) to display dimensions
         let coded_w = (ps.mb_width * 16) as usize;
+        if coded_w == 0 {
+            return None;
+        }
         let coded_h = ps.frame.y.len() / coded_w;
         let display_w = ps.frame.width as usize;
         let display_h = ps.frame.height as usize;
@@ -2219,5 +2222,17 @@ mod tests {
     #[test]
     fn test_fuzz_regression_cabac_ipcm_frame_overrun() {
         fuzz_decode_annex_b("bug15_cabac_ipcm_frame_overrun.bin");
+    }
+
+    /// Divide by zero when coded width is zero (decoder.rs:357)
+    #[test]
+    fn test_fuzz_regression_divide_by_zero_coded_width() {
+        fuzz_decode_avcc("bug16_divide_by_zero_coded_width.bin");
+    }
+
+    /// CABAC I_PCM in P/B-slice frame buffer overrun (decode_cabac.rs:797)
+    #[test]
+    fn test_fuzz_regression_cabac_ipcm_pb_frame_overrun() {
+        fuzz_decode_annex_b("cabac_ipcm_pb_frame_overrun.bin");
     }
 }

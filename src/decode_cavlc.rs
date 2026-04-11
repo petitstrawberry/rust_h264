@@ -1877,7 +1877,11 @@ impl SliceContext<'_> {
             reader.align_to_byte();
             for r in 0..16 {
                 for c in 0..16 {
-                    self.frame.y[(mb_y + r) * self.stride + mb_x + c] = reader.read_bits(8)? as u8;
+                    let val = reader.read_bits(8)? as u8;
+                    let idx = (mb_y + r) * self.stride + mb_x + c;
+                    if idx < self.frame.y.len() {
+                        self.frame.y[idx] = val;
+                    }
                 }
             }
             let cw = (self.width / 2) as usize;
@@ -1885,12 +1889,20 @@ impl SliceContext<'_> {
             let cy = mb_y / 2;
             for r in 0..8 {
                 for c in 0..8 {
-                    self.frame.u[(cy + r) * cw + cx + c] = reader.read_bits(8)? as u8;
+                    let val = reader.read_bits(8)? as u8;
+                    let idx = (cy + r) * cw + cx + c;
+                    if idx < self.frame.u.len() {
+                        self.frame.u[idx] = val;
+                    }
                 }
             }
             for r in 0..8 {
                 for c in 0..8 {
-                    self.frame.v[(cy + r) * cw + cx + c] = reader.read_bits(8)? as u8;
+                    let val = reader.read_bits(8)? as u8;
+                    let idx = (cy + r) * cw + cx + c;
+                    if idx < self.frame.v.len() {
+                        self.frame.v[idx] = val;
+                    }
                 }
             }
             for blk in 0..16 {

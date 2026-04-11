@@ -781,11 +781,17 @@ impl SliceContext<'_> {
                 } else {
                     // I_PCM in P/B via CABAC
                     let pcm_pos = cr.pcm_byte_position();
+                    if pcm_pos + 384 > rbsp.len() {
+                        return Err(DecodeError::UnexpectedEof);
+                    }
                     let pcm_data = &rbsp[pcm_pos..];
                     let mut off = 0;
                     for r in 0..16 {
                         for c in 0..16 {
-                            self.frame.y[(mb_y + r) * self.stride + mb_x + c] = pcm_data[off];
+                            let idx = (mb_y + r) * self.stride + mb_x + c;
+                            if idx < self.frame.y.len() {
+                                self.frame.y[idx] = pcm_data[off];
+                            }
                             off += 1;
                         }
                     }
@@ -794,13 +800,19 @@ impl SliceContext<'_> {
                     let cy = mb_y / 2;
                     for r in 0..8 {
                         for c in 0..8 {
-                            self.frame.u[(cy + r) * cw + cx + c] = pcm_data[off];
+                            let idx = (cy + r) * cw + cx + c;
+                            if idx < self.frame.u.len() {
+                                self.frame.u[idx] = pcm_data[off];
+                            }
                             off += 1;
                         }
                     }
                     for r in 0..8 {
                         for c in 0..8 {
-                            self.frame.v[(cy + r) * cw + cx + c] = pcm_data[off];
+                            let idx = (cy + r) * cw + cx + c;
+                            if idx < self.frame.v.len() {
+                                self.frame.v[idx] = pcm_data[off];
+                            }
                             off += 1;
                         }
                     }
@@ -3630,11 +3642,17 @@ impl SliceContext<'_> {
         } else {
             // I_PCM via CABAC (mb_type == 25)
             let pcm_pos = cr.pcm_byte_position();
+            if pcm_pos + 384 > rbsp.len() {
+                return Err(DecodeError::UnexpectedEof);
+            }
             let pcm_data = &rbsp[pcm_pos..];
             let mut off = 0;
             for r in 0..16 {
                 for c in 0..16 {
-                    self.frame.y[(mb_y + r) * self.stride + mb_x + c] = pcm_data[off];
+                    let idx = (mb_y + r) * self.stride + mb_x + c;
+                    if idx < self.frame.y.len() {
+                        self.frame.y[idx] = pcm_data[off];
+                    }
                     off += 1;
                 }
             }
@@ -3643,13 +3661,19 @@ impl SliceContext<'_> {
             let cy = mb_y / 2;
             for r in 0..8 {
                 for c in 0..8 {
-                    self.frame.u[(cy + r) * cw + cx + c] = pcm_data[off];
+                    let idx = (cy + r) * cw + cx + c;
+                    if idx < self.frame.u.len() {
+                        self.frame.u[idx] = pcm_data[off];
+                    }
                     off += 1;
                 }
             }
             for r in 0..8 {
                 for c in 0..8 {
-                    self.frame.v[(cy + r) * cw + cx + c] = pcm_data[off];
+                    let idx = (cy + r) * cw + cx + c;
+                    if idx < self.frame.v.len() {
+                        self.frame.v[idx] = pcm_data[off];
+                    }
                     off += 1;
                 }
             }
