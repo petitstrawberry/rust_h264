@@ -2270,4 +2270,10 @@ mod tests {
     fn test_fuzz_regression_cabac_reinit_overrun() {
         fuzz_decode_annex_b("cabac_reinit_overrun.bin");
     }
+
+    /// CAVLC B sub_mb_type table overrun (decode_cavlc.rs:448)
+    #[test]
+    fn test_fuzz_regression_cavlc_b_sub_mb_type_overrun() {
+        fuzz_decode_annex_b("cavlc_b_sub_mb_type_overrun.bin");
+    }
 }

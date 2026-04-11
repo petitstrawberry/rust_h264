@@ -429,7 +429,11 @@ impl SliceContext<'_> {
                     let sub_mb_origins = [(0, 0), (0, 8), (8, 0), (8, 8)];
                     let mut sub_mb_types = [0u32; 4];
                     for smt in &mut sub_mb_types {
-                        *smt = reader.read_ue()?;
+                        let v = reader.read_ue()?;
+                        if v > 12 {
+                            return Err(DecodeError::InvalidSyntax("B sub_mb_type out of range"));
+                        }
+                        *smt = v;
                     }
                     if sub_mb_types
                         .iter()
