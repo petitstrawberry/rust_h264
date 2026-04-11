@@ -121,7 +121,7 @@ impl Sps {
         } else {
             0
         };
-        (self.pic_width_in_mbs_minus1 + 1) * 16 - crop_x
+        ((self.pic_width_in_mbs_minus1 + 1) * 16).saturating_sub(crop_x)
     }
 
     /// Height in pixels (accounting for cropping).
@@ -131,10 +131,10 @@ impl Sps {
         } else {
             0
         };
-        (self.pic_height_in_map_units_minus1 + 1)
+        ((self.pic_height_in_map_units_minus1 + 1)
             * 16
-            * (if self.frame_mbs_only_flag { 1 } else { 2 })
-            - crop_y
+            * (if self.frame_mbs_only_flag { 1 } else { 2 }))
+        .saturating_sub(crop_y)
     }
 
     fn crop_unit_x(&self) -> u32 {

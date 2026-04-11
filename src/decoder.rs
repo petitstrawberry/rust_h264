@@ -2208,4 +2208,10 @@ mod tests {
     fn test_fuzz_regression_mc_output_overrun() {
         fuzz_decode_annex_b("decode_annex_b_mc_output_overrun.h264");
     }
+
+    /// SPS crop offset subtraction underflow (sps.rs)
+    #[test]
+    fn test_fuzz_regression_sps_crop_underflow() {
+        fuzz_decode_avcc("decode_avcc_sps_crop_underflow.bin");
+    }
 }
