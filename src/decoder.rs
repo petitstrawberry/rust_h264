@@ -743,6 +743,9 @@ impl Decoder {
         };
 
         let mut mb_idx = header.first_mb_in_slice as usize;
+        if mb_idx >= total_mbs {
+            return Err(DecodeError::InvalidSyntax("first_mb_in_slice out of range"));
+        }
         while mb_idx < total_mbs {
             // CAVLC end-of-slice: check before reading any new syntax elements.
             // Skip this check when counting down a skip run (no reads needed).
@@ -2275,5 +2278,11 @@ mod tests {
     #[test]
     fn test_fuzz_regression_cavlc_b_sub_mb_type_overrun() {
         fuzz_decode_annex_b("cavlc_b_sub_mb_type_overrun.bin");
+    }
+
+    /// first_mb_in_slice exceeds total MBs (decoder.rs:754)
+    #[test]
+    fn test_fuzz_regression_first_mb_overrun() {
+        fuzz_decode_avcc("decode_avcc_first_mb_overrun.bin");
     }
 }
