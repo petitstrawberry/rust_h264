@@ -213,10 +213,10 @@ impl<'a> CabacReader<'a> {
     /// Reinitialize the CABAC engine at a new byte position.
     /// Used after I_PCM raw data to resume CABAC decoding.
     pub fn reinit(&mut self, byte_offset: usize) {
-        self.low = (self.data[byte_offset] as u32) << 18;
-        self.low = self
-            .low
-            .wrapping_add((self.data[byte_offset + 1] as u32) << 10);
+        let b0 = if byte_offset < self.data.len() { self.data[byte_offset] } else { 0 };
+        let b1 = if byte_offset + 1 < self.data.len() { self.data[byte_offset + 1] } else { 0 };
+        self.low = (b0 as u32) << 18;
+        self.low = self.low.wrapping_add((b1 as u32) << 10);
         self.low = self.low.wrapping_add(1 << 9);
         self.range = 0x1FE;
         self.pos = byte_offset + 2;

@@ -2264,4 +2264,10 @@ mod tests {
     fn test_fuzz_regression_deblock_frame_overrun() {
         fuzz_decode_avcc("decode_avcc_deblock_overrun.bin");
     }
+
+    /// CABAC reinit index out of bounds (cabac.rs:219)
+    #[test]
+    fn test_fuzz_regression_cabac_reinit_overrun() {
+        fuzz_decode_annex_b("cabac_reinit_overrun.bin");
+    }
 }
