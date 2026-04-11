@@ -36,8 +36,9 @@ impl BitstreamReader {
     /// out-of-bounds reads. Call `bits_remaining` to check before bulk reads.
     #[inline(always)]
     pub fn read_bit(&mut self) -> Result<u8, &'static str> {
-        // Safety: padding guarantees data[byte_offset] is in bounds as long as
-        // we haven't read more than data_len + PADDING bytes.
+        if self.byte_offset >= self.data.len() {
+            return Err("end of bitstream");
+        }
         let bit = (self.data[self.byte_offset] >> (7 - self.bit_offset)) & 1;
         self.bit_offset += 1;
         if self.bit_offset == 8 {
@@ -249,5 +250,18 @@ mod tests {
         assert_eq!(r.bits_remaining(), 0);
         // Reading into padding returns 0 bits without panic
         assert_eq!(r.read_bits(8).unwrap(), 0);
+    }
+
+    /// Fuzz regression: reading far past the buffer must return Err, not panic.
+    #[test]
+    fn test_read_past_buffer_returns_err() {
+        let data = [0xAB; 4]; // 4 bytes = 32 bits
+        let mut r = BitstreamReader::new(&data);
+        // Read the actual data + padding (128 bytes = 1024 bits)
+        for _ in 0..(4 + 128) * 8 {
+            let _ = r.read_bit(); // may be Ok or Err
+        }
+        // Now we're past the padded buffer — must return Err, not panic
+        assert!(r.read_bit().is_err());
     }
 }
