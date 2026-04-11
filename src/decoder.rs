@@ -361,6 +361,12 @@ impl Decoder {
         let display_w = ps.frame.width as usize;
         let display_h = ps.frame.height as usize;
         if coded_w != display_w || coded_h != display_h {
+            // Ensure display dimensions don't exceed coded dimensions or frame buffer
+            if display_w > coded_w || display_h > coded_h
+                || coded_w * coded_h > ps.frame.y.len()
+            {
+                return None;
+            }
             // Luma: copy display_w pixels per row from coded_w-stride buffer
             let mut y = vec![0u8; display_w * display_h];
             for r in 0..display_h {
@@ -2290,5 +2296,11 @@ mod tests {
     #[test]
     fn test_fuzz_regression_poc_shift_overflow() {
         fuzz_decode_avcc("decode_avcc_poc_shift_overflow.bin");
+    }
+
+    /// Frame crop slice overrun (decoder.rs:368)
+    #[test]
+    fn test_fuzz_regression_crop_overrun() {
+        fuzz_decode_avcc("decode_avcc_crop_overrun.bin");
     }
 }
