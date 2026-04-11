@@ -152,7 +152,7 @@ pub fn filter_frame_params(
 
             let qp_q = mb_q.qp_y;
             let qp_p = mb_p.qp_y;
-            let qp_avg = (qp_p + qp_q + 1) >> 1;
+            let qp_avg = (qp_p.wrapping_add(qp_q).wrapping_add(1)) >> 1;
             let index_a = (qp_avg + filter_offset_a).clamp(0, 51) as usize;
             let index_b = (qp_avg + filter_offset_b).clamp(0, 51) as usize;
             let alpha = ALPHA_TABLE[index_a];
@@ -263,7 +263,7 @@ pub fn filter_frame_params(
 
             let qp_q = mb_q.qp_y;
             let qp_p = mb_p.qp_y;
-            let qp_avg = (qp_p + qp_q + 1) >> 1;
+            let qp_avg = (qp_p.wrapping_add(qp_q).wrapping_add(1)) >> 1;
             let index_a = (qp_avg + filter_offset_a).clamp(0, 51) as usize;
             let index_b = (qp_avg + filter_offset_b).clamp(0, 51) as usize;
             let alpha = ALPHA_TABLE[index_a];

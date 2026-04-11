@@ -2196,4 +2196,10 @@ mod tests {
     fn test_fuzz_regression_dequant_mul_overflow() {
         fuzz_decode_avcc("decode_avcc_dequant_mul_overflow.bin");
     }
+
+    /// Deblock QP average add overflow (deblock.rs)
+    #[test]
+    fn test_fuzz_regression_deblock_qp_overflow() {
+        fuzz_decode_avcc("decode_avcc_deblock_qp_overflow.bin");
+    }
 }
