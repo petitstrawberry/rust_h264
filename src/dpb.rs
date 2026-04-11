@@ -333,14 +333,14 @@ impl Dpb {
         let poc_msb = if poc_lsb < self.prev_poc_lsb
             && (self.prev_poc_lsb - poc_lsb) >= max_poc_lsb / 2
         {
-            self.prev_poc_msb + max_poc_lsb as i32
+            self.prev_poc_msb.wrapping_add(max_poc_lsb as i32)
         } else if poc_lsb > self.prev_poc_lsb && (poc_lsb - self.prev_poc_lsb) > max_poc_lsb / 2 {
-            self.prev_poc_msb - max_poc_lsb as i32
+            self.prev_poc_msb.wrapping_sub(max_poc_lsb as i32)
         } else {
             self.prev_poc_msb
         };
 
-        let poc = poc_msb + poc_lsb as i32;
+        let poc = poc_msb.wrapping_add(poc_lsb as i32);
 
         if nal_ref_idc > 0 {
             self.prev_poc_msb = poc_msb;

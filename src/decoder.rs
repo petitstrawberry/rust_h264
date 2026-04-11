@@ -2335,4 +2335,10 @@ mod tests {
     fn test_fuzz_regression_dequant_dc_mul_overflow() {
         fuzz_decode_avcc("decode_avcc_dequant_dc_mul_overflow.bin");
     }
+
+    /// POC MSB subtract overflow (dpb.rs:338)
+    #[test]
+    fn test_fuzz_regression_poc_msb_sub_overflow() {
+        fuzz_decode_avcc("decode_avcc_poc_msb_sub_overflow.bin");
+    }
 }
