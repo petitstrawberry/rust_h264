@@ -326,7 +326,8 @@ impl Dpb {
             return 0;
         }
 
-        let max_poc_lsb = 1u32 << (sps.log2_max_pic_order_cnt_lsb_minus4 + 4);
+        let shift = (sps.log2_max_pic_order_cnt_lsb_minus4 + 4).min(31);
+        let max_poc_lsb = 1u32 << shift;
         let poc_lsb = header.pic_order_cnt_lsb;
 
         let poc_msb = if poc_lsb < self.prev_poc_lsb

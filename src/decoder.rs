@@ -2285,4 +2285,10 @@ mod tests {
     fn test_fuzz_regression_first_mb_overrun() {
         fuzz_decode_avcc("decode_avcc_first_mb_overrun.bin");
     }
+
+    /// POC LSB shift overflow (dpb.rs:329)
+    #[test]
+    fn test_fuzz_regression_poc_shift_overflow() {
+        fuzz_decode_avcc("decode_avcc_poc_shift_overflow.bin");
+    }
 }
