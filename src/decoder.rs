@@ -532,6 +532,11 @@ impl Decoder {
 
         let width = sps.width();
         let height = sps.height();
+        // Reject absurd dimensions that would cause allocation overflow.
+        // H.264 Level 6.2 max is 8192x4320; allow up to 16384x16384 for headroom.
+        if width == 0 || height == 0 || width > 16384 || height > 16384 {
+            return Err(DecodeError::InvalidSyntax("SPS dimensions out of range"));
+        }
         let mb_width = width.div_ceil(16);
         let mb_height = height.div_ceil(16);
         let coded_width = mb_width * 16;
@@ -2240,5 +2245,11 @@ mod tests {
     #[test]
     fn test_fuzz_regression_divide_by_zero_coded_width_2() {
         fuzz_decode_avcc("decode_avcc_divide_by_zero_2.bin");
+    }
+
+    /// SPS width() multiply overflow (sps.rs:124)
+    #[test]
+    fn test_fuzz_regression_sps_width_overflow() {
+        fuzz_decode_avcc("decode_avcc_sps_width_overflow.bin");
     }
 }

@@ -117,24 +117,32 @@ impl Sps {
     /// Width in pixels (accounting for cropping).
     pub fn width(&self) -> u32 {
         let crop_x = if self.frame_cropping_flag {
-            (self.frame_crop_left_offset + self.frame_crop_right_offset) * self.crop_unit_x()
+            self.frame_crop_left_offset
+                .saturating_add(self.frame_crop_right_offset)
+                .saturating_mul(self.crop_unit_x())
         } else {
             0
         };
-        ((self.pic_width_in_mbs_minus1 + 1) * 16).saturating_sub(crop_x)
+        self.pic_width_in_mbs_minus1
+            .saturating_add(1)
+            .saturating_mul(16)
+            .saturating_sub(crop_x)
     }
 
     /// Height in pixels (accounting for cropping).
     pub fn height(&self) -> u32 {
         let crop_y = if self.frame_cropping_flag {
-            (self.frame_crop_top_offset + self.frame_crop_bottom_offset) * self.crop_unit_y()
+            self.frame_crop_top_offset
+                .saturating_add(self.frame_crop_bottom_offset)
+                .saturating_mul(self.crop_unit_y())
         } else {
             0
         };
-        ((self.pic_height_in_map_units_minus1 + 1)
-            * 16
-            * (if self.frame_mbs_only_flag { 1 } else { 2 }))
-        .saturating_sub(crop_y)
+        self.pic_height_in_map_units_minus1
+            .saturating_add(1)
+            .saturating_mul(16)
+            .saturating_mul(if self.frame_mbs_only_flag { 1 } else { 2 })
+            .saturating_sub(crop_y)
     }
 
     fn crop_unit_x(&self) -> u32 {
