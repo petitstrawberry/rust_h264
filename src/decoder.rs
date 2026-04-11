@@ -2309,4 +2309,10 @@ mod tests {
     fn test_fuzz_regression_frame_num_shift_overflow() {
         fuzz_decode_avcc("decode_avcc_frame_num_shift_overflow.bin");
     }
+
+    /// Deblock multiply overflow (deblock.rs:113)
+    #[test]
+    fn test_fuzz_regression_deblock_mul_overflow() {
+        fuzz_decode_avcc("decode_avcc_deblock_mul_overflow.bin");
+    }
 }
