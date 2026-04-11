@@ -20,9 +20,12 @@ fn ref_luma(pic: &DecodedPicture, x: i32, y: i32) -> i32 {
 /// Fetch a chroma sample with boundary clipping.
 #[inline]
 fn ref_chroma(plane: &[u8], width: usize, height: usize, x: i32, y: i32) -> i32 {
+    if width == 0 || height == 0 { return 0; }
     let cx = x.clamp(0, width as i32 - 1) as usize;
     let cy = y.clamp(0, height as i32 - 1) as usize;
-    plane[cy * width + cx] as i32
+    let idx = cy * width + cx;
+    if idx >= plane.len() { return 0; }
+    plane[idx] as i32
 }
 
 #[inline]
@@ -341,6 +344,10 @@ pub fn luma_mc(
     block_h: usize,
     output: &mut [u8],
 ) {
+    // Guard against malformed block sizes that would overrun the output buffer
+    if block_w == 0 || block_h == 0 || block_w * block_h > output.len() {
+        return;
+    }
     let frac_x = dx.rem_euclid(4);
     let frac_y = dy.rem_euclid(4);
     // Integer part: arithmetic right shift gives floor division for negative values
@@ -733,6 +740,10 @@ pub fn chroma_mc(
     block_h: usize,
     output: &mut [u8],
 ) {
+    // Guard against malformed block sizes that would overrun the output buffer
+    if block_w == 0 || block_h == 0 || block_w * block_h > output.len() {
+        return;
+    }
     let frac_x = dx.rem_euclid(8);
     let frac_y = dy.rem_euclid(8);
     let x_int = x + (dx >> 3);
@@ -746,9 +757,11 @@ pub fn chroma_mc(
             && y_int >= 0
             && x_int + block_w as i32 <= w
             && y_int + block_h as i32 <= h
+            && (y_int as usize + block_h) * ref_width <= ref_plane.len()
         {
             let mut src_off = y_int as usize * ref_width + x_int as usize;
             for row in 0..block_h {
+                if src_off + block_w > ref_plane.len() { return; }
                 output[row * block_w..(row + 1) * block_w]
                     .copy_from_slice(&ref_plane[src_off..src_off + block_w]);
                 src_off += ref_width;

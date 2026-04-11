@@ -2202,4 +2202,10 @@ mod tests {
     fn test_fuzz_regression_deblock_qp_overflow() {
         fuzz_decode_avcc("decode_avcc_deblock_qp_overflow.bin");
     }
+
+    /// MC output buffer overrun from malformed block size (inter_pred.rs)
+    #[test]
+    fn test_fuzz_regression_mc_output_overrun() {
+        fuzz_decode_annex_b("decode_annex_b_mc_output_overrun.h264");
+    }
 }
