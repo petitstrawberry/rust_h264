@@ -2235,4 +2235,10 @@ mod tests {
     fn test_fuzz_regression_cabac_ipcm_pb_frame_overrun() {
         fuzz_decode_annex_b("cabac_ipcm_pb_frame_overrun.bin");
     }
+
+    /// Divide by zero when coded width is zero — variant 2 (decoder.rs:357)
+    #[test]
+    fn test_fuzz_regression_divide_by_zero_coded_width_2() {
+        fuzz_decode_avcc("decode_avcc_divide_by_zero_2.bin");
+    }
 }
