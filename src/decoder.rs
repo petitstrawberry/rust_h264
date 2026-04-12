@@ -2347,4 +2347,10 @@ mod tests {
     fn test_fuzz_regression_idct8x8_sub_overflow() {
         fuzz_decode_annex_b("idct8x8_sub_overflow.bin");
     }
+
+    /// 4x4 IDCT add overflow (residual.rs:77)
+    #[test]
+    fn test_fuzz_regression_idct4x4_add_overflow() {
+        fuzz_decode_avcc("decode_avcc_idct4x4_add_overflow.bin");
+    }
 }

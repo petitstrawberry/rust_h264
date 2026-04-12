@@ -64,33 +64,36 @@ pub fn inverse_hadamard_2x2(dc: &mut [i32; 4]) {
 /// Operates in-place on 16 coefficients in raster order.
 /// Horizontal pass (rows) first, then vertical pass (columns), per spec 8.5.12.1.
 pub fn inverse_dct_4x4(block: &mut [i32; 16]) {
-    // Rounding bias before butterfly (spec 8.5.12.1)
-    block[0] += 32;
+    // Use wrapping arithmetic — malformed coefficients can cause overflow
+    use std::num::Wrapping as W;
 
-    // First pass: rows (matches column-major first pass since our data is row-major)
+    block[0] = block[0].wrapping_add(32);
+
+    // First pass: rows
     for i in 0..4 {
-        let z0 = block[i * 4] + block[i * 4 + 2];
-        let z1 = block[i * 4] - block[i * 4 + 2];
-        let z2 = (block[i * 4 + 1] >> 1) - block[i * 4 + 3];
-        let z3 = block[i * 4 + 1] + (block[i * 4 + 3] >> 1);
+        let s = i * 4;
+        let z0 = (W(block[s]) + W(block[s + 2])).0;
+        let z1 = (W(block[s]) - W(block[s + 2])).0;
+        let z2 = (W(block[s + 1] >> 1) - W(block[s + 3])).0;
+        let z3 = (W(block[s + 1]) + W(block[s + 3] >> 1)).0;
 
-        block[i * 4] = z0 + z3;
-        block[i * 4 + 1] = z1 + z2;
-        block[i * 4 + 2] = z1 - z2;
-        block[i * 4 + 3] = z0 - z3;
+        block[s]     = (W(z0) + W(z3)).0;
+        block[s + 1] = (W(z1) + W(z2)).0;
+        block[s + 2] = (W(z1) - W(z2)).0;
+        block[s + 3] = (W(z0) - W(z3)).0;
     }
 
     // Second pass: columns, with >> 6 normalization
     for j in 0..4 {
-        let z0 = block[j] + block[8 + j];
-        let z1 = block[j] - block[8 + j];
-        let z2 = (block[4 + j] >> 1) - block[12 + j];
-        let z3 = block[4 + j] + (block[12 + j] >> 1);
+        let z0 = (W(block[j]) + W(block[8 + j])).0;
+        let z1 = (W(block[j]) - W(block[8 + j])).0;
+        let z2 = (W(block[4 + j] >> 1) - W(block[12 + j])).0;
+        let z3 = (W(block[4 + j]) + W(block[12 + j] >> 1)).0;
 
-        block[j] = (z0 + z3) >> 6;
-        block[4 + j] = (z1 + z2) >> 6;
-        block[8 + j] = (z1 - z2) >> 6;
-        block[12 + j] = (z0 - z3) >> 6;
+        block[j]      = (W(z0) + W(z3)).0 >> 6;
+        block[4 + j]  = (W(z1) + W(z2)).0 >> 6;
+        block[8 + j]  = (W(z1) - W(z2)).0 >> 6;
+        block[12 + j] = (W(z0) - W(z3)).0 >> 6;
     }
 }
 
