@@ -2353,4 +2353,10 @@ mod tests {
     fn test_fuzz_regression_idct4x4_add_overflow() {
         fuzz_decode_avcc("decode_avcc_idct4x4_add_overflow.bin");
     }
+
+    /// POC type 1 cycle multiply overflow (dpb.rs:378)
+    #[test]
+    fn test_fuzz_regression_poc_type1_mul_overflow() {
+        fuzz_decode_avcc("decode_avcc_poc_type1_mul_overflow.bin");
+    }
 }
