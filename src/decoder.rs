@@ -2341,4 +2341,10 @@ mod tests {
     fn test_fuzz_regression_poc_msb_sub_overflow() {
         fuzz_decode_avcc("decode_avcc_poc_msb_sub_overflow.bin");
     }
+
+    /// 8x8 IDCT subtract overflow (residual.rs:272)
+    #[test]
+    fn test_fuzz_regression_idct8x8_sub_overflow() {
+        fuzz_decode_annex_b("idct8x8_sub_overflow.bin");
+    }
 }

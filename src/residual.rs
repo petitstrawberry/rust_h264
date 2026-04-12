@@ -253,72 +253,73 @@ pub fn dequant_8x8(block: &mut [i32; 64], qp: i32, scale: &[u8; 64]) {
 /// Operates in-place on 64 coefficients in raster order (row-major, 8 per row).
 /// Row pass first (within each row), then column pass with >> 6 normalization.
 pub fn inverse_dct_8x8(block: &mut [i32; 64]) {
-    block[0] += 32;
+    // Use wrapping arithmetic throughout — malformed coefficients can cause overflow
+    use std::num::Wrapping as W;
+
+    block[0] = block[0].wrapping_add(32);
 
     // First pass: rows
     for i in 0..8 {
         let s = i * 8;
-        let a0 = block[s] + block[s + 4];
-        let a2 = block[s] - block[s + 4];
-        let a4 = (block[s + 2] >> 1) - block[s + 6];
-        let a6 = (block[s + 6] >> 1) + block[s + 2];
-
-        let b0 = a0 + a6;
-        let b2 = a2 + a4;
-        let b4 = a2 - a4;
-        let b6 = a0 - a6;
-
-        let a1 = -block[s + 3] + block[s + 5] - block[s + 7] - (block[s + 7] >> 1);
-        let a3 = block[s + 1] + block[s + 7] - block[s + 3] - (block[s + 3] >> 1);
-        let a5 = -block[s + 1] + block[s + 7] + block[s + 5] + (block[s + 5] >> 1);
-        let a7 = block[s + 3] + block[s + 5] + block[s + 1] + (block[s + 1] >> 1);
-
-        let b1 = (a7 >> 2) + a1;
-        let b3 = a3 + (a5 >> 2);
-        let b5 = (a3 >> 2) - a5;
-        let b7 = a7 - (a1 >> 2);
-
-        block[s] = b0 + b7;
-        block[s + 1] = b2 + b5;
-        block[s + 2] = b4 + b3;
-        block[s + 3] = b6 + b1;
-        block[s + 4] = b6 - b1;
-        block[s + 5] = b4 - b3;
-        block[s + 6] = b2 - b5;
-        block[s + 7] = b0 - b7;
+        let (b0, b2, b4, b6, b1, b3, b5, b7) = idct8_butterfly(
+            block[s], block[s+1], block[s+2], block[s+3],
+            block[s+4], block[s+5], block[s+6], block[s+7],
+        );
+        block[s]     = (W(b0) + W(b7)).0;
+        block[s + 1] = (W(b2) + W(b5)).0;
+        block[s + 2] = (W(b4) + W(b3)).0;
+        block[s + 3] = (W(b6) + W(b1)).0;
+        block[s + 4] = (W(b6) - W(b1)).0;
+        block[s + 5] = (W(b4) - W(b3)).0;
+        block[s + 6] = (W(b2) - W(b5)).0;
+        block[s + 7] = (W(b0) - W(b7)).0;
     }
 
     // Second pass: columns, with >> 6 normalization
     for i in 0..8 {
-        let a0 = block[i] + block[i + 4 * 8];
-        let a2 = block[i] - block[i + 4 * 8];
-        let a4 = (block[i + 2 * 8] >> 1) - block[i + 6 * 8];
-        let a6 = (block[i + 6 * 8] >> 1) + block[i + 2 * 8];
-
-        let b0 = a0 + a6;
-        let b2 = a2 + a4;
-        let b4 = a2 - a4;
-        let b6 = a0 - a6;
-
-        let a1 = -block[i + 3 * 8] + block[i + 5 * 8] - block[i + 7 * 8] - (block[i + 7 * 8] >> 1);
-        let a3 = block[i + 8] + block[i + 7 * 8] - block[i + 3 * 8] - (block[i + 3 * 8] >> 1);
-        let a5 = -block[i + 8] + block[i + 7 * 8] + block[i + 5 * 8] + (block[i + 5 * 8] >> 1);
-        let a7 = block[i + 3 * 8] + block[i + 5 * 8] + block[i + 8] + (block[i + 8] >> 1);
-
-        let b1 = (a7 >> 2) + a1;
-        let b3 = a3 + (a5 >> 2);
-        let b5 = (a3 >> 2) - a5;
-        let b7 = a7 - (a1 >> 2);
-
-        block[i] = (b0 + b7) >> 6;
-        block[i + 8] = (b2 + b5) >> 6;
-        block[i + 2 * 8] = (b4 + b3) >> 6;
-        block[i + 3 * 8] = (b6 + b1) >> 6;
-        block[i + 4 * 8] = (b6 - b1) >> 6;
-        block[i + 5 * 8] = (b4 - b3) >> 6;
-        block[i + 6 * 8] = (b2 - b5) >> 6;
-        block[i + 7 * 8] = (b0 - b7) >> 6;
+        let (b0, b2, b4, b6, b1, b3, b5, b7) = idct8_butterfly(
+            block[i], block[i+8], block[i+16], block[i+24],
+            block[i+32], block[i+40], block[i+48], block[i+56],
+        );
+        block[i]      = (W(b0) + W(b7)).0 >> 6;
+        block[i + 8]  = (W(b2) + W(b5)).0 >> 6;
+        block[i + 16] = (W(b4) + W(b3)).0 >> 6;
+        block[i + 24] = (W(b6) + W(b1)).0 >> 6;
+        block[i + 32] = (W(b6) - W(b1)).0 >> 6;
+        block[i + 40] = (W(b4) - W(b3)).0 >> 6;
+        block[i + 48] = (W(b2) - W(b5)).0 >> 6;
+        block[i + 56] = (W(b0) - W(b7)).0 >> 6;
     }
+}
+
+/// 8x8 IDCT butterfly using wrapping arithmetic to avoid overflow panics.
+#[inline(always)]
+fn idct8_butterfly(x0: i32, x1: i32, x2: i32, x3: i32,
+                   x4: i32, x5: i32, x6: i32, x7: i32)
+    -> (i32, i32, i32, i32, i32, i32, i32, i32)
+{
+    use std::num::Wrapping as W;
+    let a0 = (W(x0) + W(x4)).0;
+    let a2 = (W(x0) - W(x4)).0;
+    let a4 = (W(x2 >> 1) - W(x6)).0;
+    let a6 = (W(x6 >> 1) + W(x2)).0;
+
+    let b0 = (W(a0) + W(a6)).0;
+    let b2 = (W(a2) + W(a4)).0;
+    let b4 = (W(a2) - W(a4)).0;
+    let b6 = (W(a0) - W(a6)).0;
+
+    let a1 = (W(0) - W(x3) + W(x5) - W(x7) - W(x7 >> 1)).0;
+    let a3 = (W(x1) + W(x7) - W(x3) - W(x3 >> 1)).0;
+    let a5 = (W(0) - W(x1) + W(x7) + W(x5) + W(x5 >> 1)).0;
+    let a7 = (W(x3) + W(x5) + W(x1) + W(x1 >> 1)).0;
+
+    let b1 = (W(a7 >> 2) + W(a1)).0;
+    let b3 = (W(a3) + W(a5 >> 2)).0;
+    let b5 = (W(a3 >> 2) - W(a5)).0;
+    let b7 = (W(a7) - W(a1 >> 2)).0;
+
+    (b0, b2, b4, b6, b1, b3, b5, b7)
 }
 
 /// Raster block index to (mb_row_offset, mb_col_offset) for luma 4x4 blocks.
