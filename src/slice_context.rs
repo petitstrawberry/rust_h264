@@ -64,6 +64,10 @@ pub(crate) struct SliceContext<'a> {
     // Geometry
     pub mb_width: u32,
 
+    // MBAFF state
+    pub mbaff: bool,
+    pub mb_field_decoding: &'a [bool],
+
     // Per-4x4-block coefficient counts (for CABAC CBF / CAVLC nC)
     pub nc_luma: &'a mut [u8],
     pub nc_cb: &'a mut [u8],
@@ -107,6 +111,71 @@ pub(crate) struct SliceContext<'a> {
 use crate::deblock::MbType;
 
 impl SliceContext<'_> {
+    /// Returns true if this MB is field-coded (MBAFF only).
+    #[inline]
+    pub(crate) fn is_field_mb(&self, mb_idx: usize) -> bool {
+        self.mbaff && self.mb_field_decoding[mb_idx / 2]
+    }
+
+    /// Compute the luma line stride for a given MB.
+    /// For field-coded MBs, the stride doubles (every other line).
+    #[inline]
+    pub(crate) fn luma_stride(&self, mb_idx: usize) -> usize {
+        if self.is_field_mb(mb_idx) {
+            self.stride * 2
+        } else {
+            self.stride
+        }
+    }
+
+    /// Compute the chroma line stride for a given MB.
+    #[inline]
+    pub(crate) fn chroma_stride(&self, mb_idx: usize) -> usize {
+        if self.is_field_mb(mb_idx) {
+            (self.width / 2) as usize * 2
+        } else {
+            (self.width / 2) as usize
+        }
+    }
+
+    /// Compute the luma base Y offset (byte offset of row 0) for a given MB.
+    /// For frame-coded: mb_y * width. For field MBs: accounts for interleaving.
+    #[inline]
+    pub(crate) fn luma_y_base(&self, mb_idx: usize, mb_y: usize) -> usize {
+        if !self.is_field_mb(mb_idx) {
+            mb_y * self.stride
+        } else {
+            let pair_addr = mb_idx / 2;
+            let pair_row = pair_addr / self.mb_width as usize;
+            let pair_y_pixel = pair_row * 32;
+            if mb_idx % 2 == 0 {
+                // Top field: even lines starting at pair_y_pixel
+                pair_y_pixel * self.stride
+            } else {
+                // Bottom field: odd lines starting at pair_y_pixel + 1
+                (pair_y_pixel + 1) * self.stride
+            }
+        }
+    }
+
+    /// Compute the chroma base Y offset for a given MB.
+    #[inline]
+    pub(crate) fn chroma_y_base(&self, mb_idx: usize, mb_y: usize) -> usize {
+        let cw = (self.width / 2) as usize;
+        if !self.is_field_mb(mb_idx) {
+            (mb_y / 2) * cw
+        } else {
+            let pair_addr = mb_idx / 2;
+            let pair_row = pair_addr / self.mb_width as usize;
+            let pair_cy = pair_row * 16; // chroma pair y (half of luma 32)
+            if mb_idx % 2 == 0 {
+                pair_cy * cw
+            } else {
+                (pair_cy + 1) * cw
+            }
+        }
+    }
+
     /// Check if a neighbor MB is available for intra prediction samples.
     /// When `constrained_intra_pred_flag` is set in a P/B slice, inter-predicted
     /// neighbors are treated as unavailable (spec 6.4.1).

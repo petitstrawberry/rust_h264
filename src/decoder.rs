@@ -699,6 +699,7 @@ impl Decoder {
         let mut mb_skip_run: i32 = -1; // -1 = not initialized for P slices
 
         let stride = coded_width as usize;
+        let mbaff = header.mbaff_frame_flag;
 
         // Macro to construct a SliceContext from the local variables.
         // Used at each call site that delegates to a SliceContext method.
@@ -733,6 +734,8 @@ impl Decoder {
                     this_slice_id,
                     prev_mb_qp,
                     last_qp_delta_nonzero,
+                    mbaff,
+                    mb_field_decoding: &_mb_field_decoding,
                 }
             };
         }
@@ -761,7 +764,6 @@ impl Decoder {
             cabac_init_idc: header.cabac_init_idc,
         };
 
-        let mbaff = header.mbaff_frame_flag;
         // In MBAFF, first_mb_in_slice is a pair address
         let mut mb_idx = if mbaff {
             (header.first_mb_in_slice as usize) * 2
