@@ -60,6 +60,12 @@ pub struct SliceHeader {
     pub cabac_init_idc: u32,
     /// Weighted prediction table (spec 7.3.3.2).
     pub weight_table: Option<PredWeightTable>,
+    /// True if current picture is a field picture (only when !frame_mbs_only_flag).
+    pub field_pic_flag: bool,
+    /// True if current field is the bottom field (only when field_pic_flag).
+    pub bottom_field_flag: bool,
+    /// MbaffFrameFlag = mb_adaptive_frame_field_flag && !field_pic_flag
+    pub mbaff_frame_flag: bool,
 }
 
 /// Weighted prediction parameters from pred_weight_table().
@@ -107,8 +113,16 @@ pub fn parse_slice_header(
     let frame_num_bits = sps.log2_max_frame_num_minus4 + 4;
     let frame_num = r.read_bits(frame_num_bits as u8)?;
 
-    // field_pic_flag / bottom_field_flag only if !frame_mbs_only — skip for now
-    // (our test file has frame_mbs_only_flag = true)
+    // field_pic_flag / bottom_field_flag (spec 7.3.3)
+    let mut field_pic_flag = false;
+    let mut bottom_field_flag = false;
+    if !sps.frame_mbs_only_flag {
+        field_pic_flag = r.read_bit()? != 0;
+        if field_pic_flag {
+            bottom_field_flag = r.read_bit()? != 0;
+        }
+    }
+    let mbaff_frame_flag = sps.mb_adaptive_frame_field_flag && !field_pic_flag;
 
     let mut idr_pic_id = None;
     if nal_unit_type == NalUnitType::SliceIdr {
@@ -125,12 +139,12 @@ pub fn parse_slice_header(
     if sps.pic_order_cnt_type == 0 {
         let poc_lsb_bits = sps.log2_max_pic_order_cnt_lsb_minus4 + 4;
         pic_order_cnt_lsb = r.read_bits(poc_lsb_bits as u8)?;
-        if pps.bottom_field_pic_order_in_frame_present_flag {
+        if pps.bottom_field_pic_order_in_frame_present_flag && !field_pic_flag {
             delta_pic_order_cnt_bottom = r.read_se()?;
         }
     } else if sps.pic_order_cnt_type == 1 && !sps.delta_pic_order_always_zero_flag {
         delta_pic_order_cnt[0] = r.read_se()?;
-        if pps.bottom_field_pic_order_in_frame_present_flag {
+        if pps.bottom_field_pic_order_in_frame_present_flag && !field_pic_flag {
             delta_pic_order_cnt[1] = r.read_se()?;
         }
     }
@@ -361,6 +375,9 @@ pub fn parse_slice_header(
         ref_list_mod_l1,
         cabac_init_idc,
         weight_table,
+        field_pic_flag,
+        bottom_field_flag,
+        mbaff_frame_flag,
     };
 
     Ok((header, r))

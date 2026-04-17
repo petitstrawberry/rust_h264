@@ -91,6 +91,10 @@ struct PictureState {
     chroma_qp_index_offset: i32,
     mb_width: u32,
     mb_height: u32,
+    /// Per-MB-pair field decoding flag (MBAFF only). Indexed by pair address.
+    mb_field_decoding: Vec<bool>,
+    /// True if this picture uses MBAFF (mb_adaptive_frame_field_flag && !field_pic_flag).
+    mbaff_frame_flag: bool,
 }
 
 /// Streaming H.264 decoder.
@@ -414,6 +418,9 @@ impl Decoder {
         {
             return Err(DecodeError::from("unsupported slice type"));
         }
+        if header.field_pic_flag {
+            return Err(DecodeError::Unsupported("field pictures not yet supported"));
+        }
         let is_p_slice = header.slice_type == SliceType::P;
         let is_b_slice = header.slice_type == SliceType::B;
 
@@ -606,6 +613,8 @@ impl Decoder {
                 chroma_qp_index_offset: pps.chroma_qp_index_offset,
                 mb_width,
                 mb_height,
+                mb_field_decoding: vec![false; (total_mbs + 1) / 2],
+                mbaff_frame_flag: header.mbaff_frame_flag,
             }
         };
 
@@ -648,6 +657,8 @@ impl Decoder {
             chroma_qp_index_offset: ps_chroma_qp_offset,
             mb_width: _ps_mb_width,
             mb_height: _ps_mb_height,
+            mb_field_decoding: _mb_field_decoding,
+            mbaff_frame_flag: _ps_mbaff,
         } = ps;
 
         // Increment slice ID for continuation slices so boundary checks work
@@ -872,6 +883,8 @@ impl Decoder {
             chroma_qp_index_offset: ps_chroma_qp_offset,
             mb_width,
             mb_height,
+            mb_field_decoding: _mb_field_decoding,
+            mbaff_frame_flag: header.mbaff_frame_flag,
         });
 
         Ok(())
