@@ -31,6 +31,31 @@ impl SliceContext<'_> {
     /// when the CABAC terminate bin signals end of slice.
     #[allow(clippy::needless_range_loop)]
     #[allow(clippy::too_many_arguments)]
+    /// Decode MBAFF mb_field_decoding_flag using CABAC contexts 70-72.
+    fn decode_mbaff_field_flag(
+        &mut self,
+        cr: &mut CabacReader,
+        st: &mut [u8; 1024],
+        mb_idx: usize,
+    ) {
+        let pair_addr = mb_idx / 2;
+        let pair_col = pair_addr % self.mb_width as usize;
+        let pair_row = pair_addr / self.mb_width as usize;
+        let cond_a = if pair_col > 0 {
+            self.mb_field_decoding[pair_addr - 1] as u16
+        } else {
+            0
+        };
+        let cond_b = if pair_row > 0 {
+            self.mb_field_decoding[pair_addr - self.mb_width as usize] as u16
+        } else {
+            0
+        };
+        let ctx_idx = 70 + cond_a + cond_b;
+        self.mb_field_decoding[pair_addr] =
+            cr.get_cabac(&mut st[ctx_idx as usize]) != 0;
+    }
+
     pub(crate) fn decode_cabac_mb(
         &mut self,
         cr: &mut CabacReader,
@@ -41,39 +66,37 @@ impl SliceContext<'_> {
         mb_y: usize,
         sp: &SliceParams,
     ) -> Result<CabacMbResult, DecodeError> {
-        // End-of-slice check via terminate (not for the first MB)
+        // End-of-slice terminate: for non-MBAFF, decoded for every non-first MB.
+        // For MBAFF, terminate is ONLY decoded at the END of bottom MBs (by the caller loop).
+        // The START terminate here is skipped entirely for MBAFF.
         let first_mb_addr = if self.mbaff {
             (sp.first_mb_in_slice as usize) * 2
         } else {
             sp.first_mb_in_slice as usize
         };
-        if mb_idx > first_mb_addr && cr.get_cabac_terminate() != 0 {
+        let should_check_terminate = if self.mbaff {
+            false // MBAFF terminate handled by caller (END of bottom MBs)
+        } else {
+            mb_idx > first_mb_addr
+        };
+        if should_check_terminate && cr.get_cabac_terminate() != 0 {
             return Ok(CabacMbResult::EndOfSlice);
         }
 
         // MBAFF: decode mb_field_decoding_flag (spec 7.3.4, contexts 70-72)
-        if self.mbaff {
-            let is_top = mb_idx % 2 == 0;
-            let top_was_skipped = !is_top && self.mb_skip[mb_idx - 1];
-            if is_top || top_was_skipped {
-                let pair_addr = mb_idx / 2;
-                let pair_col = pair_addr % self.mb_width as usize;
-                let pair_row = pair_addr / self.mb_width as usize;
-                let cond_a = if pair_col > 0 {
-                    self.mb_field_decoding[pair_addr - 1] as u16
-                } else {
-                    0
-                };
-                let cond_b = if pair_row > 0 {
-                    self.mb_field_decoding[pair_addr - self.mb_width as usize] as u16
-                } else {
-                    0
-                };
-                let ctx_idx = 70 + cond_a + cond_b;
-                self.mb_field_decoding[pair_addr] =
-                    cr.get_cabac(&mut st[ctx_idx as usize]) != 0;
+        // For I-slices: decoded for all top MBs.
+        // For P/B-slices: the ordering is skip-first, then field_flag if NOT skipped.
+        //   - Top MB: decode skip first. If skipped, immediately decode bottom skip.
+        //     Field_flag is decoded only when a non-skipped MB is found.
+        //   - Bottom MB (when top was skipped): skip first, then field_flag if not skipped.
+        // This matches FFmpeg/x264's CABAC encoding order.
+        if self.mbaff && !(sp.is_p_slice || sp.is_b_slice) {
+            // I-slice: field_flag for all top MBs (no skip flags exist)
+            if mb_idx % 2 == 0 {
+                self.decode_mbaff_field_flag(cr, st, mb_idx);
             }
         }
+        // For P/B slices, field_flag is handled inside the skip path below.
 
         // P/B-slice CABAC path
         if sp.is_p_slice || sp.is_b_slice {
@@ -90,6 +113,28 @@ impl SliceContext<'_> {
                 true
             };
             let is_skip = cr.decode_mb_skip(st, left_skip, top_skip, sp.is_b_slice);
+
+            // MBAFF: after skip flag, handle field_flag based on skip result
+            if self.mbaff {
+                let is_top = mb_idx % 2 == 0;
+                if is_top && is_skip {
+                    // Top MB is skipped. Check bottom skip immediately (FFmpeg pattern).
+                    // The bottom's skip_flag is decoded WITHOUT field_flag first.
+                    // Field_flag is only decoded if the bottom is NOT skipped.
+                    // Store this skip result for the current top MB.
+                    // The bottom will be handled in the next iteration.
+                    // NO field_flag decoded for fully-skipped pair.
+                } else if is_top && !is_skip {
+                    // Top MB is NOT skipped. Decode field_flag now before macroblock_layer.
+                    self.decode_mbaff_field_flag(cr, st, mb_idx);
+                } else if !is_top && self.mb_skip[mb_idx - 1] && !is_skip {
+                    // Bottom MB NOT skipped, but top was skipped.
+                    // Decode field_flag now.
+                    self.decode_mbaff_field_flag(cr, st, mb_idx);
+                }
+                // Bottom MB skipped (regardless of top): no field_flag needed.
+            }
+
             if is_skip {
                 self.mb_skip[mb_idx] = true;
                 if sp.is_p_slice {
@@ -164,6 +209,9 @@ impl SliceContext<'_> {
                             mb_idx - self.mb_width as usize + 1,
                             sp,
                         )
+                } else if mb_idx % 2 != 0 {
+                    // MBAFF bottom MBs: above-right is in the next pair (not yet decoded)
+                    false
                 } else {
                     self.above_mb(mb_idx)
                         .and_then(|above| {
@@ -3200,6 +3248,11 @@ impl SliceContext<'_> {
                     && (mb_idx % self.mb_width as usize) + 1 < self.mb_width as usize
                     && self.mb_slice_id[mb_idx - self.mb_width as usize + 1] == self.this_slice_id
             } else {
+                // For MBAFF bottom MBs, the above-right is in the next pair which
+                // hasn't been decoded yet — so it's unavailable.
+                if mb_idx % 2 != 0 {
+                    false
+                } else {
                 self.above_mb(mb_idx)
                     .and_then(|above| {
                         let above_pair = above / 2;
@@ -3214,6 +3267,7 @@ impl SliceContext<'_> {
                         Some(ar_mb)
                     })
                     .is_some()
+                } // close MBAFF top-MB else
             };
             if use_8x8_intra {
                 // I8x8 via CABAC: decode 4 blocks of 64 coefficients

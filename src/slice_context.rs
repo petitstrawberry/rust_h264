@@ -777,17 +777,13 @@ impl SliceContext<'_> {
     /// with `decode_cbp_luma` and `decode_cbp_chroma`.
     pub(crate) fn cabac_cbp_context(&self, mb_idx: usize, is_intra: bool) -> (u8, u8, u8, u8) {
         let unavail_cbp: u16 = if is_intra { 0x7CF } else { 0x00F };
-        let left_cbp_raw = if !mb_idx.is_multiple_of(self.mb_width as usize)
-            && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-        {
-            self.mb_cbp[mb_idx - 1]
+        let left_cbp_raw = if let Some(left) = self.left_mb(mb_idx) {
+            self.mb_cbp[left]
         } else {
             unavail_cbp
         };
-        let top_cbp_raw = if mb_idx >= self.mb_width as usize
-            && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-        {
-            self.mb_cbp[mb_idx - self.mb_width as usize]
+        let top_cbp_raw = if let Some(above) = self.above_mb(mb_idx) {
+            self.mb_cbp[above]
         } else {
             unavail_cbp
         };

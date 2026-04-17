@@ -676,8 +676,6 @@ impl Decoder {
 
         // Initialize CABAC engine if needed
         let cabac_byte_pos = if use_cabac {
-            // Align to byte boundary (the cabac_alignment_one_bit + zero padding
-            // are handled by aligning the bitstream reader)
             let (pos, _data) = reader.cabac_start();
             Some(pos)
         } else {
@@ -808,8 +806,6 @@ impl Decoder {
 
                 {
                     let mut ctx = make_ctx!();
-                    // Note: decode_cabac_mb has its own terminate check which is now
-                    // redundant for non-first MBs but harmless (it won't fire twice)
                     match ctx.decode_cabac_mb(cr, st, &nal.rbsp, mb_idx, mb_x, mb_y, &params)? {
                         CabacMbResult::EndOfSlice => break,
                         CabacMbResult::Decoded => {}
@@ -817,6 +813,16 @@ impl Decoder {
                     prev_mb_qp = ctx.prev_mb_qp;
                     last_qp_delta_nonzero = ctx.last_qp_delta_nonzero;
                 }
+
+                // MBAFF CABAC: end-of-slice terminate after bottom MBs
+                if mbaff && mb_idx % 2 != 0 {
+                    let term = cr.get_cabac_terminate();
+                    if term != 0 {
+                        mb_idx += 1;
+                        break;
+                    }
+                }
+
                 mb_idx += 1;
                 continue;
             }
@@ -2440,5 +2446,23 @@ mod tests {
     #[test]
     fn test_mbaff_high_cavlc() {
         decode_multiframe_and_compare("mbaff_high_cavlc_test", 6, 64, 64);
+    }
+
+    /// MBAFF CABAC I-frame (32x32, 1 frame, testsrc2, High profile)
+    #[test]
+    fn test_mbaff_cabac_i() {
+        decode_multiframe_and_compare("mbaff_cabac_i_test", 1, 32, 32);
+    }
+
+    /// MBAFF CABAC I-frame 64x64 (1 frame, testsrc2, High profile)
+    #[test]
+    fn test_mbaff_cabac_64() {
+        decode_multiframe_and_compare("mbaff_cabac_64_test", 1, 64, 64);
+    }
+
+    /// MBAFF CABAC P-frames (64x64, 5 frames, testsrc2, keyint=5)
+    #[test]
+    fn test_mbaff_cabac_p() {
+        decode_multiframe_and_compare("mbaff_cabac_p_test", 5, 64, 64);
     }
 }
