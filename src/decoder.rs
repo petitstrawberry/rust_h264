@@ -818,6 +818,7 @@ impl Decoder {
                 }
                 if mb_skip_run > 0 {
                     mb_skip_run -= 1;
+                    mb_skip[mb_idx] = true; // Mark as skipped for MBAFF field flag inference
                     if is_p_slice {
                         // P_Skip: MV = median predictor, ref_idx = 0, no residual
                         make_ctx!().decode_p_skip_mb(mb_idx, mb_x, mb_y, &params);
@@ -2411,5 +2412,11 @@ mod tests {
     #[test]
     fn test_fuzz_regression_poc_type1_mul_overflow() {
         fuzz_decode_avcc("decode_avcc_poc_type1_mul_overflow.bin");
+    }
+
+    /// MBAFF CAVLC test (64x64, 6-frame, interlaced, CAVLC, frame-coded pairs)
+    #[test]
+    fn test_mbaff_cavlc() {
+        decode_multiframe_and_compare("mbaff_cavlc_test", 6, 64, 64);
     }
 }

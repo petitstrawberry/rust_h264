@@ -48,10 +48,9 @@ pub(crate) fn predict_mv_sub(
         mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py, px,
         mb_slice_id, cur_slice_id, mctx.mbaff, mctx.mb_field_decoding,
     );
-    // above-right/above-left: TODO full MBAFF support; for now use frame-mode
-    let c = get_mv_neighbor_above_right(
+    let c = get_mv_neighbor_above_right_mbaff(
         mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py, px, spw,
-        mb_slice_id, cur_slice_id,
+        mb_slice_id, cur_slice_id, mctx.mbaff, mctx.mb_field_decoding,
     )
     .or_else(|| {
         get_mv_neighbor_above_left(
@@ -341,7 +340,7 @@ pub(crate) fn derive_spatial_direct_blk(
             mctx.mbaff,
             mctx.mb_field_decoding,
         );
-        let c = get_mv_neighbor_above_right(
+        let c = get_mv_neighbor_above_right_mbaff(
             mv_s,
             ref_s,
             mb_idx,
@@ -351,6 +350,8 @@ pub(crate) fn derive_spatial_direct_blk(
             16,
             mb_slice_id,
             cur_slice_id,
+            mctx.mbaff,
+            mctx.mb_field_decoding,
         )
         .or_else(|| {
             get_mv_neighbor_above_left(
@@ -628,7 +629,7 @@ pub(crate) fn predict_mv(
     );
 
     // C: above-right neighbor (or D: above-left if C unavailable)
-    let c = get_mv_neighbor_above_right(
+    let c = get_mv_neighbor_above_right_mbaff(
         mv_store_l0,
         ref_idx_store_l0,
         mb_idx,
@@ -638,6 +639,8 @@ pub(crate) fn predict_mv(
         part_w,
         mb_slice_id,
         cur_slice_id,
+        mctx.mbaff,
+        mctx.mb_field_decoding,
     )
     .or_else(|| {
         get_mv_neighbor_above_left(
@@ -1008,10 +1011,9 @@ pub(crate) fn get_mv_neighbor_above_mbaff(
     }
 }
 
-/// Get MV/ref of the above-right neighbor for a partition.
-#[inline(always)]
+/// Get MV/ref of the above-right neighbor for a partition (MBAFF-aware).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn get_mv_neighbor_above_right(
+pub(crate) fn get_mv_neighbor_above_right_mbaff(
     mv_store_l0: &[[i16; 2]],
     ref_idx_store_l0: &[i8],
     mb_idx: usize,
@@ -1021,13 +1023,13 @@ pub(crate) fn get_mv_neighbor_above_right(
     part_w: usize,
     mb_slice_id: &[u16],
     cur_slice_id: u16,
+    mbaff: bool,
+    mb_field_decoding: &[bool],
 ) -> Option<([i16; 2], i8)> {
-    let mb_col = mb_idx % mb_width;
-    let mb_row = mb_idx / mb_width;
     let right_col = px_off + part_w;
 
     if py_off > 0 {
-        // Above-right within this MB
+        // Above-right within this MB — unchanged for MBAFF
         if right_col < 16 {
             // Per spec 6.4.11.7: the above-right 4x4 block is not available
             // if it would be in a different 8x8 block that hasn't been decoded.
@@ -1056,21 +1058,19 @@ pub(crate) fn get_mv_neighbor_above_right(
         } else {
             None // right edge of MB, above-right is in MB above-right
         }
-    } else if mb_row > 0 {
-        // Above-right in the MB above (or above-right MB)
+    } else if !mbaff && mb_idx / mb_width > 0 {
+        // Non-MBAFF: above-right in MB above or above-right MB
         if right_col < 16 {
             let above_mb = mb_idx - mb_width;
             if mb_slice_id[above_mb] != cur_slice_id {
                 return None;
             }
-            let lr = 3;
-            let lc = right_col / 4;
-            let blk = OFFSET_TO_BLOCK[lr][lc];
+            let blk = OFFSET_TO_BLOCK[3][right_col / 4];
             Some((
                 mv_store_l0[above_mb * 16 + blk],
                 ref_idx_store_l0[above_mb * 16 + blk],
             ))
-        } else if mb_col + 1 < mb_width {
+        } else if mb_idx % mb_width + 1 < mb_width {
             let above_right_mb = mb_idx - mb_width + 1;
             if mb_slice_id[above_right_mb] != cur_slice_id {
                 return None;
@@ -1082,6 +1082,40 @@ pub(crate) fn get_mv_neighbor_above_right(
             ))
         } else {
             None
+        }
+    } else if mbaff {
+        // MBAFF: use pair-based above neighbor
+        let (above_mb, remap_py) = mbaff_above_neighbor(mb_idx, mb_width, mb_field_decoding)?;
+        if right_col < 16 {
+            if mb_slice_id[above_mb] != cur_slice_id {
+                return None;
+            }
+            let blk = OFFSET_TO_BLOCK[remap_py / 4][right_col / 4];
+            Some((
+                mv_store_l0[above_mb * 16 + blk],
+                ref_idx_store_l0[above_mb * 16 + blk],
+            ))
+        } else {
+            // Above-right MB in MBAFF: pair to the right of the above pair
+            let pair_addr = mb_idx / 2;
+            let pair_col = pair_addr % mb_width;
+            if pair_col + 1 >= mb_width {
+                return None;
+            }
+            let above_pair = match mbaff_above_neighbor(mb_idx, mb_width, mb_field_decoding) {
+                Some((above_mb, _)) => above_mb / 2,
+                None => return None,
+            };
+            let above_right_pair = above_pair + 1;
+            let ar_mb = above_right_pair * 2 + (if mb_idx % 2 == 0 { 1 } else { mb_idx % 2 });
+            if mb_slice_id.get(ar_mb).copied() != Some(cur_slice_id) {
+                return None;
+            }
+            let blk = OFFSET_TO_BLOCK[remap_py / 4][0];
+            Some((
+                mv_store_l0[ar_mb * 16 + blk],
+                ref_idx_store_l0[ar_mb * 16 + blk],
+            ))
         }
     } else {
         None
