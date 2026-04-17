@@ -66,7 +66,7 @@ pub(crate) struct SliceContext<'a> {
 
     // MBAFF state
     pub mbaff: bool,
-    pub mb_field_decoding: &'a [bool],
+    pub mb_field_decoding: &'a mut [bool],
 
     // Per-4x4-block coefficient counts (for CABAC CBF / CAVLC nC)
     pub nc_luma: &'a mut [u8],

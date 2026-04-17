@@ -1636,14 +1636,34 @@ impl SliceContext<'_> {
         let left_mb_avail = self
             .left_mb(mb_idx)
             .is_some_and(|left| self.is_intra_neighbor_avail(left, sp));
-        let above_left_mb_avail = mb_idx >= self.mb_width as usize
-            && !mb_idx.is_multiple_of(self.mb_width as usize)
-            && self.mb_slice_id[mb_idx - self.mb_width as usize - 1] == self.this_slice_id
-            && self.is_intra_neighbor_avail(mb_idx - self.mb_width as usize - 1, sp);
-        let above_right_mb_avail = mb_idx >= self.mb_width as usize
-            && (mb_idx % self.mb_width as usize) + 1 < self.mb_width as usize
-            && self.mb_slice_id[mb_idx - self.mb_width as usize + 1] == self.this_slice_id
-            && self.is_intra_neighbor_avail(mb_idx - self.mb_width as usize + 1, sp);
+        let above_left_mb_avail = self
+            .above_mb(mb_idx)
+            .and_then(|above| self.left_mb(above))
+            .is_some_and(|al| self.is_intra_neighbor_avail(al, sp));
+        let above_right_mb_avail = if !self.mbaff {
+            mb_idx >= self.mb_width as usize
+                && (mb_idx % self.mb_width as usize) + 1 < self.mb_width as usize
+                && self.mb_slice_id[mb_idx - self.mb_width as usize + 1] == self.this_slice_id
+                && self.is_intra_neighbor_avail(mb_idx - self.mb_width as usize + 1, sp)
+        } else {
+            self.above_mb(mb_idx)
+                .and_then(|above| {
+                    let above_pair = above / 2;
+                    let above_col = above_pair % self.mb_width as usize;
+                    if above_col + 1 >= self.mb_width as usize {
+                        return None;
+                    }
+                    let ar_mb = (above_pair + 1) * 2 + (above % 2);
+                    if self.mb_slice_id.get(ar_mb).copied() != Some(self.this_slice_id) {
+                        return None;
+                    }
+                    if !self.is_intra_neighbor_avail(ar_mb, sp) {
+                        return None;
+                    }
+                    Some(ar_mb)
+                })
+                .is_some()
+        };
 
         // Variables shared between I4x4/I16x16 for chroma reconstruction
         let intra_chroma_pred_mode;

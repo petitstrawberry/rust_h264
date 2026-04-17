@@ -735,7 +735,7 @@ impl Decoder {
                     prev_mb_qp,
                     last_qp_delta_nonzero,
                     mbaff,
-                    mb_field_decoding: &_mb_field_decoding,
+                    mb_field_decoding: &mut _mb_field_decoding,
                 }
             };
         }
@@ -798,8 +798,18 @@ impl Decoder {
             if use_cabac {
                 let cr = cabac_reader.as_mut().unwrap();
                 let st = &mut cabac_state;
+
+                // MBAFF: end_of_slice_flag handled inside decode_cabac_mb
+                // (with MBAFF-adjusted first_mb comparison)
+
+                // MBAFF CABAC: mb_field_decoding_flag
+                // TODO: x264 all-frame MBAFF CABAC streams need investigation.
+                // Disabled for now — infer all pairs as frame-coded.
+
                 {
                     let mut ctx = make_ctx!();
+                    // Note: decode_cabac_mb has its own terminate check which is now
+                    // redundant for non-first MBs but harmless (it won't fire twice)
                     match ctx.decode_cabac_mb(cr, st, &nal.rbsp, mb_idx, mb_x, mb_y, &params)? {
                         CabacMbResult::EndOfSlice => break,
                         CabacMbResult::Decoded => {}
@@ -2418,5 +2428,17 @@ mod tests {
     #[test]
     fn test_mbaff_cavlc() {
         decode_multiframe_and_compare("mbaff_cavlc_test", 6, 64, 64);
+    }
+
+    /// MBAFF CAVLC P-frames with complex content (64x64, 8 frames, testsrc2)
+    #[test]
+    fn test_mbaff_p_cavlc_8f() {
+        decode_multiframe_and_compare("mbaff_p_cavlc_8f_test", 8, 64, 64);
+    }
+
+    /// MBAFF High profile CAVLC with 8x8 transform (64x64, 6 frames, testsrc2)
+    #[test]
+    fn test_mbaff_high_cavlc() {
+        decode_multiframe_and_compare("mbaff_high_cavlc_test", 6, 64, 64);
     }
 }

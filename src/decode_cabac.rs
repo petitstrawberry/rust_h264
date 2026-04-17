@@ -42,9 +42,39 @@ impl SliceContext<'_> {
         sp: &SliceParams,
     ) -> Result<CabacMbResult, DecodeError> {
         // End-of-slice check via terminate (not for the first MB)
-        if mb_idx > sp.first_mb_in_slice as usize && cr.get_cabac_terminate() != 0 {
+        let first_mb_addr = if self.mbaff {
+            (sp.first_mb_in_slice as usize) * 2
+        } else {
+            sp.first_mb_in_slice as usize
+        };
+        if mb_idx > first_mb_addr && cr.get_cabac_terminate() != 0 {
             return Ok(CabacMbResult::EndOfSlice);
         }
+
+        // MBAFF: decode mb_field_decoding_flag (spec 7.3.4, contexts 70-72)
+        if self.mbaff {
+            let is_top = mb_idx % 2 == 0;
+            let top_was_skipped = !is_top && self.mb_skip[mb_idx - 1];
+            if is_top || top_was_skipped {
+                let pair_addr = mb_idx / 2;
+                let pair_col = pair_addr % self.mb_width as usize;
+                let pair_row = pair_addr / self.mb_width as usize;
+                let cond_a = if pair_col > 0 {
+                    self.mb_field_decoding[pair_addr - 1] as u16
+                } else {
+                    0
+                };
+                let cond_b = if pair_row > 0 {
+                    self.mb_field_decoding[pair_addr - self.mb_width as usize] as u16
+                } else {
+                    0
+                };
+                let ctx_idx = 70 + cond_a + cond_b;
+                self.mb_field_decoding[pair_addr] =
+                    cr.get_cabac(&mut st[ctx_idx as usize]) != 0;
+            }
+        }
+
         // P/B-slice CABAC path
         if sp.is_p_slice || sp.is_b_slice {
             // Decode skip flag
@@ -121,14 +151,38 @@ impl SliceContext<'_> {
                 let left_mb_avail = self
                     .left_mb(mb_idx)
                     .is_some_and(|left| self.is_intra_neighbor_avail(left, sp));
-                let above_left_mb_avail = mb_idx >= self.mb_width as usize
-                    && !mb_idx.is_multiple_of(self.mb_width as usize)
-                    && self.mb_slice_id[mb_idx - self.mb_width as usize - 1] == self.this_slice_id
-                    && self.is_intra_neighbor_avail(mb_idx - self.mb_width as usize - 1, sp);
-                let above_right_mb_avail = mb_idx >= self.mb_width as usize
-                    && (mb_idx % self.mb_width as usize) + 1 < self.mb_width as usize
-                    && self.mb_slice_id[mb_idx - self.mb_width as usize + 1] == self.this_slice_id
-                    && self.is_intra_neighbor_avail(mb_idx - self.mb_width as usize + 1, sp);
+                let above_left_mb_avail = self
+                    .above_mb(mb_idx)
+                    .and_then(|above| self.left_mb(above))
+                    .is_some_and(|al| self.is_intra_neighbor_avail(al, sp));
+                let above_right_mb_avail = if !self.mbaff {
+                    mb_idx >= self.mb_width as usize
+                        && (mb_idx % self.mb_width as usize) + 1 < self.mb_width as usize
+                        && self.mb_slice_id[mb_idx - self.mb_width as usize + 1]
+                            == self.this_slice_id
+                        && self.is_intra_neighbor_avail(
+                            mb_idx - self.mb_width as usize + 1,
+                            sp,
+                        )
+                } else {
+                    self.above_mb(mb_idx)
+                        .and_then(|above| {
+                            let above_pair = above / 2;
+                            let above_col = above_pair % self.mb_width as usize;
+                            if above_col + 1 >= self.mb_width as usize {
+                                return None;
+                            }
+                            let ar_mb = (above_pair + 1) * 2 + (above % 2);
+                            if self.mb_slice_id.get(ar_mb).copied() != Some(self.this_slice_id) {
+                                return None;
+                            }
+                            if !self.is_intra_neighbor_avail(ar_mb, sp) {
+                                return None;
+                            }
+                            Some(ar_mb)
+                        })
+                        .is_some()
+                };
 
                 let intra_avail = self.intra_avail_map(sp);
 
@@ -2998,9 +3052,10 @@ impl SliceContext<'_> {
         // Cross-slice intra prediction: neighbors from other slices unavailable (spec 6.4.1)
         let above_mb_avail_i = self.above_mb(mb_idx).is_some();
         let left_mb_avail_i = self.left_mb(mb_idx).is_some();
-        let above_left_mb_avail_i = mb_idx >= self.mb_width as usize
-            && !mb_idx.is_multiple_of(self.mb_width as usize)
-            && self.mb_slice_id[mb_idx - self.mb_width as usize - 1] == self.this_slice_id;
+        let above_left_mb_avail_i = self
+            .above_mb(mb_idx)
+            .and_then(|above| self.left_mb(above))
+            .is_some();
 
         // I_PCM via CABAC
         if mb_type == 25 {
@@ -3140,9 +3195,26 @@ impl SliceContext<'_> {
             let above_mb_avail = above_mb_avail_i;
             let left_mb_avail = left_mb_avail_i;
             let above_left_mb_avail = above_left_mb_avail_i;
-            let above_right_mb_avail = mb_idx >= self.mb_width as usize
-                && (mb_idx % self.mb_width as usize) + 1 < self.mb_width as usize
-                && self.mb_slice_id[mb_idx - self.mb_width as usize + 1] == self.this_slice_id;
+            let above_right_mb_avail = if !self.mbaff {
+                mb_idx >= self.mb_width as usize
+                    && (mb_idx % self.mb_width as usize) + 1 < self.mb_width as usize
+                    && self.mb_slice_id[mb_idx - self.mb_width as usize + 1] == self.this_slice_id
+            } else {
+                self.above_mb(mb_idx)
+                    .and_then(|above| {
+                        let above_pair = above / 2;
+                        let above_col = above_pair % self.mb_width as usize;
+                        if above_col + 1 >= self.mb_width as usize {
+                            return None;
+                        }
+                        let ar_mb = (above_pair + 1) * 2 + (above % 2);
+                        if self.mb_slice_id.get(ar_mb).copied() != Some(self.this_slice_id) {
+                            return None;
+                        }
+                        Some(ar_mb)
+                    })
+                    .is_some()
+            };
             if use_8x8_intra {
                 // I8x8 via CABAC: decode 4 blocks of 64 coefficients
                 let mut luma_residual = [0i32; 256];
