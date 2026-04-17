@@ -176,6 +176,105 @@ impl SliceContext<'_> {
         }
     }
 
+    /// Get the left MB index for context lookups.
+    /// Returns `None` if no left MB exists or it's in a different slice.
+    #[inline]
+    pub(crate) fn left_mb(&self, mb_idx: usize) -> Option<usize> {
+        if !self.mbaff {
+            let mb_col = mb_idx % self.mb_width as usize;
+            if mb_col == 0 {
+                return None;
+            }
+            let left = mb_idx - 1;
+            if self.mb_slice_id[left] != self.this_slice_id {
+                return None;
+            }
+            Some(left)
+        } else {
+            let pair_addr = mb_idx / 2;
+            let pair_col = pair_addr % self.mb_width as usize;
+            if pair_col == 0 {
+                return None;
+            }
+            let left_pair = pair_addr - 1;
+            let cur_field = self.mb_field_decoding[pair_addr];
+            let left_field = self.mb_field_decoding[left_pair];
+            // For per-MB context (skip, mb_type, cbp, etc.), use same position in left pair
+            let left_mb = if cur_field == left_field {
+                left_pair * 2 + (mb_idx % 2)
+            } else if !cur_field && left_field {
+                // Current frame, left field: use top field for top MB, bottom for bottom
+                left_pair * 2 + (mb_idx % 2)
+            } else {
+                // Current field, left frame: use same-parity MB
+                left_pair * 2 + (mb_idx % 2)
+            };
+            if self.mb_slice_id[left_mb] != self.this_slice_id {
+                return None;
+            }
+            Some(left_mb)
+        }
+    }
+
+    /// Get the above MB index for context lookups.
+    /// Returns `None` if no above MB exists or it's in a different slice.
+    #[inline]
+    pub(crate) fn above_mb(&self, mb_idx: usize) -> Option<usize> {
+        if !self.mbaff {
+            if mb_idx < self.mb_width as usize {
+                return None;
+            }
+            let above = mb_idx - self.mb_width as usize;
+            if self.mb_slice_id[above] != self.this_slice_id {
+                return None;
+            }
+            Some(above)
+        } else {
+            let is_top = mb_idx % 2 == 0;
+            if !is_top {
+                // Bottom MB: above is top MB of same pair
+                let above = mb_idx - 1;
+                if self.mb_slice_id[above] != self.this_slice_id {
+                    return None;
+                }
+                Some(above)
+            } else {
+                // Top MB: above is bottom of above pair
+                let pair_addr = mb_idx / 2;
+                let pair_row = pair_addr / self.mb_width as usize;
+                if pair_row == 0 {
+                    return None;
+                }
+                let above_pair = pair_addr - self.mb_width as usize;
+                let above_mb = above_pair * 2 + 1; // bottom of above pair
+                if self.mb_slice_id[above_mb] != self.this_slice_id {
+                    return None;
+                }
+                Some(above_mb)
+            }
+        }
+    }
+
+    /// Check if left MB neighbor exists (for boundary checks, no slice ID check).
+    #[inline]
+    pub(crate) fn has_left_mb(&self, mb_idx: usize) -> bool {
+        if !self.mbaff {
+            mb_idx % self.mb_width as usize != 0
+        } else {
+            (mb_idx / 2) % self.mb_width as usize != 0
+        }
+    }
+
+    /// Check if above MB neighbor exists (for boundary checks, no slice ID check).
+    #[inline]
+    pub(crate) fn has_above_mb(&self, mb_idx: usize) -> bool {
+        if !self.mbaff {
+            mb_idx >= self.mb_width as usize
+        } else {
+            mb_idx % 2 != 0 || (mb_idx / 2) >= self.mb_width as usize
+        }
+    }
+
     /// Check if a neighbor MB is available for intra prediction samples.
     /// When `constrained_intra_pred_flag` is set in a P/B slice, inter-predicted
     /// neighbors are treated as unavailable (spec 6.4.1).

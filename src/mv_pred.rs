@@ -717,6 +717,132 @@ pub(crate) fn predict_mv(
     (xs[1], ys[1])
 }
 
+// ── MBAFF neighbor address helpers (spec 6.4.10-6.4.12) ──────────────────
+//
+// In MBAFF, MBs are indexed as CurrMbAddr = pair_addr * 2 + {0=top, 1=bottom}.
+// Neighbor derivation depends on whether the current and neighbor MB pairs are
+// frame-coded or field-coded.
+
+/// Compute the left neighbor MB address and remapped y-offset for MBAFF.
+/// Returns `None` if no left neighbor exists.
+/// Returns `Some((left_mb, remapped_py))`.
+///
+/// Per spec 6.4.10.1 / Table 6-3:
+/// - Both frame or both field: left = same position in left pair
+/// - Current frame, left field: y remaps to select top/bottom field of left pair
+/// - Current field, left frame: y remaps within left pair's top/bottom MB
+#[inline]
+fn mbaff_left_neighbor(
+    mb_idx: usize,
+    mb_width: usize,
+    py_off: usize,
+    mb_field_decoding: &[bool],
+) -> Option<(usize, usize)> {
+    let pair_addr = mb_idx / 2;
+    let pair_col = pair_addr % mb_width;
+    if pair_col == 0 {
+        return None;
+    }
+    let left_pair = pair_addr - 1;
+    let is_top = mb_idx % 2 == 0;
+    let cur_is_field = mb_field_decoding[pair_addr];
+    let left_is_field = mb_field_decoding[left_pair];
+
+    match (cur_is_field, left_is_field) {
+        (false, false) => {
+            // Both frame-coded: left top→left top, left bottom→left bottom
+            let left_mb = left_pair * 2 + (if is_top { 0 } else { 1 });
+            Some((left_mb, py_off))
+        }
+        (true, true) => {
+            // Both field-coded: same mapping
+            let left_mb = left_pair * 2 + (if is_top { 0 } else { 1 });
+            Some((left_mb, py_off))
+        }
+        (false, true) => {
+            // Current frame, left field
+            // Map frame y (0-15) + position in pair to field MB
+            let y_in_pair = py_off + if is_top { 0 } else { 16 };
+            let left_mb = left_pair * 2 + (y_in_pair % 2); // even→top field, odd→bottom field
+            let remap_py = y_in_pair / 2;
+            // Clamp to 0-15 (field MB has 16 rows)
+            Some((left_mb, remap_py.min(15)))
+        }
+        (true, false) => {
+            // Current field, left frame
+            // Map field y to frame y
+            let y_in_pair = py_off * 2 + if is_top { 0 } else { 1 };
+            let left_mb = left_pair * 2 + (if y_in_pair < 16 { 0 } else { 1 });
+            let remap_py = y_in_pair % 16;
+            Some((left_mb, remap_py))
+        }
+    }
+}
+
+/// Compute the above neighbor MB address and remapped y-offset for MBAFF.
+/// Returns `None` if no above neighbor exists.
+/// Returns `Some((above_mb, remapped_py))`.
+///
+/// Per spec 6.4.10.1 / Table 6-4:
+/// - Bottom of pair: above = top of same pair (unless field-to-frame remap needed)
+/// - Top of pair: above = bottom MB of above pair (with possible mode remap)
+#[inline]
+fn mbaff_above_neighbor(
+    mb_idx: usize,
+    mb_width: usize,
+    mb_field_decoding: &[bool],
+) -> Option<(usize, usize)> {
+    let pair_addr = mb_idx / 2;
+    let is_top = mb_idx % 2 == 0;
+
+    if !is_top {
+        // Bottom MB: above is top MB of same pair
+        // py remap: row 3 (bottom of top MB) → py=12 in block coordinates
+        let cur_is_field = mb_field_decoding[pair_addr];
+        if cur_is_field {
+            // Both in same field pair: above of bottom field is top field, row 15
+            Some((mb_idx - 1, 15))
+        } else {
+            // Frame pair: above of bottom MB is top MB, row 15
+            Some((mb_idx - 1, 15))
+        }
+    } else {
+        // Top MB: above is bottom MB of the above pair
+        let pair_row = pair_addr / mb_width;
+        if pair_row == 0 {
+            return None;
+        }
+        let above_pair = pair_addr - mb_width;
+        let cur_is_field = mb_field_decoding[pair_addr];
+        let above_is_field = mb_field_decoding[above_pair];
+
+        match (cur_is_field, above_is_field) {
+            (false, false) => {
+                // Both frame: above = bottom of above pair, row 15
+                Some((above_pair * 2 + 1, 15))
+            }
+            (true, true) => {
+                // Both field: above = top field of above pair (same field parity), row 15
+                Some((above_pair * 2, 15))
+            }
+            (false, true) => {
+                // Current frame, above field: above = bottom field of above pair, row 15
+                Some((above_pair * 2 + 1, 15))
+            }
+            (true, false) => {
+                // Current field, above frame: above = bottom of above pair, row 15
+                Some((above_pair * 2 + 1, 15))
+            }
+        }
+    }
+}
+
+/// Compute the pair column for MBAFF addressing.
+#[inline]
+fn mbaff_pair_col(mb_idx: usize, mb_width: usize) -> usize {
+    (mb_idx / 2) % mb_width
+}
+
 /// Get MV/ref of the left neighbor for a partition.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
@@ -730,9 +856,35 @@ pub(crate) fn get_mv_neighbor_left(
     mb_slice_id: &[u16],
     cur_slice_id: u16,
 ) -> Option<([i16; 2], i8)> {
-    let mb_col = mb_idx % mb_width;
+    get_mv_neighbor_left_mbaff(
+        mv_store_l0,
+        ref_idx_store_l0,
+        mb_idx,
+        mb_width,
+        py_off,
+        px_off,
+        mb_slice_id,
+        cur_slice_id,
+        false,
+        &[],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn get_mv_neighbor_left_mbaff(
+    mv_store_l0: &[[i16; 2]],
+    ref_idx_store_l0: &[i8],
+    mb_idx: usize,
+    mb_width: usize,
+    py_off: usize,
+    px_off: usize,
+    mb_slice_id: &[u16],
+    cur_slice_id: u16,
+    mbaff: bool,
+    mb_field_decoding: &[bool],
+) -> Option<([i16; 2], i8)> {
     if px_off > 0 {
-        // Left is within this MB
+        // Left is within this MB — unchanged for MBAFF
         let lr = py_off / 4;
         let lc = (px_off - 4) / 4;
         let blk = OFFSET_TO_BLOCK[lr][lc];
@@ -740,21 +892,33 @@ pub(crate) fn get_mv_neighbor_left(
             mv_store_l0[mb_idx * 16 + blk],
             ref_idx_store_l0[mb_idx * 16 + blk],
         ))
-    } else if mb_col > 0 {
-        // Left is in the left MB (rightmost column)
+    } else if !mbaff {
+        // Non-MBAFF: left is mb_idx - 1
+        let mb_col = mb_idx % mb_width;
+        if mb_col == 0 {
+            return None;
+        }
         let left_mb = mb_idx - 1;
         if mb_slice_id[left_mb] != cur_slice_id {
             return None;
         }
-        let lr = py_off / 4;
-        let lc = 3; // rightmost 4x4 column
-        let blk = OFFSET_TO_BLOCK[lr][lc];
+        let blk = OFFSET_TO_BLOCK[py_off / 4][3];
         Some((
             mv_store_l0[left_mb * 16 + blk],
             ref_idx_store_l0[left_mb * 16 + blk],
         ))
     } else {
-        None
+        // MBAFF: use pair-based left neighbor
+        let (left_mb, remap_py) =
+            mbaff_left_neighbor(mb_idx, mb_width, py_off, mb_field_decoding)?;
+        if mb_slice_id[left_mb] != cur_slice_id {
+            return None;
+        }
+        let blk = OFFSET_TO_BLOCK[remap_py / 4][3];
+        Some((
+            mv_store_l0[left_mb * 16 + blk],
+            ref_idx_store_l0[left_mb * 16 + blk],
+        ))
     }
 }
 
@@ -771,9 +935,35 @@ pub(crate) fn get_mv_neighbor_above(
     mb_slice_id: &[u16],
     cur_slice_id: u16,
 ) -> Option<([i16; 2], i8)> {
-    let mb_row = mb_idx / mb_width;
+    get_mv_neighbor_above_mbaff(
+        mv_store_l0,
+        ref_idx_store_l0,
+        mb_idx,
+        mb_width,
+        py_off,
+        px_off,
+        mb_slice_id,
+        cur_slice_id,
+        false,
+        &[],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn get_mv_neighbor_above_mbaff(
+    mv_store_l0: &[[i16; 2]],
+    ref_idx_store_l0: &[i8],
+    mb_idx: usize,
+    mb_width: usize,
+    py_off: usize,
+    px_off: usize,
+    mb_slice_id: &[u16],
+    cur_slice_id: u16,
+    mbaff: bool,
+    mb_field_decoding: &[bool],
+) -> Option<([i16; 2], i8)> {
     if py_off > 0 {
-        // Above is within this MB
+        // Above is within this MB — unchanged for MBAFF
         let lr = (py_off - 4) / 4;
         let lc = px_off / 4;
         let blk = OFFSET_TO_BLOCK[lr][lc];
@@ -781,20 +971,33 @@ pub(crate) fn get_mv_neighbor_above(
             mv_store_l0[mb_idx * 16 + blk],
             ref_idx_store_l0[mb_idx * 16 + blk],
         ))
-    } else if mb_row > 0 {
+    } else if !mbaff {
+        // Non-MBAFF: above is mb_idx - mb_width
+        let mb_row = mb_idx / mb_width;
+        if mb_row == 0 {
+            return None;
+        }
         let above_mb = mb_idx - mb_width;
         if mb_slice_id[above_mb] != cur_slice_id {
             return None;
         }
-        let lr = 3; // bottom row
-        let lc = px_off / 4;
-        let blk = OFFSET_TO_BLOCK[lr][lc];
+        let blk = OFFSET_TO_BLOCK[3][px_off / 4];
         Some((
             mv_store_l0[above_mb * 16 + blk],
             ref_idx_store_l0[above_mb * 16 + blk],
         ))
     } else {
-        None
+        // MBAFF: use pair-based above neighbor
+        let (above_mb, remap_py) =
+            mbaff_above_neighbor(mb_idx, mb_width, mb_field_decoding)?;
+        if mb_slice_id[above_mb] != cur_slice_id {
+            return None;
+        }
+        let blk = OFFSET_TO_BLOCK[remap_py / 4][px_off / 4];
+        Some((
+            mv_store_l0[above_mb * 16 + blk],
+            ref_idx_store_l0[above_mb * 16 + blk],
+        ))
     }
 }
 
