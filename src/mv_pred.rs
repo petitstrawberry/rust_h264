@@ -839,10 +839,26 @@ fn mbaff_above_neighbor(
     }
 }
 
-/// Compute the pair column for MBAFF addressing.
+/// Scale MVy when crossing frame/field boundary in MBAFF.
+/// - Current frame, neighbor field: MVy *= 2 (field→frame)
+/// - Current field, neighbor frame: MVy /= 2 (frame→field)
+/// - Same mode: no scaling
 #[inline]
-/// Get MV/ref of the left neighbor for a partition.
+fn mbaff_scale_mv(mv: [i16; 2], cur_pair: usize, nbr_pair: usize, mb_field_decoding: &[bool]) -> [i16; 2] {
+    let cur_field = mb_field_decoding[cur_pair];
+    let nbr_field = mb_field_decoding[nbr_pair];
+    if cur_field == nbr_field {
+        mv
+    } else if !cur_field && nbr_field {
+        // Current frame, neighbor field: scale up
+        [mv[0], mv[1].saturating_mul(2)]
+    } else {
+        // Current field, neighbor frame: scale down
+        [mv[0], mv[1] / 2]
+    }
+}
 
+/// Get MV/ref of the left neighbor for a partition.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn get_mv_neighbor_left_mbaff(
     mv_store_l0: &[[i16; 2]],
@@ -888,8 +904,9 @@ pub(crate) fn get_mv_neighbor_left_mbaff(
             return None;
         }
         let blk = OFFSET_TO_BLOCK[remap_py / 4][3];
+        let mv = mbaff_scale_mv(mv_store_l0[left_mb * 16 + blk], mb_idx / 2, left_mb / 2, mb_field_decoding);
         Some((
-            mv_store_l0[left_mb * 16 + blk],
+            mv,
             ref_idx_store_l0[left_mb * 16 + blk],
         ))
     }
@@ -941,8 +958,9 @@ pub(crate) fn get_mv_neighbor_above_mbaff(
             return None;
         }
         let blk = OFFSET_TO_BLOCK[remap_py / 4][px_off / 4];
+        let mv = mbaff_scale_mv(mv_store_l0[above_mb * 16 + blk], mb_idx / 2, above_mb / 2, mb_field_decoding);
         Some((
-            mv_store_l0[above_mb * 16 + blk],
+            mv,
             ref_idx_store_l0[above_mb * 16 + blk],
         ))
     }
@@ -1028,8 +1046,9 @@ pub(crate) fn get_mv_neighbor_above_right_mbaff(
                 return None;
             }
             let blk = OFFSET_TO_BLOCK[remap_py / 4][right_col / 4];
+            let mv = mbaff_scale_mv(mv_store_l0[above_mb * 16 + blk], mb_idx / 2, above_mb / 2, mb_field_decoding);
             Some((
-                mv_store_l0[above_mb * 16 + blk],
+                mv,
                 ref_idx_store_l0[above_mb * 16 + blk],
             ))
         } else {
@@ -1049,8 +1068,9 @@ pub(crate) fn get_mv_neighbor_above_right_mbaff(
                 return None;
             }
             let blk = OFFSET_TO_BLOCK[remap_py / 4][0];
+            let mv = mbaff_scale_mv(mv_store_l0[ar_mb * 16 + blk], mb_idx / 2, ar_mb / 2, mb_field_decoding);
             Some((
-                mv_store_l0[ar_mb * 16 + blk],
+                mv,
                 ref_idx_store_l0[ar_mb * 16 + blk],
             ))
         }
@@ -1105,8 +1125,13 @@ pub(crate) fn get_mv_neighbor_above_left_mbaff(
             return None;
         }
         let blk = OFFSET_TO_BLOCK[al_py / 4][3];
+        let mv = if mbaff {
+            mbaff_scale_mv(mv_store_l0[al_mb * 16 + blk], mb_idx / 2, al_mb / 2, mb_field_decoding)
+        } else {
+            mv_store_l0[al_mb * 16 + blk]
+        };
         Some((
-            mv_store_l0[al_mb * 16 + blk],
+            mv,
             ref_idx_store_l0[al_mb * 16 + blk],
         ))
     } else if py_off == 0 && px_off > 0 {
@@ -1122,8 +1147,13 @@ pub(crate) fn get_mv_neighbor_above_left_mbaff(
             return None;
         }
         let blk = OFFSET_TO_BLOCK[above_py / 4][(px_off - 4) / 4];
+        let mv = if mbaff {
+            mbaff_scale_mv(mv_store_l0[above_mb * 16 + blk], mb_idx / 2, above_mb / 2, mb_field_decoding)
+        } else {
+            mv_store_l0[above_mb * 16 + blk]
+        };
         Some((
-            mv_store_l0[above_mb * 16 + blk],
+            mv,
             ref_idx_store_l0[above_mb * 16 + blk],
         ))
     } else if py_off > 0 && px_off == 0 {
@@ -1139,8 +1169,13 @@ pub(crate) fn get_mv_neighbor_above_left_mbaff(
             return None;
         }
         let blk = OFFSET_TO_BLOCK[left_py / 4][3];
+        let mv = if mbaff {
+            mbaff_scale_mv(mv_store_l0[left_mb * 16 + blk], mb_idx / 2, left_mb / 2, mb_field_decoding)
+        } else {
+            mv_store_l0[left_mb * 16 + blk]
+        };
         Some((
-            mv_store_l0[left_mb * 16 + blk],
+            mv,
             ref_idx_store_l0[left_mb * 16 + blk],
         ))
     } else {
