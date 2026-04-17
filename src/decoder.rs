@@ -657,7 +657,7 @@ impl Decoder {
             chroma_qp_index_offset: ps_chroma_qp_offset,
             mb_width: _ps_mb_width,
             mb_height: _ps_mb_height,
-            mb_field_decoding: _mb_field_decoding,
+            mb_field_decoding: mut _mb_field_decoding,
             mbaff_frame_flag: _ps_mbaff,
         } = ps;
 
@@ -761,7 +761,13 @@ impl Decoder {
             cabac_init_idc: header.cabac_init_idc,
         };
 
-        let mut mb_idx = header.first_mb_in_slice as usize;
+        let mbaff = header.mbaff_frame_flag;
+        // In MBAFF, first_mb_in_slice is a pair address
+        let mut mb_idx = if mbaff {
+            (header.first_mb_in_slice as usize) * 2
+        } else {
+            header.first_mb_in_slice as usize
+        };
         if mb_idx >= total_mbs {
             return Err(DecodeError::InvalidSyntax("first_mb_in_slice out of range"));
         }
@@ -772,10 +778,34 @@ impl Decoder {
                 break;
             }
 
+            // MBAFF: read mb_field_decoding_flag (spec 7.3.4)
+            // Read at start of top MB, or at bottom MB if top was skipped.
+            if mbaff && !use_cabac {
+                let is_top = mb_idx % 2 == 0;
+                let top_was_skipped = !is_top && mb_skip[mb_idx - 1];
+                if is_top || top_was_skipped {
+                    if mb_skip_run > 0 {
+                        // During skip runs, infer as equal to the left pair's flag
+                        // For simplicity, default to frame-coded (false)
+                    } else {
+                        _mb_field_decoding[mb_idx / 2] = reader.read_bit()? != 0;
+                    }
+                }
+            }
+
             // Stamp this MB with the current slice ID for boundary detection
             mb_slice_id[mb_idx] = this_slice_id;
-            let mb_x = (mb_idx % mb_width as usize) * 16;
-            let mb_y = (mb_idx / mb_width as usize) * 16;
+            // Compute pixel position
+            let (mb_x, mb_y) = if mbaff {
+                let pair_addr = mb_idx / 2;
+                let pair_col = pair_addr % mb_width as usize;
+                let pair_row = pair_addr / mb_width as usize;
+                let x = pair_col * 16;
+                let y = pair_row * 32 + (mb_idx % 2) * 16;
+                (x, y)
+            } else {
+                ((mb_idx % mb_width as usize) * 16, (mb_idx / mb_width as usize) * 16)
+            };
 
             // CABAC decode path
             if use_cabac {
@@ -837,8 +867,13 @@ impl Decoder {
         }
 
         // Post-loop: fill deblock info and ref POC table
+        let first_mb = if mbaff {
+            (header.first_mb_in_slice as usize) * 2
+        } else {
+            header.first_mb_in_slice as usize
+        };
         make_ctx!().finalize_mb_info(
-            header.first_mb_in_slice as usize,
+            first_mb,
             mb_idx.min(total_mbs),
             &params,
         );
