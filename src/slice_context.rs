@@ -43,7 +43,7 @@ use crate::intra_pred::{
 };
 use crate::mv_pred::{
     derive_spatial_direct_blk, derive_temporal_direct_blk, predict_mv_skip, ref_pic_safe,
-    WeightContext,
+    MbaffCtx, WeightContext,
 };
 use crate::neighbor::dequant_4x4_ac_raster;
 use crate::residual::BLOCK_INDEX_TO_OFFSET;
@@ -317,6 +317,7 @@ impl SliceContext<'_> {
             self.mb_width as usize,
             self.mb_slice_id,
             self.this_slice_id,
+            MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
         );
         if let Some(ref_pic) = ref_pic_list.first() {
             // Luma MC
@@ -422,6 +423,7 @@ impl SliceContext<'_> {
                     self.mb_slice_id,
                     self.this_slice_id,
                     direct_8x8_inference_flag,
+                    MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                 );
                 let base = mb_idx * 16;
                 for blk in blk_start..blk_start + 4 {
@@ -447,6 +449,7 @@ impl SliceContext<'_> {
                         self.mb_slice_id,
                         self.this_slice_id,
                         direct_8x8_inference_flag,
+                        MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                     );
                     for blk in first_blk..first_blk + 4 {
                         self.mv_store_l0[base + blk] = mv_l0;
@@ -470,6 +473,7 @@ impl SliceContext<'_> {
                         self.mb_slice_id,
                         self.this_slice_id,
                         direct_8x8_inference_flag,
+                        MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                     );
                     self.mv_store_l0[mb_idx * 16 + blk] = mv_l0;
                     self.ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
@@ -491,6 +495,7 @@ impl SliceContext<'_> {
                     mb_idx,
                     first_blk,
                     direct_8x8_inference_flag,
+                    MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                 );
                 let base = mb_idx * 16;
                 for blk in blk_start..blk_start + 4 {
@@ -511,6 +516,7 @@ impl SliceContext<'_> {
                         mb_idx,
                         first_blk,
                         direct_8x8_inference_flag,
+                        MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                     );
                     for blk in first_blk..first_blk + 4 {
                         self.mv_store_l0[base + blk] = mv_l0;
@@ -529,6 +535,7 @@ impl SliceContext<'_> {
                         mb_idx,
                         blk,
                         direct_8x8_inference_flag,
+                        MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                     );
                     self.mv_store_l0[mb_idx * 16 + blk] = mv_l0;
                     self.ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;

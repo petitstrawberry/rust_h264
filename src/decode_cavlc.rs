@@ -6,7 +6,7 @@ use crate::deblock::{MbInfo, MbType};
 use crate::error::DecodeError;
 use crate::inter_pred;
 use crate::intra_pred::predict_chroma_8x8;
-use crate::mv_pred::{predict_mv, predict_mv_sub, ref_pic_safe};
+use crate::mv_pred::{predict_mv, predict_mv_sub, ref_pic_safe, MbaffCtx};
 use crate::neighbor::{compute_nc, dequant_4x4_ac_raster, predict_i4x4_mode};
 use crate::residual::{
     chroma_qp, dequant_4x4_full, dequant_8x8, dequant_chroma_dc, dequant_luma_dc_i16x16,
@@ -98,6 +98,7 @@ impl SliceContext<'_> {
                         ref_idx,
                         self.mb_slice_id,
                         self.this_slice_id,
+                        MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                     );
                     let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
 
@@ -210,6 +211,7 @@ impl SliceContext<'_> {
                         ref_idx_l0,
                         self.mb_slice_id,
                         self.this_slice_id,
+                        MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                     );
                     let mv_l0 = [mvp_l0_x + mvd_l0_x, mvp_l0_y + mvd_l0_y];
 
@@ -226,6 +228,7 @@ impl SliceContext<'_> {
                         ref_idx_l1,
                         self.mb_slice_id,
                         self.this_slice_id,
+                        MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                     );
                     let mv_l1 = [mvp_l1_x + mvd_l1_x, mvp_l1_y + mvd_l1_y];
 
@@ -337,6 +340,7 @@ impl SliceContext<'_> {
                                 part_ref_l0[p],
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                                MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                             );
                             mv_l0_parts[p] = [mvp_x + mvd_x, mvp_y + mvd_y];
                             // Store MV immediately for partition 1 to read partition 0
@@ -375,6 +379,7 @@ impl SliceContext<'_> {
                                 part_ref_l1[p],
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                                MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                             );
                             mv_l1_parts[p] = [mvp_x + mvd_x, mvp_y + mvd_y];
                             for r in (0..part_h).step_by(4) {
@@ -587,6 +592,7 @@ impl SliceContext<'_> {
                                     sub_ref_l0[layout.smb],
                                     self.mb_slice_id,
                                     self.this_slice_id,
+                                    MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                                 );
                                 let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
                                 sub_mvs[idx].mv_l0 = mv;
@@ -629,6 +635,7 @@ impl SliceContext<'_> {
                                     sub_ref_l1[layout.smb],
                                     self.mb_slice_id,
                                     self.this_slice_id,
+                                    MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                                 );
                                 let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
                                 sub_mvs[idx].mv_l1 = mv;
@@ -772,6 +779,9 @@ impl SliceContext<'_> {
                             16,
                             self.mb_slice_id,
                             self.this_slice_id,
+                        
+                        self.mbaff,
+                        self.mb_field_decoding,
                         );
                         let mut quad_coeffs = [0i32; 16];
                         let tc = parse_residual_block_cavlc(reader, &mut quad_coeffs, 16, nc)?;
@@ -804,6 +814,9 @@ impl SliceContext<'_> {
                             16,
                             self.mb_slice_id,
                             self.this_slice_id,
+                        
+                        self.mbaff,
+                        self.mb_field_decoding,
                         );
                         let mut block_coeffs = [0i32; 16];
                         let tc = parse_residual_block_cavlc(reader, &mut block_coeffs, 16, nc)?;
@@ -941,6 +954,9 @@ impl SliceContext<'_> {
                         4,
                         self.mb_slice_id,
                         self.this_slice_id,
+                    
+                    self.mbaff,
+                    self.mb_field_decoding,
                     );
                     let tc =
                         parse_residual_block_cavlc(reader, &mut chroma_ac_scan_cb[blk], 15, nc)?;
@@ -955,6 +971,9 @@ impl SliceContext<'_> {
                         4,
                         self.mb_slice_id,
                         self.this_slice_id,
+                    
+                    self.mbaff,
+                    self.mb_field_decoding,
                     );
                     let tc =
                         parse_residual_block_cavlc(reader, &mut chroma_ac_scan_cr[blk], 15, nc)?;
@@ -1200,6 +1219,7 @@ impl SliceContext<'_> {
                             ref_idx,
                             self.mb_slice_id,
                             self.this_slice_id,
+                            MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                         );
                         let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
 
@@ -1255,6 +1275,7 @@ impl SliceContext<'_> {
                         part_ref[p],
                         self.mb_slice_id,
                         self.this_slice_id,
+                        MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                     );
                     let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
 
@@ -1340,6 +1361,9 @@ impl SliceContext<'_> {
                             16,
                             self.mb_slice_id,
                             self.this_slice_id,
+                        
+                        self.mbaff,
+                        self.mb_field_decoding,
                         );
                         let mut quad_coeffs = [0i32; 16];
                         let tc = parse_residual_block_cavlc(reader, &mut quad_coeffs, 16, nc)?;
@@ -1375,6 +1399,9 @@ impl SliceContext<'_> {
                             16,
                             self.mb_slice_id,
                             self.this_slice_id,
+                        
+                        self.mbaff,
+                        self.mb_field_decoding,
                         );
                         let mut block_coeffs = [0i32; 16];
                         let tc = parse_residual_block_cavlc(reader, &mut block_coeffs, 16, nc)?;
@@ -1452,6 +1479,9 @@ impl SliceContext<'_> {
                         4,
                         self.mb_slice_id,
                         self.this_slice_id,
+                    
+                    self.mbaff,
+                    self.mb_field_decoding,
                     );
                     let tc =
                         parse_residual_block_cavlc(reader, &mut chroma_ac_scan_cb[blk], 15, nc)?;
@@ -1466,6 +1496,9 @@ impl SliceContext<'_> {
                         4,
                         self.mb_slice_id,
                         self.this_slice_id,
+                    
+                    self.mbaff,
+                    self.mb_field_decoding,
                     );
                     let tc =
                         parse_residual_block_cavlc(reader, &mut chroma_ac_scan_cr[blk], 15, nc)?;
@@ -1597,12 +1630,12 @@ impl SliceContext<'_> {
         // === Intra macroblock (I4x4, I16x16, I_PCM) ===
         // Cross-slice intra prediction: neighbors from other slices unavailable (spec 6.4.1)
         // constrained_intra_pred_flag: inter-predicted neighbors also unavailable
-        let above_mb_avail = mb_idx >= self.mb_width as usize
-            && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-            && self.is_intra_neighbor_avail(mb_idx - self.mb_width as usize, sp);
-        let left_mb_avail = !mb_idx.is_multiple_of(self.mb_width as usize)
-            && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-            && self.is_intra_neighbor_avail(mb_idx - 1, sp);
+        let above_mb_avail = self
+            .above_mb(mb_idx)
+            .is_some_and(|above| self.is_intra_neighbor_avail(above, sp));
+        let left_mb_avail = self
+            .left_mb(mb_idx)
+            .is_some_and(|left| self.is_intra_neighbor_avail(left, sp));
         let above_left_mb_avail = mb_idx >= self.mb_width as usize
             && !mb_idx.is_multiple_of(self.mb_width as usize)
             && self.mb_slice_id[mb_idx - self.mb_width as usize - 1] == self.this_slice_id
@@ -1640,6 +1673,9 @@ impl SliceContext<'_> {
                     self.mb_slice_id,
                     self.this_slice_id,
                     &intra_avail,
+                
+                self.mbaff,
+                self.mb_field_decoding,
                 );
                 let mode = if prev_flag != 0 {
                     predicted
@@ -1700,6 +1736,9 @@ impl SliceContext<'_> {
                             16,
                             self.mb_slice_id,
                             self.this_slice_id,
+                        
+                        self.mbaff,
+                        self.mb_field_decoding,
                         );
                         let mut quad_coeffs = [0i32; 16];
                         let tc = parse_residual_block_cavlc(reader, &mut quad_coeffs, 16, nc)?;
@@ -1754,6 +1793,9 @@ impl SliceContext<'_> {
                             16,
                             self.mb_slice_id,
                             self.this_slice_id,
+                        
+                        self.mbaff,
+                        self.mb_field_decoding,
                         );
                         let tc = parse_residual_block_cavlc(reader, &mut block_coeffs, 16, nc)?;
                         self.nc_luma[mb_idx * 16 + blk] = tc;
@@ -1809,6 +1851,9 @@ impl SliceContext<'_> {
                 16,
                 self.mb_slice_id,
                 self.this_slice_id,
+            
+            self.mbaff,
+            self.mb_field_decoding,
             );
             parse_residual_block_cavlc(reader, &mut luma_dc, 16, nc_dc)?;
 
@@ -1824,6 +1869,9 @@ impl SliceContext<'_> {
                         16,
                         self.mb_slice_id,
                         self.this_slice_id,
+                    
+                    self.mbaff,
+                    self.mb_field_decoding,
                     );
                     let tc = parse_residual_block_cavlc(reader, &mut luma_ac_scan[blk], 15, nc)?;
                     self.nc_luma[mb_idx * 16 + blk] = tc;
@@ -1957,6 +2005,9 @@ impl SliceContext<'_> {
                     4,
                     self.mb_slice_id,
                     self.this_slice_id,
+                
+                self.mbaff,
+                self.mb_field_decoding,
                 );
                 let tc = parse_residual_block_cavlc(reader, &mut chroma_ac_scan_cb[blk], 15, nc)?;
                 self.nc_cb[mb_idx * 4 + blk] = tc;
@@ -1970,6 +2021,9 @@ impl SliceContext<'_> {
                     4,
                     self.mb_slice_id,
                     self.this_slice_id,
+                
+                self.mbaff,
+                self.mb_field_decoding,
                 );
                 let tc = parse_residual_block_cavlc(reader, &mut chroma_ac_scan_cr[blk], 15, nc)?;
                 self.nc_cr[mb_idx * 4 + blk] = tc;

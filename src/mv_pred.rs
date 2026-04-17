@@ -10,6 +10,21 @@ use crate::inter_pred;
 use crate::residual::OFFSET_TO_BLOCK;
 use crate::slice::PredWeightTable;
 
+/// MBAFF context for neighbor derivation. Passed to MV prediction functions.
+#[derive(Clone, Copy)]
+pub(crate) struct MbaffCtx<'a> {
+    pub mbaff: bool,
+    pub mb_field_decoding: &'a [bool],
+}
+
+impl<'a> MbaffCtx<'a> {
+    /// Non-MBAFF (progressive) context — zero overhead.
+    pub const PROGRESSIVE: MbaffCtx<'static> = MbaffCtx {
+        mbaff: false,
+        mb_field_decoding: &[],
+    };
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn predict_mv_sub(
     mv_store_l0: &[[i16; 2]],
@@ -23,50 +38,25 @@ pub(crate) fn predict_mv_sub(
     ref_idx: i8,
     mb_slice_id: &[u16],
     cur_slice_id: u16,
+    mctx: MbaffCtx,
 ) -> (i16, i16) {
-    // Reuse the general predict_mv with the sub-partition's position and size.
-    // The neighbor lookup functions already handle arbitrary py_off/px_off.
-    let a = get_mv_neighbor_left(
-        mv_store_l0,
-        ref_idx_store_l0,
-        mb_idx,
-        mb_width,
-        py,
-        px,
-        mb_slice_id,
-        cur_slice_id,
+    let a = get_mv_neighbor_left_mbaff(
+        mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py, px,
+        mb_slice_id, cur_slice_id, mctx.mbaff, mctx.mb_field_decoding,
     );
-    let b = get_mv_neighbor_above(
-        mv_store_l0,
-        ref_idx_store_l0,
-        mb_idx,
-        mb_width,
-        py,
-        px,
-        mb_slice_id,
-        cur_slice_id,
+    let b = get_mv_neighbor_above_mbaff(
+        mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py, px,
+        mb_slice_id, cur_slice_id, mctx.mbaff, mctx.mb_field_decoding,
     );
+    // above-right/above-left: TODO full MBAFF support; for now use frame-mode
     let c = get_mv_neighbor_above_right(
-        mv_store_l0,
-        ref_idx_store_l0,
-        mb_idx,
-        mb_width,
-        py,
-        px,
-        spw,
-        mb_slice_id,
-        cur_slice_id,
+        mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py, px, spw,
+        mb_slice_id, cur_slice_id,
     )
     .or_else(|| {
         get_mv_neighbor_above_left(
-            mv_store_l0,
-            ref_idx_store_l0,
-            mb_idx,
-            mb_width,
-            py,
-            px,
-            mb_slice_id,
-            cur_slice_id,
+            mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py, px,
+            mb_slice_id, cur_slice_id,
         )
     });
 
@@ -243,8 +233,9 @@ pub(crate) fn predict_mv_skip(
     mb_width: usize,
     mb_slice_id: &[u16],
     cur_slice_id: u16,
+    mctx: MbaffCtx,
 ) -> (i16, i16) {
-    let a = get_mv_neighbor_left(
+    let a = get_mv_neighbor_left_mbaff(
         mv_store_l0,
         ref_idx_store_l0,
         mb_idx,
@@ -253,8 +244,10 @@ pub(crate) fn predict_mv_skip(
         0,
         mb_slice_id,
         cur_slice_id,
+        mctx.mbaff,
+        mctx.mb_field_decoding,
     );
-    let b = get_mv_neighbor_above(
+    let b = get_mv_neighbor_above_mbaff(
         mv_store_l0,
         ref_idx_store_l0,
         mb_idx,
@@ -263,6 +256,8 @@ pub(crate) fn predict_mv_skip(
         0,
         mb_slice_id,
         cur_slice_id,
+        mctx.mbaff,
+        mctx.mb_field_decoding,
     );
 
     // Spec 8.4.1.1: if A is unavailable or (refA==0 && mvA==(0,0)), OR
@@ -290,6 +285,7 @@ pub(crate) fn predict_mv_skip(
         0,
         mb_slice_id,
         cur_slice_id,
+        mctx,
     )
 }
 
@@ -307,6 +303,7 @@ pub(crate) fn derive_spatial_direct_blk(
     mb_slice_id: &[u16],
     cur_slice_id: u16,
     direct_8x8_inference_flag: bool,
+    mctx: MbaffCtx,
 ) -> ([i16; 2], [i16; 2], i8, i8, bool, bool) {
     let mut ref_idx = [-1i8; 2];
     let mut mv = [[0i16; 2]; 2];
@@ -320,7 +317,7 @@ pub(crate) fn derive_spatial_direct_blk(
             (mv_store_l1, ref_idx_store_l1)
         };
 
-        let a = get_mv_neighbor_left(
+        let a = get_mv_neighbor_left_mbaff(
             mv_s,
             ref_s,
             mb_idx,
@@ -329,8 +326,10 @@ pub(crate) fn derive_spatial_direct_blk(
             0,
             mb_slice_id,
             cur_slice_id,
+            mctx.mbaff,
+            mctx.mb_field_decoding,
         );
-        let b = get_mv_neighbor_above(
+        let b = get_mv_neighbor_above_mbaff(
             mv_s,
             ref_s,
             mb_idx,
@@ -339,6 +338,8 @@ pub(crate) fn derive_spatial_direct_blk(
             0,
             mb_slice_id,
             cur_slice_id,
+            mctx.mbaff,
+            mctx.mb_field_decoding,
         );
         let c = get_mv_neighbor_above_right(
             mv_s,
@@ -506,6 +507,7 @@ pub(crate) fn derive_temporal_direct_blk(
     mb_idx: usize,
     blk: usize,
     direct_8x8_inference_flag: bool,
+    _mctx: MbaffCtx,
 ) -> ([i16; 2], [i16; 2], i8, i8, bool, bool) {
     // When direct_8x8_inference_flag is set (spec 8.4.1.2.3), use ONE co-located
     // MV per 8x8 block. Per spec, the co-located partition is derived using the
@@ -584,6 +586,7 @@ pub(crate) fn predict_mv(
     ref_idx: i8,
     mb_slice_id: &[u16],
     cur_slice_id: u16,
+    mctx: MbaffCtx,
 ) -> (i16, i16) {
     let py_off = if part_h == 8 && part_w == 16 {
         part_idx * 8
@@ -597,7 +600,7 @@ pub(crate) fn predict_mv(
     };
 
     // A: left neighbor (4x4 block to the left of partition's top-left)
-    let a = get_mv_neighbor_left(
+    let a = get_mv_neighbor_left_mbaff(
         mv_store_l0,
         ref_idx_store_l0,
         mb_idx,
@@ -606,10 +609,12 @@ pub(crate) fn predict_mv(
         px_off,
         mb_slice_id,
         cur_slice_id,
+        mctx.mbaff,
+        mctx.mb_field_decoding,
     );
 
     // B: above neighbor
-    let b = get_mv_neighbor_above(
+    let b = get_mv_neighbor_above_mbaff(
         mv_store_l0,
         ref_idx_store_l0,
         mb_idx,
@@ -618,6 +623,8 @@ pub(crate) fn predict_mv(
         px_off,
         mb_slice_id,
         cur_slice_id,
+        mctx.mbaff,
+        mctx.mb_field_decoding,
     );
 
     // C: above-right neighbor (or D: above-left if C unavailable)

@@ -16,19 +16,43 @@ pub(crate) fn cabac_amvd(
     comp: usize, // comp: 0=x, 1=y
     mb_slice_id: &[u16],
     cur_slice_id: u16,
+    mbaff: bool,
+    _mb_field_decoding: &[bool],
 ) -> u32 {
+    // Compute left and above neighbor MB indices (MBAFF-aware)
+    let (has_left, left_mb_idx, has_above, above_mb_idx) = if !mbaff {
+        let has_left = !mb_idx.is_multiple_of(mb_width);
+        let left = if has_left { mb_idx - 1 } else { 0 };
+        let has_above = mb_idx >= mb_width;
+        let above = if has_above { mb_idx - mb_width } else { 0 };
+        (has_left, left, has_above, above)
+    } else {
+        let pair_addr = mb_idx / 2;
+        let has_left = pair_addr % mb_width != 0;
+        let left = if has_left { (pair_addr - 1) * 2 + (mb_idx % 2) } else { 0 };
+        let has_above = mb_idx % 2 != 0 || pair_addr >= mb_width;
+        let above = if !has_above {
+            0
+        } else if mb_idx % 2 != 0 {
+            mb_idx - 1
+        } else {
+            (pair_addr - mb_width) * 2 + 1
+        };
+        (has_left, left, has_above, above)
+    };
+
     // Left neighbor
     let left_mvd = if px > 0 {
         // Within MB: block to the left at (py, px-4)
         let blk = OFFSET_TO_BLOCK[py / 4][(px - 4) / 4];
         mvd_store[mb_idx * 16 + blk][comp].unsigned_abs() as u32
-    } else if !mb_idx.is_multiple_of(mb_width) {
+    } else if has_left {
         // Left MB: rightmost column, same row
-        if mb_slice_id[mb_idx - 1] != cur_slice_id {
+        if mb_slice_id[left_mb_idx] != cur_slice_id {
             0
         } else {
             let blk = OFFSET_TO_BLOCK[py / 4][3];
-            mvd_store[(mb_idx - 1) * 16 + blk][comp].unsigned_abs() as u32
+            mvd_store[left_mb_idx * 16 + blk][comp].unsigned_abs() as u32
         }
     } else {
         0
@@ -38,12 +62,12 @@ pub(crate) fn cabac_amvd(
     let top_mvd = if py > 0 {
         let blk = OFFSET_TO_BLOCK[(py - 4) / 4][px / 4];
         mvd_store[mb_idx * 16 + blk][comp].unsigned_abs() as u32
-    } else if mb_idx >= mb_width {
-        if mb_slice_id[mb_idx - mb_width] != cur_slice_id {
+    } else if has_above {
+        if mb_slice_id[above_mb_idx] != cur_slice_id {
             0
         } else {
             let blk = OFFSET_TO_BLOCK[3][px / 4];
-            mvd_store[(mb_idx - mb_width) * 16 + blk][comp].unsigned_abs() as u32
+            mvd_store[above_mb_idx * 16 + blk][comp].unsigned_abs() as u32
         }
     } else {
         0
@@ -68,7 +92,31 @@ pub(crate) fn cabac_neighbor_ref(
     _mb_is_direct: &[bool],
     blk_is_direct: &[bool],
     is_b_slice: bool,
+    mbaff: bool,
+    _mb_field_decoding: &[bool],
 ) -> (i8, i8) {
+    // Compute left and above neighbor MB indices (MBAFF-aware)
+    let (has_left, left_mb_idx, has_above, above_mb_idx) = if !mbaff {
+        let has_left = !mb_idx.is_multiple_of(mb_width);
+        let left = if has_left { mb_idx - 1 } else { 0 };
+        let has_above = mb_idx >= mb_width;
+        let above = if has_above { mb_idx - mb_width } else { 0 };
+        (has_left, left, has_above, above)
+    } else {
+        let pair_addr = mb_idx / 2;
+        let has_left = pair_addr % mb_width != 0;
+        let left = if has_left { (pair_addr - 1) * 2 + (mb_idx % 2) } else { 0 };
+        let has_above = mb_idx % 2 != 0 || pair_addr >= mb_width;
+        let above = if !has_above {
+            0
+        } else if mb_idx % 2 != 0 {
+            mb_idx - 1
+        } else {
+            (pair_addr - mb_width) * 2 + 1
+        };
+        (has_left, left, has_above, above)
+    };
+
     let left_ref = if px > 0 {
         let blk = OFFSET_TO_BLOCK[py / 4][(px - 4) / 4];
         if is_b_slice && blk_is_direct[mb_idx * 16 + blk] {
@@ -76,16 +124,15 @@ pub(crate) fn cabac_neighbor_ref(
         } else {
             ref_idx_store[mb_idx * 16 + blk]
         }
-    } else if !mb_idx.is_multiple_of(mb_width) {
-        if mb_slice_id[mb_idx - 1] != cur_slice_id {
+    } else if has_left {
+        if mb_slice_id[left_mb_idx] != cur_slice_id {
             -1
         } else {
             let blk = OFFSET_TO_BLOCK[py / 4][3];
-            let neighbor_mb = mb_idx - 1;
-            if is_b_slice && blk_is_direct[neighbor_mb * 16 + blk] {
+            if is_b_slice && blk_is_direct[left_mb_idx * 16 + blk] {
                 0
             } else {
-                ref_idx_store[neighbor_mb * 16 + blk]
+                ref_idx_store[left_mb_idx * 16 + blk]
             }
         }
     } else {
@@ -99,16 +146,15 @@ pub(crate) fn cabac_neighbor_ref(
         } else {
             ref_idx_store[mb_idx * 16 + blk]
         }
-    } else if mb_idx >= mb_width {
-        if mb_slice_id[mb_idx - mb_width] != cur_slice_id {
+    } else if has_above {
+        if mb_slice_id[above_mb_idx] != cur_slice_id {
             -1
         } else {
             let blk = OFFSET_TO_BLOCK[3][px / 4];
-            let neighbor_mb = mb_idx - mb_width;
-            if is_b_slice && blk_is_direct[neighbor_mb * 16 + blk] {
+            if is_b_slice && blk_is_direct[above_mb_idx * 16 + blk] {
                 0
             } else {
-                ref_idx_store[neighbor_mb * 16 + blk]
+                ref_idx_store[above_mb_idx * 16 + blk]
             }
         }
     } else {
@@ -128,6 +174,8 @@ pub(crate) fn cabac_neighbor_nz_luma(
     is_intra: bool,
     mb_slice_id: &[u16],
     cur_slice_id: u16,
+    mbaff: bool,
+    _mb_field_decoding: &[bool],
 ) -> bool {
     // Neighbor block indices: within-MB (>=0) or cross-MB (negative, encoded as -(blk+1))
     #[rustfmt::skip]
@@ -144,15 +192,35 @@ pub(crate) fn cabac_neighbor_nz_luma(
         // Cross-MB: decode the encoded block index
         let neighbor_blk = (-(neighbor + 1)) as usize;
         let neighbor_mb = if is_left {
-            if mb_idx.checked_rem(mb_width) == Some(0) {
+            let has_left = if !mbaff {
+                mb_idx.checked_rem(mb_width) != Some(0)
+            } else {
+                (mb_idx / 2) % mb_width != 0
+            };
+            if !has_left {
                 return is_intra;
             }
-            mb_idx - 1
+            if !mbaff {
+                mb_idx - 1
+            } else {
+                (mb_idx / 2 - 1) * 2 + (mb_idx % 2)
+            }
         } else {
-            if mb_idx < mb_width {
+            let has_above = if !mbaff {
+                mb_idx >= mb_width
+            } else {
+                mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
+            };
+            if !has_above {
                 return is_intra;
             }
-            mb_idx - mb_width
+            if !mbaff {
+                mb_idx - mb_width
+            } else if mb_idx % 2 != 0 {
+                mb_idx - 1
+            } else {
+                ((mb_idx / 2) - mb_width) * 2 + 1
+            }
         };
         if mb_slice_id[neighbor_mb] != cur_slice_id {
             return is_intra;
@@ -172,6 +240,8 @@ pub(crate) fn cabac_neighbor_nz_chroma(
     is_intra: bool,
     mb_slice_id: &[u16],
     cur_slice_id: u16,
+    mbaff: bool,
+    _mb_field_decoding: &[bool],
 ) -> bool {
     // Chroma block layout: 0=(0,0), 1=(0,4), 2=(4,0), 3=(4,4)
     // Left neighbors: blk0→left_mb blk1, blk1→blk0, blk2→left_mb blk3, blk3→blk2
@@ -198,15 +268,35 @@ pub(crate) fn cabac_neighbor_nz_chroma(
         nc_chroma[mb_idx * 4 + nb] > 0
     } else if let Some(nb) = cross_mb_blk {
         let neighbor_mb = if is_left {
-            if mb_idx.checked_rem(mb_width) == Some(0) {
+            let has_left = if !mbaff {
+                mb_idx.checked_rem(mb_width) != Some(0)
+            } else {
+                (mb_idx / 2) % mb_width != 0
+            };
+            if !has_left {
                 return is_intra;
             }
-            mb_idx - 1
+            if !mbaff {
+                mb_idx - 1
+            } else {
+                (mb_idx / 2 - 1) * 2 + (mb_idx % 2)
+            }
         } else {
-            if mb_idx < mb_width {
+            let has_above = if !mbaff {
+                mb_idx >= mb_width
+            } else {
+                mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
+            };
+            if !has_above {
                 return is_intra;
             }
-            mb_idx - mb_width
+            if !mbaff {
+                mb_idx - mb_width
+            } else if mb_idx % 2 != 0 {
+                mb_idx - 1
+            } else {
+                ((mb_idx / 2) - mb_width) * 2 + 1
+            }
         };
         if mb_slice_id[neighbor_mb] != cur_slice_id {
             return is_intra;
@@ -226,6 +316,8 @@ pub(crate) fn predict_i4x4_mode(
     mb_slice_id: &[u16],
     cur_slice_id: u16,
     intra_avail: &[bool],
+    mbaff: bool,
+    mb_field_decoding: &[bool],
 ) -> u8 {
     // None = neighbor unavailable (picture boundary or non-I4x4 neighbor MB that
     // doesn't exist). When either is None, predicted mode defaults to DC (2).
@@ -238,6 +330,8 @@ pub(crate) fn predict_i4x4_mode(
         mb_slice_id,
         cur_slice_id,
         intra_avail,
+        mbaff,
+        mb_field_decoding,
     );
     let mode_b = get_neighbor_i4x4_mode(
         modes,
@@ -248,6 +342,8 @@ pub(crate) fn predict_i4x4_mode(
         mb_slice_id,
         cur_slice_id,
         intra_avail,
+        mbaff,
+        mb_field_decoding,
     );
     match (mode_a, mode_b) {
         (Some(a), Some(b)) => a.min(b),
@@ -267,6 +363,8 @@ pub(crate) fn get_neighbor_i4x4_mode(
     mb_slice_id: &[u16],
     cur_slice_id: u16,
     intra_avail: &[bool],
+    mbaff: bool,
+    _mb_field_decoding: &[bool],
 ) -> Option<u8> {
     // Block layout:  0  1 | 4  5
     //                2  3 | 6  7
@@ -283,11 +381,22 @@ pub(crate) fn get_neighbor_i4x4_mode(
             14 => Some(modes[mb_idx * 16 + 11]),
             0 | 2 | 8 | 10 => {
                 // Left edge of MB
-                if !mb_idx.is_multiple_of(mb_width)
-                    && mb_slice_id[mb_idx - 1] == cur_slice_id
-                    && intra_avail[mb_idx - 1]
+                let has_left = if !mbaff {
+                    !mb_idx.is_multiple_of(mb_width)
+                } else {
+                    (mb_idx / 2) % mb_width != 0
+                };
+                let left_mb = if !has_left {
+                    0 // dummy, not used
+                } else if !mbaff {
+                    mb_idx - 1
+                } else {
+                    (mb_idx / 2 - 1) * 2 + (mb_idx % 2)
+                };
+                if has_left
+                    && mb_slice_id[left_mb] == cur_slice_id
+                    && intra_avail[left_mb]
                 {
-                    let left_mb = mb_idx - 1;
                     let left_blk = match blk_idx {
                         0 => 5,
                         2 => 7,
@@ -312,11 +421,24 @@ pub(crate) fn get_neighbor_i4x4_mode(
             13 => Some(modes[mb_idx * 16 + 7]),
             0 | 1 | 4 | 5 => {
                 // Top edge of MB
-                if mb_idx >= mb_width
-                    && mb_slice_id[mb_idx - mb_width] == cur_slice_id
-                    && intra_avail[mb_idx - mb_width]
+                let has_above = if !mbaff {
+                    mb_idx >= mb_width
+                } else {
+                    mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
+                };
+                let above_mb = if !has_above {
+                    0 // dummy, not used
+                } else if !mbaff {
+                    mb_idx - mb_width
+                } else if mb_idx % 2 != 0 {
+                    mb_idx - 1
+                } else {
+                    (mb_idx / 2 - mb_width) * 2 + 1
+                };
+                if has_above
+                    && mb_slice_id[above_mb] == cur_slice_id
+                    && intra_avail[above_mb]
                 {
-                    let above_mb = mb_idx - mb_width;
                     let above_blk = match blk_idx {
                         0 => 10,
                         1 => 11,
@@ -336,6 +458,7 @@ pub(crate) fn get_neighbor_i4x4_mode(
 
 /// Compute nC for a 4x4 block from left (A) and above (B) neighbors.
 /// H.264 spec 9.2.1: nC = average of neighbor total_coeff values.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compute_nc(
     nc_array: &[u8],
     mb_idx: usize,
@@ -344,6 +467,8 @@ pub(crate) fn compute_nc(
     blks_per_mb: usize,
     mb_slice_id: &[u16],
     cur_slice_id: u16,
+    mbaff: bool,
+    _mb_field_decoding: &[bool],
 ) -> i32 {
     let (left_blk, left_in_mb) = if blks_per_mb == 16 {
         match blk_idx {
@@ -377,10 +502,26 @@ pub(crate) fn compute_nc(
 
     let nc_a: Option<u8> = if left_in_mb {
         Some(nc_array[mb_idx * blks_per_mb + left_blk])
-    } else if !mb_idx.is_multiple_of(mb_width) && mb_slice_id[mb_idx - 1] == cur_slice_id {
-        Some(nc_array[(mb_idx - 1) * blks_per_mb + left_blk])
     } else {
-        None
+        let has_left = if !mbaff {
+            !mb_idx.is_multiple_of(mb_width)
+        } else {
+            (mb_idx / 2) % mb_width != 0
+        };
+        if has_left {
+            let left_nb = if !mbaff {
+                mb_idx - 1
+            } else {
+                (mb_idx / 2 - 1) * 2 + (mb_idx % 2)
+            };
+            if mb_slice_id[left_nb] == cur_slice_id {
+                Some(nc_array[left_nb * blks_per_mb + left_blk])
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     };
 
     let (above_blk, above_in_mb) = if blks_per_mb == 16 {
@@ -415,10 +556,28 @@ pub(crate) fn compute_nc(
 
     let nc_b: Option<u8> = if above_in_mb {
         Some(nc_array[mb_idx * blks_per_mb + above_blk])
-    } else if mb_idx >= mb_width && mb_slice_id[mb_idx - mb_width] == cur_slice_id {
-        Some(nc_array[(mb_idx - mb_width) * blks_per_mb + above_blk])
     } else {
-        None
+        let has_above = if !mbaff {
+            mb_idx >= mb_width
+        } else {
+            mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
+        };
+        if has_above {
+            let above_nb = if !mbaff {
+                mb_idx - mb_width
+            } else if mb_idx % 2 != 0 {
+                mb_idx - 1
+            } else {
+                (mb_idx / 2 - mb_width) * 2 + 1
+            };
+            if mb_slice_id[above_nb] == cur_slice_id {
+                Some(nc_array[above_nb * blks_per_mb + above_blk])
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     };
 
     match (nc_a, nc_b) {

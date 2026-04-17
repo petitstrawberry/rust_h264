@@ -780,21 +780,6 @@ impl Decoder {
                 break;
             }
 
-            // MBAFF: read mb_field_decoding_flag (spec 7.3.4)
-            // Read at start of top MB, or at bottom MB if top was skipped.
-            if mbaff && !use_cabac {
-                let is_top = mb_idx % 2 == 0;
-                let top_was_skipped = !is_top && mb_skip[mb_idx - 1];
-                if is_top || top_was_skipped {
-                    if mb_skip_run > 0 {
-                        // During skip runs, infer as equal to the left pair's flag
-                        // For simplicity, default to frame-coded (false)
-                    } else {
-                        _mb_field_decoding[mb_idx / 2] = reader.read_bit()? != 0;
-                    }
-                }
-            }
-
             // Stamp this MB with the current slice ID for boundary detection
             mb_slice_id[mb_idx] = this_slice_id;
             // Compute pixel position
@@ -850,6 +835,24 @@ impl Decoder {
                 }
                 // mb_skip_run == 0: parse the next MB normally
                 mb_skip_run = -1; // reset for next iteration
+
+                // MBAFF: read mb_field_decoding_flag for this pair
+                // (spec 7.3.4: read before first non-skipped MB of pair)
+                if mbaff {
+                    let is_top = mb_idx % 2 == 0;
+                    let top_was_skipped = !is_top && mb_skip[mb_idx - 1];
+                    if is_top || top_was_skipped {
+                        _mb_field_decoding[mb_idx / 2] = reader.read_bit()? != 0;
+                    }
+                }
+            }
+
+            // MBAFF I-slice: read mb_field_decoding_flag before MB decode
+            if mbaff && !(is_p_slice || is_b_slice) {
+                let is_top = mb_idx % 2 == 0;
+                if is_top {
+                    _mb_field_decoding[mb_idx / 2] = reader.read_bit()? != 0;
+                }
             }
 
             {

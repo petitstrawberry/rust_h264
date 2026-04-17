@@ -4,7 +4,7 @@ use crate::cabac::CabacReader;
 use crate::deblock::{MbInfo, MbType};
 use crate::error::DecodeError;
 use crate::inter_pred;
-use crate::mv_pred::{predict_mv, predict_mv_sub, ref_pic_safe};
+use crate::mv_pred::{predict_mv, predict_mv_sub, ref_pic_safe, MbaffCtx};
 use crate::neighbor::{
     cabac_amvd, cabac_neighbor_nz_chroma, cabac_neighbor_nz_luma, cabac_neighbor_ref,
     dequant_4x4_ac_raster, predict_i4x4_mode,
@@ -49,17 +49,13 @@ impl SliceContext<'_> {
         if sp.is_p_slice || sp.is_b_slice {
             // Decode skip flag
             // Unavailable neighbors are treated as skipped (ctx not incremented)
-            let left_skip = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-            {
-                self.mb_skip[mb_idx - 1]
+            let left_skip = if let Some(left) = self.left_mb(mb_idx) {
+                self.mb_skip[left]
             } else {
                 true
             };
-            let top_skip = if mb_idx >= self.mb_width as usize
-                && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-            {
-                self.mb_skip[mb_idx - self.mb_width as usize]
+            let top_skip = if let Some(above) = self.above_mb(mb_idx) {
+                self.mb_skip[above]
             } else {
                 true
             };
@@ -91,17 +87,13 @@ impl SliceContext<'_> {
             let raw_mb_type = if sp.is_p_slice {
                 cr.decode_p_mb_type(st)
             } else {
-                let left_not_direct = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                    && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                {
-                    !self.mb_is_direct[mb_idx - 1]
+                let left_not_direct = if let Some(left) = self.left_mb(mb_idx) {
+                    !self.mb_is_direct[left]
                 } else {
                     false
                 };
-                let top_not_direct = if mb_idx >= self.mb_width as usize
-                    && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-                {
-                    !self.mb_is_direct[mb_idx - self.mb_width as usize]
+                let top_not_direct = if let Some(above) = self.above_mb(mb_idx) {
+                    !self.mb_is_direct[above]
                 } else {
                     false
                 };
@@ -123,12 +115,12 @@ impl SliceContext<'_> {
 
                 // Cross-slice intra prediction: neighbors from other slices unavailable (spec 6.4.1)
                 // constrained_intra_pred_flag: inter-predicted neighbors also unavailable
-                let above_mb_avail = mb_idx >= self.mb_width as usize
-                    && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-                    && self.is_intra_neighbor_avail(mb_idx - self.mb_width as usize, sp);
-                let left_mb_avail = !mb_idx.is_multiple_of(self.mb_width as usize)
-                    && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                    && self.is_intra_neighbor_avail(mb_idx - 1, sp);
+                let above_mb_avail = self
+                    .above_mb(mb_idx)
+                    .is_some_and(|above| self.is_intra_neighbor_avail(above, sp));
+                let left_mb_avail = self
+                    .left_mb(mb_idx)
+                    .is_some_and(|left| self.is_intra_neighbor_avail(left, sp));
                 let above_left_mb_avail = mb_idx >= self.mb_width as usize
                     && !mb_idx.is_multiple_of(self.mb_width as usize)
                     && self.mb_slice_id[mb_idx - self.mb_width as usize - 1] == self.this_slice_id
@@ -143,18 +135,13 @@ impl SliceContext<'_> {
                 if i_mb_type == 0 {
                     // I4x4/I8x8 in P/B
                     let nts = {
-                        let left = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                            && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                        {
-                            self.mb_is_8x8dct[mb_idx - 1] as usize
+                        let left = if let Some(left) = self.left_mb(mb_idx) {
+                            self.mb_is_8x8dct[left] as usize
                         } else {
                             0
                         };
-                        let top = if mb_idx >= self.mb_width as usize
-                            && self.mb_slice_id[mb_idx - self.mb_width as usize]
-                                == self.this_slice_id
-                        {
-                            self.mb_is_8x8dct[mb_idx - self.mb_width as usize] as usize
+                        let top = if let Some(above) = self.above_mb(mb_idx) {
+                            self.mb_is_8x8dct[above] as usize
                         } else {
                             0
                         };
@@ -180,6 +167,9 @@ impl SliceContext<'_> {
                             self.mb_slice_id,
                             self.this_slice_id,
                             &intra_avail,
+                        
+                        self.mbaff,
+                        self.mb_field_decoding,
                         );
                         let mode = cr.decode_intra4x4_pred_mode(st, predicted);
                         if use_8x8_intra_pb {
@@ -192,17 +182,13 @@ impl SliceContext<'_> {
                             self.i4x4_modes[mb_idx * 16 + blk] = mode;
                         }
                     }
-                    let left_cm = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                        && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                    {
-                        self.mb_chroma_pred[mb_idx - 1]
+                    let left_cm = if let Some(left) = self.left_mb(mb_idx) {
+                        self.mb_chroma_pred[left]
                     } else {
                         0
                     };
-                    let top_cm = if mb_idx >= self.mb_width as usize
-                        && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-                    {
-                        self.mb_chroma_pred[mb_idx - self.mb_width as usize]
+                    let top_cm = if let Some(above) = self.above_mb(mb_idx) {
+                        self.mb_chroma_pred[above]
                     } else {
                         0
                     };
@@ -284,6 +270,9 @@ impl SliceContext<'_> {
                                     true,
                                     self.mb_slice_id,
                                     self.this_slice_id,
+                                
+                                self.mbaff,
+                                self.mb_field_decoding,
                                 );
                                 let top_nz = cabac_neighbor_nz_luma(
                                     self.nc_luma,
@@ -294,6 +283,9 @@ impl SliceContext<'_> {
                                     true,
                                     self.mb_slice_id,
                                     self.this_slice_id,
+                                
+                                self.mbaff,
+                                self.mb_field_decoding,
                                 );
                                 if cr.decode_coded_block_flag(st, 2, left_nz, top_nz) {
                                     let (coeffs, tc) = cr.decode_residual_cabac(st, 2, 16);
@@ -344,18 +336,13 @@ impl SliceContext<'_> {
                     let mut chroma_dc_cb = [0i32; 4];
                     let mut chroma_dc_cr = [0i32; 4];
                     if cbp_chroma >= 1 {
-                        let left_dc_nz = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                            && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                        {
-                            (self.mb_cbp[mb_idx - 1] >> 6) & 1 != 0
+                        let left_dc_nz = if let Some(left) = self.left_mb(mb_idx) {
+                            (self.mb_cbp[left] >> 6) & 1 != 0
                         } else {
                             true
                         };
-                        let top_dc_nz = if mb_idx >= self.mb_width as usize
-                            && self.mb_slice_id[mb_idx - self.mb_width as usize]
-                                == self.this_slice_id
-                        {
-                            (self.mb_cbp[mb_idx - self.mb_width as usize] >> 6) & 1 != 0
+                        let top_dc_nz = if let Some(above) = self.above_mb(mb_idx) {
+                            (self.mb_cbp[above] >> 6) & 1 != 0
                         } else {
                             true
                         };
@@ -367,18 +354,13 @@ impl SliceContext<'_> {
                             self.mb_cbp[mb_idx] |= 0x40;
                         }
 
-                        let left_dc_nz_cr = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                            && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                        {
-                            (self.mb_cbp[mb_idx - 1] >> 7) & 1 != 0
+                        let left_dc_nz_cr = if let Some(left) = self.left_mb(mb_idx) {
+                            (self.mb_cbp[left] >> 7) & 1 != 0
                         } else {
                             true
                         };
-                        let top_dc_nz_cr = if mb_idx >= self.mb_width as usize
-                            && self.mb_slice_id[mb_idx - self.mb_width as usize]
-                                == self.this_slice_id
-                        {
-                            (self.mb_cbp[mb_idx - self.mb_width as usize] >> 7) & 1 != 0
+                        let top_dc_nz_cr = if let Some(above) = self.above_mb(mb_idx) {
+                            (self.mb_cbp[above] >> 7) & 1 != 0
                         } else {
                             true
                         };
@@ -405,6 +387,9 @@ impl SliceContext<'_> {
                                 true,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             let top_nz = cabac_neighbor_nz_chroma(
                                 self.nc_cb,
@@ -415,6 +400,9 @@ impl SliceContext<'_> {
                                 true,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                            
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                 let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -434,6 +422,9 @@ impl SliceContext<'_> {
                                 true,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                            
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             let top_nz = cabac_neighbor_nz_chroma(
                                 self.nc_cr,
@@ -444,6 +435,9 @@ impl SliceContext<'_> {
                                 true,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                            
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                 let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -492,17 +486,13 @@ impl SliceContext<'_> {
                     let i16_pred = (mt % 4) as u8;
                     let cbp_chroma = ((mt / 4) % 3) as u8;
                     let cbp_luma = if mt >= 12 { 15u8 } else { 0u8 };
-                    let left_cm = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                        && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                    {
-                        self.mb_chroma_pred[mb_idx - 1]
+                    let left_cm = if let Some(left) = self.left_mb(mb_idx) {
+                        self.mb_chroma_pred[left]
                     } else {
                         0
                     };
-                    let top_cm = if mb_idx >= self.mb_width as usize
-                        && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-                    {
-                        self.mb_chroma_pred[mb_idx - self.mb_width as usize]
+                    let top_cm = if let Some(above) = self.above_mb(mb_idx) {
+                        self.mb_chroma_pred[above]
                     } else {
                         0
                     };
@@ -517,17 +507,13 @@ impl SliceContext<'_> {
 
                     // Luma DC (cat=0, 16 coefficients)
                     let mut luma_dc = [0i32; 16];
-                    let dc_left_nz = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                        && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                    {
-                        (self.mb_cbp[mb_idx - 1] >> 8) & 1 != 0
+                    let dc_left_nz = if let Some(left) = self.left_mb(mb_idx) {
+                        (self.mb_cbp[left] >> 8) & 1 != 0
                     } else {
                         true
                     };
-                    let dc_top_nz = if mb_idx >= self.mb_width as usize
-                        && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-                    {
-                        (self.mb_cbp[mb_idx - self.mb_width as usize] >> 8) & 1 != 0
+                    let dc_top_nz = if let Some(above) = self.above_mb(mb_idx) {
+                        (self.mb_cbp[above] >> 8) & 1 != 0
                     } else {
                         true
                     };
@@ -552,6 +538,9 @@ impl SliceContext<'_> {
                                 true,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                            
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             let top_nz = cabac_neighbor_nz_luma(
                                 self.nc_luma,
@@ -562,6 +551,9 @@ impl SliceContext<'_> {
                                 true,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                            
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             if cr.decode_coded_block_flag(st, 1, left_nz, top_nz) {
                                 let (coeffs, tc) = cr.decode_residual_cabac(st, 1, 15);
@@ -636,18 +628,13 @@ impl SliceContext<'_> {
                     let mut chroma_dc_cb = [0i32; 4];
                     let mut chroma_dc_cr = [0i32; 4];
                     if cbp_chroma >= 1 {
-                        let left_dc_nz = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                            && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                        {
-                            (self.mb_cbp[mb_idx - 1] >> 6) & 1 != 0
+                        let left_dc_nz = if let Some(left) = self.left_mb(mb_idx) {
+                            (self.mb_cbp[left] >> 6) & 1 != 0
                         } else {
                             true
                         };
-                        let top_dc_nz = if mb_idx >= self.mb_width as usize
-                            && self.mb_slice_id[mb_idx - self.mb_width as usize]
-                                == self.this_slice_id
-                        {
-                            (self.mb_cbp[mb_idx - self.mb_width as usize] >> 6) & 1 != 0
+                        let top_dc_nz = if let Some(above) = self.above_mb(mb_idx) {
+                            (self.mb_cbp[above] >> 6) & 1 != 0
                         } else {
                             true
                         };
@@ -658,18 +645,13 @@ impl SliceContext<'_> {
                             }
                             self.mb_cbp[mb_idx] |= 0x40;
                         }
-                        let left_dc_nz_cr = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                            && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                        {
-                            (self.mb_cbp[mb_idx - 1] >> 7) & 1 != 0
+                        let left_dc_nz_cr = if let Some(left) = self.left_mb(mb_idx) {
+                            (self.mb_cbp[left] >> 7) & 1 != 0
                         } else {
                             true
                         };
-                        let top_dc_nz_cr = if mb_idx >= self.mb_width as usize
-                            && self.mb_slice_id[mb_idx - self.mb_width as usize]
-                                == self.this_slice_id
-                        {
-                            (self.mb_cbp[mb_idx - self.mb_width as usize] >> 7) & 1 != 0
+                        let top_dc_nz_cr = if let Some(above) = self.above_mb(mb_idx) {
+                            (self.mb_cbp[above] >> 7) & 1 != 0
                         } else {
                             true
                         };
@@ -696,6 +678,9 @@ impl SliceContext<'_> {
                                 true,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             let top_nz = cabac_neighbor_nz_chroma(
                                 self.nc_cb,
@@ -706,6 +691,9 @@ impl SliceContext<'_> {
                                 true,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                 let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -725,6 +713,9 @@ impl SliceContext<'_> {
                                 true,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                            
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             let top_nz = cabac_neighbor_nz_chroma(
                                 self.nc_cr,
@@ -735,6 +726,9 @@ impl SliceContext<'_> {
                                 true,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                            
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                 let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -873,6 +867,9 @@ impl SliceContext<'_> {
                                     self.mb_is_direct,
                                     self.blk_is_direct,
                                     sp.is_b_slice,
+                                
+                                self.mbaff,
+                                self.mb_field_decoding,
                                 );
                                 *sr = cr.decode_ref_idx(st, left_ref, top_ref);
                             }
@@ -912,6 +909,9 @@ impl SliceContext<'_> {
                                 0,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                            
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             let amvd_y = cabac_amvd(
                                 self.mvd_store,
@@ -922,6 +922,9 @@ impl SliceContext<'_> {
                                 1,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                            
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                             let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
@@ -937,6 +940,7 @@ impl SliceContext<'_> {
                                 ref_idx,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                                MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                             );
                             let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
                             for r in (0..sph).step_by(4) {
@@ -1080,6 +1084,9 @@ impl SliceContext<'_> {
                                 self.mb_is_direct,
                                 self.blk_is_direct,
                                 sp.is_b_slice,
+                            
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             *ref_entry = cr.decode_ref_idx(st, left_ref, top_ref);
                         }
@@ -1114,6 +1121,9 @@ impl SliceContext<'_> {
                             0,
                             self.mb_slice_id,
                             self.this_slice_id,
+                        
+                        self.mbaff,
+                        self.mb_field_decoding,
                         );
                         let amvd_y = cabac_amvd(
                             self.mvd_store,
@@ -1124,6 +1134,9 @@ impl SliceContext<'_> {
                             1,
                             self.mb_slice_id,
                             self.this_slice_id,
+                        
+                        self.mbaff,
+                        self.mb_field_decoding,
                         );
                         let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                         let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
@@ -1138,6 +1151,7 @@ impl SliceContext<'_> {
                             part_ref[p],
                             self.mb_slice_id,
                             self.this_slice_id,
+                            MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                         );
                         let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
                         // Store MV, ref, and MVD
@@ -1253,18 +1267,13 @@ impl SliceContext<'_> {
                 let use_8x8_inter =
                     if sp.transform_8x8_mode_flag && cbp_luma != 0 && no_sub_less_than_8x8 {
                         let nts = {
-                            let left = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                                && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                            {
-                                self.mb_is_8x8dct[mb_idx - 1] as usize
+                            let left = if let Some(left) = self.left_mb(mb_idx) {
+                                self.mb_is_8x8dct[left] as usize
                             } else {
                                 0
                             };
-                            let top = if mb_idx >= self.mb_width as usize
-                                && self.mb_slice_id[mb_idx - self.mb_width as usize]
-                                    == self.this_slice_id
-                            {
-                                self.mb_is_8x8dct[mb_idx - self.mb_width as usize] as usize
+                            let top = if let Some(above) = self.above_mb(mb_idx) {
+                                self.mb_is_8x8dct[above] as usize
                             } else {
                                 0
                             };
@@ -1330,6 +1339,9 @@ impl SliceContext<'_> {
                                     false,
                                     self.mb_slice_id,
                                     self.this_slice_id,
+                                
+                                self.mbaff,
+                                self.mb_field_decoding,
                                 );
                                 let top_nz = cabac_neighbor_nz_luma(
                                     self.nc_luma,
@@ -1340,6 +1352,9 @@ impl SliceContext<'_> {
                                     false,
                                     self.mb_slice_id,
                                     self.this_slice_id,
+                                
+                                self.mbaff,
+                                self.mb_field_decoding,
                                 );
                                 let cbf = cr.decode_coded_block_flag(st, 2, left_nz, top_nz);
                                 if cbf {
@@ -1383,17 +1398,13 @@ impl SliceContext<'_> {
                 if cbp_chroma >= 1 {
                     let mut chroma_dc_cb = [0i32; 4];
                     let mut chroma_dc_cr = [0i32; 4];
-                    let left_dc_nz = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                        && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                    {
-                        (self.mb_cbp[mb_idx - 1] >> 6) & 1 != 0
+                    let left_dc_nz = if let Some(left) = self.left_mb(mb_idx) {
+                        (self.mb_cbp[left] >> 6) & 1 != 0
                     } else {
                         false
                     };
-                    let top_dc_nz = if mb_idx >= self.mb_width as usize
-                        && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-                    {
-                        (self.mb_cbp[mb_idx - self.mb_width as usize] >> 6) & 1 != 0
+                    let top_dc_nz = if let Some(above) = self.above_mb(mb_idx) {
+                        (self.mb_cbp[above] >> 6) & 1 != 0
                     } else {
                         false
                     };
@@ -1404,17 +1415,13 @@ impl SliceContext<'_> {
                         }
                         self.mb_cbp[mb_idx] |= 0x40;
                     }
-                    let left_dc_cr = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                        && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                    {
-                        (self.mb_cbp[mb_idx - 1] >> 7) & 1 != 0
+                    let left_dc_cr = if let Some(left) = self.left_mb(mb_idx) {
+                        (self.mb_cbp[left] >> 7) & 1 != 0
                     } else {
                         false
                     };
-                    let top_dc_cr = if mb_idx >= self.mb_width as usize
-                        && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-                    {
-                        (self.mb_cbp[mb_idx - self.mb_width as usize] >> 7) & 1 != 0
+                    let top_dc_cr = if let Some(above) = self.above_mb(mb_idx) {
+                        (self.mb_cbp[above] >> 7) & 1 != 0
                     } else {
                         false
                     };
@@ -1457,6 +1464,9 @@ impl SliceContext<'_> {
                                     false,
                                     self.mb_slice_id,
                                     self.this_slice_id,
+                                
+                                self.mbaff,
+                                self.mb_field_decoding,
                                 );
                                 let top_nz = cabac_neighbor_nz_chroma(
                                     nc_arr,
@@ -1467,6 +1477,9 @@ impl SliceContext<'_> {
                                     false,
                                     self.mb_slice_id,
                                     self.this_slice_id,
+                                
+                                self.mbaff,
+                                self.mb_field_decoding,
                                 );
                                 if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                     let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -1663,6 +1676,9 @@ impl SliceContext<'_> {
                             self.mb_is_direct,
                             self.blk_is_direct,
                             sp.is_b_slice,
+                        
+                        self.mbaff,
+                        self.mb_field_decoding,
                         );
                         ref_l0 = cr.decode_ref_idx(st, left_ref, top_ref);
                     }
@@ -1678,6 +1694,9 @@ impl SliceContext<'_> {
                             self.mb_is_direct,
                             self.blk_is_direct,
                             sp.is_b_slice,
+                        
+                        self.mbaff,
+                        self.mb_field_decoding,
                         );
                         ref_l1 = cr.decode_ref_idx(st, left_ref, top_ref);
                     }
@@ -1695,6 +1714,9 @@ impl SliceContext<'_> {
                             0,
                             self.mb_slice_id,
                             self.this_slice_id,
+                        
+                        self.mbaff,
+                        self.mb_field_decoding,
                         );
                         let amvd_y = cabac_amvd(
                             self.mvd_store,
@@ -1705,6 +1727,9 @@ impl SliceContext<'_> {
                             1,
                             self.mb_slice_id,
                             self.this_slice_id,
+                        
+                        self.mbaff,
+                        self.mb_field_decoding,
                         );
                         let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                         let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
@@ -1719,6 +1744,7 @@ impl SliceContext<'_> {
                             ref_l0,
                             self.mb_slice_id,
                             self.this_slice_id,
+                            MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                         );
                         mv_l0 = [mvp_x + mvd_x, mvp_y + mvd_y];
                         for blk in 0..16 {
@@ -1737,6 +1763,9 @@ impl SliceContext<'_> {
                             0,
                             self.mb_slice_id,
                             self.this_slice_id,
+                        
+                        self.mbaff,
+                        self.mb_field_decoding,
                         );
                         let amvd_y = cabac_amvd(
                             self.mvd_store_l1,
@@ -1747,6 +1776,9 @@ impl SliceContext<'_> {
                             1,
                             self.mb_slice_id,
                             self.this_slice_id,
+                        
+                        self.mbaff,
+                        self.mb_field_decoding,
                         );
                         let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                         let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
@@ -1761,6 +1793,7 @@ impl SliceContext<'_> {
                             ref_l1,
                             self.mb_slice_id,
                             self.this_slice_id,
+                            MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                         );
                         mv_l1 = [mvp_x + mvd_x, mvp_y + mvd_y];
                         for blk in 0..16 {
@@ -1824,6 +1857,9 @@ impl SliceContext<'_> {
                                     self.mb_is_direct,
                                     self.blk_is_direct,
                                     sp.is_b_slice,
+                                
+                                self.mbaff,
+                                self.mb_field_decoding,
                                 );
                                 part_ref_l0[p] = cr.decode_ref_idx(st, left_ref, top_ref);
                             } else {
@@ -1857,6 +1893,9 @@ impl SliceContext<'_> {
                                     self.mb_is_direct,
                                     self.blk_is_direct,
                                     sp.is_b_slice,
+                                
+                                self.mbaff,
+                                self.mb_field_decoding,
                                 );
                                 part_ref_l1[p] = cr.decode_ref_idx(st, left_ref, top_ref);
                             } else {
@@ -1901,6 +1940,9 @@ impl SliceContext<'_> {
                                 0,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                            
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             let amvd_y = cabac_amvd(
                                 self.mvd_store,
@@ -1911,6 +1953,9 @@ impl SliceContext<'_> {
                                 1,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                            
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                             let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
@@ -1925,6 +1970,7 @@ impl SliceContext<'_> {
                                 part_ref_l0[p],
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                                MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                             );
                             mv_l0_parts[p] = [mvp_x + mvd_x, mvp_y + mvd_y];
                             // Store MV and MVD immediately for partition 1 prediction
@@ -1976,6 +2022,9 @@ impl SliceContext<'_> {
                                 0,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                            
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             let amvd_y = cabac_amvd(
                                 self.mvd_store_l1,
@@ -1986,6 +2035,9 @@ impl SliceContext<'_> {
                                 1,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                            
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                             let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
@@ -2000,6 +2052,7 @@ impl SliceContext<'_> {
                                 part_ref_l1[p],
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                                MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                             );
                             mv_l1_parts[p] = [mvp_x + mvd_x, mvp_y + mvd_y];
                             for r in (0..part_h).step_by(4) {
@@ -2084,6 +2137,9 @@ impl SliceContext<'_> {
                                         self.mb_is_direct,
                                         self.blk_is_direct,
                                         sp.is_b_slice,
+                                    
+                                    self.mbaff,
+                                    self.mb_field_decoding,
                                     );
                                     sub_ref_l0[smb] = cr.decode_ref_idx(st, left_ref, top_ref);
                                 } else {
@@ -2121,6 +2177,9 @@ impl SliceContext<'_> {
                                         self.mb_is_direct,
                                         self.blk_is_direct,
                                         sp.is_b_slice,
+                                    
+                                    self.mbaff,
+                                    self.mb_field_decoding,
                                     );
                                     sub_ref_l1[smb] = cr.decode_ref_idx(st, left_ref, top_ref);
                                 } else {
@@ -2264,6 +2323,9 @@ impl SliceContext<'_> {
                                 0,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                            
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             let amvd_y = cabac_amvd(
                                 self.mvd_store,
@@ -2274,6 +2336,9 @@ impl SliceContext<'_> {
                                 1,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                            
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                             let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
@@ -2289,6 +2354,7 @@ impl SliceContext<'_> {
                                 sub_ref_l0[layout.smb],
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                                MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                             );
                             let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
                             for r in (0..layout.sub_h).step_by(4) {
@@ -2337,6 +2403,9 @@ impl SliceContext<'_> {
                                 0,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                            
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             let amvd_y = cabac_amvd(
                                 self.mvd_store_l1,
@@ -2347,6 +2416,9 @@ impl SliceContext<'_> {
                                 1,
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                            
+                            self.mbaff,
+                            self.mb_field_decoding,
                             );
                             let mvd_x = cr.decode_mvd_comp(st, 40, amvd_x) as i16;
                             let mvd_y = cr.decode_mvd_comp(st, 47, amvd_y) as i16;
@@ -2362,6 +2434,7 @@ impl SliceContext<'_> {
                                 sub_ref_l1[layout.smb],
                                 self.mb_slice_id,
                                 self.this_slice_id,
+                                MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                             );
                             let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
                             for r in (0..layout.sub_h).step_by(4) {
@@ -2653,18 +2726,13 @@ impl SliceContext<'_> {
                 let use_8x8_b_inter =
                     if sp.transform_8x8_mode_flag && cbp_luma != 0 && no_sub_less_than_8x8_b {
                         let nts = {
-                            let left = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                                && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                            {
-                                self.mb_is_8x8dct[mb_idx - 1] as usize
+                            let left = if let Some(left) = self.left_mb(mb_idx) {
+                                self.mb_is_8x8dct[left] as usize
                             } else {
                                 0
                             };
-                            let top = if mb_idx >= self.mb_width as usize
-                                && self.mb_slice_id[mb_idx - self.mb_width as usize]
-                                    == self.this_slice_id
-                            {
-                                self.mb_is_8x8dct[mb_idx - self.mb_width as usize] as usize
+                            let top = if let Some(above) = self.above_mb(mb_idx) {
+                                self.mb_is_8x8dct[above] as usize
                             } else {
                                 0
                             };
@@ -2728,6 +2796,9 @@ impl SliceContext<'_> {
                                     false,
                                     self.mb_slice_id,
                                     self.this_slice_id,
+                                
+                                self.mbaff,
+                                self.mb_field_decoding,
                                 );
                                 let top_nz = cabac_neighbor_nz_luma(
                                     self.nc_luma,
@@ -2738,6 +2809,9 @@ impl SliceContext<'_> {
                                     false,
                                     self.mb_slice_id,
                                     self.this_slice_id,
+                                
+                                self.mbaff,
+                                self.mb_field_decoding,
                                 );
                                 if cr.decode_coded_block_flag(st, 2, left_nz, top_nz) {
                                     let (coeffs, tc) = cr.decode_residual_cabac(st, 2, 16);
@@ -2779,17 +2853,13 @@ impl SliceContext<'_> {
                 if cbp_chroma >= 1 {
                     let mut chroma_dc_cb = [0i32; 4];
                     let mut chroma_dc_cr = [0i32; 4];
-                    let left_dc_nz = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                        && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                    {
-                        (self.mb_cbp[mb_idx - 1] >> 6) & 1 != 0
+                    let left_dc_nz = if let Some(left) = self.left_mb(mb_idx) {
+                        (self.mb_cbp[left] >> 6) & 1 != 0
                     } else {
                         false
                     };
-                    let top_dc_nz = if mb_idx >= self.mb_width as usize
-                        && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-                    {
-                        (self.mb_cbp[mb_idx - self.mb_width as usize] >> 6) & 1 != 0
+                    let top_dc_nz = if let Some(above) = self.above_mb(mb_idx) {
+                        (self.mb_cbp[above] >> 6) & 1 != 0
                     } else {
                         false
                     };
@@ -2800,17 +2870,13 @@ impl SliceContext<'_> {
                         }
                         self.mb_cbp[mb_idx] |= 0x40;
                     }
-                    let left_dc_cr = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                        && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                    {
-                        (self.mb_cbp[mb_idx - 1] >> 7) & 1 != 0
+                    let left_dc_cr = if let Some(left) = self.left_mb(mb_idx) {
+                        (self.mb_cbp[left] >> 7) & 1 != 0
                     } else {
                         false
                     };
-                    let top_dc_cr = if mb_idx >= self.mb_width as usize
-                        && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-                    {
-                        (self.mb_cbp[mb_idx - self.mb_width as usize] >> 7) & 1 != 0
+                    let top_dc_cr = if let Some(above) = self.above_mb(mb_idx) {
+                        (self.mb_cbp[above] >> 7) & 1 != 0
                     } else {
                         false
                     };
@@ -2853,6 +2919,9 @@ impl SliceContext<'_> {
                                     false,
                                     self.mb_slice_id,
                                     self.this_slice_id,
+                                
+                                self.mbaff,
+                                self.mb_field_decoding,
                                 );
                                 let top_nz = cabac_neighbor_nz_chroma(
                                     nc_arr,
@@ -2863,6 +2932,9 @@ impl SliceContext<'_> {
                                     false,
                                     self.mb_slice_id,
                                     self.this_slice_id,
+                                
+                                self.mbaff,
+                                self.mb_field_decoding,
                                 );
                                 if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                                     let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -2911,27 +2983,21 @@ impl SliceContext<'_> {
 
         // I-slice CABAC: decode mb_type
         // Context depends on whether neighbors are I16x16 (not I4x4)
-        let left_is_i16 = if !mb_idx.is_multiple_of(self.mb_width as usize)
-            && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-        {
-            self.is_i16x16[mb_idx - 1]
+        let left_is_i16 = if let Some(left) = self.left_mb(mb_idx) {
+            self.is_i16x16[left]
         } else {
             false
         };
-        let top_is_i16 = if mb_idx >= self.mb_width as usize
-            && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-        {
-            self.is_i16x16[mb_idx - self.mb_width as usize]
+        let top_is_i16 = if let Some(above) = self.above_mb(mb_idx) {
+            self.is_i16x16[above]
         } else {
             false
         };
         let mb_type = cr.decode_intra_mb_type(st, 3, left_is_i16, top_is_i16, true);
 
         // Cross-slice intra prediction: neighbors from other slices unavailable (spec 6.4.1)
-        let above_mb_avail_i = mb_idx >= self.mb_width as usize
-            && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id;
-        let left_mb_avail_i = !mb_idx.is_multiple_of(self.mb_width as usize)
-            && self.mb_slice_id[mb_idx - 1] == self.this_slice_id;
+        let above_mb_avail_i = self.above_mb(mb_idx).is_some();
+        let left_mb_avail_i = self.left_mb(mb_idx).is_some();
         let above_left_mb_avail_i = mb_idx >= self.mb_width as usize
             && !mb_idx.is_multiple_of(self.mb_width as usize)
             && self.mb_slice_id[mb_idx - self.mb_width as usize - 1] == self.this_slice_id;
@@ -2997,17 +3063,13 @@ impl SliceContext<'_> {
         if mb_type == 0 {
             // I4x4/I8x8 via CABAC
             let nts = {
-                let left = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                    && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                {
-                    self.mb_is_8x8dct[mb_idx - 1] as usize
+                let left = if let Some(left) = self.left_mb(mb_idx) {
+                    self.mb_is_8x8dct[left] as usize
                 } else {
                     0
                 };
-                let top = if mb_idx >= self.mb_width as usize
-                    && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-                {
-                    self.mb_is_8x8dct[mb_idx - self.mb_width as usize] as usize
+                let top = if let Some(above) = self.above_mb(mb_idx) {
+                    self.mb_is_8x8dct[above] as usize
                 } else {
                     0
                 };
@@ -3031,6 +3093,9 @@ impl SliceContext<'_> {
                     self.mb_slice_id,
                     self.this_slice_id,
                     &intra_avail,
+                
+                self.mbaff,
+                self.mb_field_decoding,
                 );
                 let mode = cr.decode_intra4x4_pred_mode(st, predicted);
                 if use_8x8_intra {
@@ -3044,17 +3109,13 @@ impl SliceContext<'_> {
                 }
             }
 
-            let left_cm = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-            {
-                self.mb_chroma_pred[mb_idx - 1]
+            let left_cm = if let Some(left) = self.left_mb(mb_idx) {
+                self.mb_chroma_pred[left]
             } else {
                 0
             };
-            let top_cm = if mb_idx >= self.mb_width as usize
-                && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-            {
-                self.mb_chroma_pred[mb_idx - self.mb_width as usize]
+            let top_cm = if let Some(above) = self.above_mb(mb_idx) {
+                self.mb_chroma_pred[above]
             } else {
                 0
             };
@@ -3146,6 +3207,9 @@ impl SliceContext<'_> {
                             true,
                             self.mb_slice_id,
                             self.this_slice_id,
+                        
+                        self.mbaff,
+                        self.mb_field_decoding,
                         );
                         let top_nz_blk = cabac_neighbor_nz_luma(
                             self.nc_luma,
@@ -3156,6 +3220,9 @@ impl SliceContext<'_> {
                             true,
                             self.mb_slice_id,
                             self.this_slice_id,
+                        
+                        self.mbaff,
+                        self.mb_field_decoding,
                         );
 
                         let cbf = cr.decode_coded_block_flag(st, 2, left_nz_blk, top_nz_blk);
@@ -3208,17 +3275,13 @@ impl SliceContext<'_> {
             let mut chroma_dc_cr = [0i32; 4];
             if cbp_chroma >= 1 {
                 // Chroma DC CBF context: uses bits 6-7 of neighbor cbp_table
-                let left_dc_nz = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                    && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                {
-                    (self.mb_cbp[mb_idx - 1] >> 6) & 1 != 0
+                let left_dc_nz = if let Some(left) = self.left_mb(mb_idx) {
+                    (self.mb_cbp[left] >> 6) & 1 != 0
                 } else {
                     true
                 }; // unavailable intra: 0x7CF bit 6 = 1
-                let top_dc_nz = if mb_idx >= self.mb_width as usize
-                    && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-                {
-                    (self.mb_cbp[mb_idx - self.mb_width as usize] >> 6) & 1 != 0
+                let top_dc_nz = if let Some(above) = self.above_mb(mb_idx) {
+                    (self.mb_cbp[above] >> 6) & 1 != 0
                 } else {
                     true
                 };
@@ -3229,17 +3292,13 @@ impl SliceContext<'_> {
                     }
                     self.mb_cbp[mb_idx] |= 0x40; // set Cb DC coded flag
                 }
-                let left_dc_nz_cr = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                    && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                {
-                    (self.mb_cbp[mb_idx - 1] >> 7) & 1 != 0
+                let left_dc_nz_cr = if let Some(left) = self.left_mb(mb_idx) {
+                    (self.mb_cbp[left] >> 7) & 1 != 0
                 } else {
                     true
                 };
-                let top_dc_nz_cr = if mb_idx >= self.mb_width as usize
-                    && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-                {
-                    (self.mb_cbp[mb_idx - self.mb_width as usize] >> 7) & 1 != 0
+                let top_dc_nz_cr = if let Some(above) = self.above_mb(mb_idx) {
+                    (self.mb_cbp[above] >> 7) & 1 != 0
                 } else {
                     true
                 };
@@ -3265,6 +3324,9 @@ impl SliceContext<'_> {
                         true,
                         self.mb_slice_id,
                         self.this_slice_id,
+                    
+                    self.mbaff,
+                    self.mb_field_decoding,
                     );
                     let top_nz = cabac_neighbor_nz_chroma(
                         self.nc_cb,
@@ -3275,6 +3337,9 @@ impl SliceContext<'_> {
                         true,
                         self.mb_slice_id,
                         self.this_slice_id,
+                    
+                    self.mbaff,
+                    self.mb_field_decoding,
                     );
                     if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                         let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -3294,6 +3359,9 @@ impl SliceContext<'_> {
                         true,
                         self.mb_slice_id,
                         self.this_slice_id,
+                    
+                    self.mbaff,
+                    self.mb_field_decoding,
                     );
                     let top_nz = cabac_neighbor_nz_chroma(
                         self.nc_cr,
@@ -3304,6 +3372,9 @@ impl SliceContext<'_> {
                         true,
                         self.mb_slice_id,
                         self.this_slice_id,
+                    
+                    self.mbaff,
+                    self.mb_field_decoding,
                     );
                     if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                         let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -3355,17 +3426,13 @@ impl SliceContext<'_> {
             let cbp_chroma = ((mt / 4) % 3) as u8;
             let cbp_luma = if mt >= 12 { 15u8 } else { 0u8 };
 
-            let left_cm = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-            {
-                self.mb_chroma_pred[mb_idx - 1]
+            let left_cm = if let Some(left) = self.left_mb(mb_idx) {
+                self.mb_chroma_pred[left]
             } else {
                 0
             };
-            let top_cm = if mb_idx >= self.mb_width as usize
-                && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-            {
-                self.mb_chroma_pred[mb_idx - self.mb_width as usize]
+            let top_cm = if let Some(above) = self.above_mb(mb_idx) {
+                self.mb_chroma_pred[above]
             } else {
                 0
             };
@@ -3381,17 +3448,13 @@ impl SliceContext<'_> {
             // Luma DC: cat=0, 16 coefficients
             // CBF context uses bit 8 of neighbor cbp_table (luma DC coded flag)
             let mut luma_dc = [0i32; 16];
-            let dc_left_nz = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-            {
-                (self.mb_cbp[mb_idx - 1] >> 8) & 1 != 0
+            let dc_left_nz = if let Some(left) = self.left_mb(mb_idx) {
+                (self.mb_cbp[left] >> 8) & 1 != 0
             } else {
                 true
             }; // unavailable intra: 0x7CF bit 8 = 1 (0x7CF = 0b0111_1100_1111)
-            let dc_top_nz = if mb_idx >= self.mb_width as usize
-                && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-            {
-                (self.mb_cbp[mb_idx - self.mb_width as usize] >> 8) & 1 != 0
+            let dc_top_nz = if let Some(above) = self.above_mb(mb_idx) {
+                (self.mb_cbp[above] >> 8) & 1 != 0
             } else {
                 true
             };
@@ -3416,6 +3479,9 @@ impl SliceContext<'_> {
                         true,
                         self.mb_slice_id,
                         self.this_slice_id,
+                    
+                    self.mbaff,
+                    self.mb_field_decoding,
                     );
                     let top_nz = cabac_neighbor_nz_luma(
                         self.nc_luma,
@@ -3426,6 +3492,9 @@ impl SliceContext<'_> {
                         true,
                         self.mb_slice_id,
                         self.this_slice_id,
+                    
+                    self.mbaff,
+                    self.mb_field_decoding,
                     );
                     if cr.decode_coded_block_flag(st, 1, left_nz, top_nz) {
                         let (coeffs, tc) = cr.decode_residual_cabac(st, 1, 15);
@@ -3501,17 +3570,13 @@ impl SliceContext<'_> {
             let mut chroma_dc_cb = [0i32; 4];
             let mut chroma_dc_cr = [0i32; 4];
             if cbp_chroma >= 1 {
-                let left_dc_nz = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                    && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                {
-                    (self.mb_cbp[mb_idx - 1] >> 6) & 1 != 0
+                let left_dc_nz = if let Some(left) = self.left_mb(mb_idx) {
+                    (self.mb_cbp[left] >> 6) & 1 != 0
                 } else {
                     true
                 };
-                let top_dc_nz = if mb_idx >= self.mb_width as usize
-                    && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-                {
-                    (self.mb_cbp[mb_idx - self.mb_width as usize] >> 6) & 1 != 0
+                let top_dc_nz = if let Some(above) = self.above_mb(mb_idx) {
+                    (self.mb_cbp[above] >> 6) & 1 != 0
                 } else {
                     true
                 };
@@ -3522,17 +3587,13 @@ impl SliceContext<'_> {
                     }
                     self.mb_cbp[mb_idx] |= 0x40;
                 }
-                let left_dc_nz_cr = if !mb_idx.is_multiple_of(self.mb_width as usize)
-                    && self.mb_slice_id[mb_idx - 1] == self.this_slice_id
-                {
-                    (self.mb_cbp[mb_idx - 1] >> 7) & 1 != 0
+                let left_dc_nz_cr = if let Some(left) = self.left_mb(mb_idx) {
+                    (self.mb_cbp[left] >> 7) & 1 != 0
                 } else {
                     true
                 };
-                let top_dc_nz_cr = if mb_idx >= self.mb_width as usize
-                    && self.mb_slice_id[mb_idx - self.mb_width as usize] == self.this_slice_id
-                {
-                    (self.mb_cbp[mb_idx - self.mb_width as usize] >> 7) & 1 != 0
+                let top_dc_nz_cr = if let Some(above) = self.above_mb(mb_idx) {
+                    (self.mb_cbp[above] >> 7) & 1 != 0
                 } else {
                     true
                 };
@@ -3557,6 +3618,9 @@ impl SliceContext<'_> {
                         true,
                         self.mb_slice_id,
                         self.this_slice_id,
+
+                    self.mbaff,
+                    self.mb_field_decoding,
                     );
                     let top_nz = cabac_neighbor_nz_chroma(
                         self.nc_cb,
@@ -3567,6 +3631,9 @@ impl SliceContext<'_> {
                         true,
                         self.mb_slice_id,
                         self.this_slice_id,
+                    
+                    self.mbaff,
+                    self.mb_field_decoding,
                     );
                     if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                         let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
@@ -3586,6 +3653,9 @@ impl SliceContext<'_> {
                         true,
                         self.mb_slice_id,
                         self.this_slice_id,
+                    
+                    self.mbaff,
+                    self.mb_field_decoding,
                     );
                     let top_nz = cabac_neighbor_nz_chroma(
                         self.nc_cr,
@@ -3596,6 +3666,9 @@ impl SliceContext<'_> {
                         true,
                         self.mb_slice_id,
                         self.this_slice_id,
+                    
+                    self.mbaff,
+                    self.mb_field_decoding,
                     );
                     if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
                         let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
