@@ -269,7 +269,7 @@ impl Decoder {
         let mut ps = self.pending.take()?;
 
         // Apply deblocking filter
-        deblock::filter_frame_params(
+        deblock::filter_frame_mbaff(
             &mut ps.frame,
             &ps.mb_info,
             ps.mb_width as usize,
@@ -277,6 +277,7 @@ impl Decoder {
             ps.slice_alpha_c0_offset_div2,
             ps.slice_beta_offset_div2,
             ps.chroma_qp_index_offset,
+            ps.mbaff_frame_flag,
         );
 
         if ps.nal_unit_type == NalUnitType::SliceIdr {
@@ -2476,5 +2477,11 @@ mod tests {
     #[test]
     fn test_mbaff_cavlc_b() {
         decode_multiframe_and_compare("mbaff_cavlc_b_test", 8, 64, 64);
+    }
+
+    /// MBAFF CAVLC deblocking (64x64, 8 frames, Main profile, P-only, deblock ON)
+    #[test]
+    fn test_mbaff_deblock_cavlc() {
+        decode_multiframe_and_compare("mbaff_deblock_cavlc_test", 8, 64, 64);
     }
 }

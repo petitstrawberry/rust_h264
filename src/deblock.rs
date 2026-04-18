@@ -105,6 +105,49 @@ pub fn filter_frame_params(
     slice_beta_offset_div2: i32,
     chroma_qp_index_offset: i32,
 ) {
+    filter_frame_inner(
+        frame, mb_info, mb_width,
+        disable_deblocking_filter_idc,
+        slice_alpha_c0_offset_div2,
+        slice_beta_offset_div2,
+        chroma_qp_index_offset,
+        false,
+    );
+}
+
+/// Apply deblocking with MBAFF support.
+#[allow(clippy::too_many_arguments)]
+pub fn filter_frame_mbaff(
+    frame: &mut Frame,
+    mb_info: &[MbInfo],
+    mb_width: usize,
+    disable_deblocking_filter_idc: u32,
+    slice_alpha_c0_offset_div2: i32,
+    slice_beta_offset_div2: i32,
+    chroma_qp_index_offset: i32,
+    mbaff: bool,
+) {
+    filter_frame_inner(
+        frame, mb_info, mb_width,
+        disable_deblocking_filter_idc,
+        slice_alpha_c0_offset_div2,
+        slice_beta_offset_div2,
+        chroma_qp_index_offset,
+        mbaff,
+    );
+}
+
+#[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
+fn filter_frame_inner(
+    frame: &mut Frame,
+    mb_info: &[MbInfo],
+    mb_width: usize,
+    disable_deblocking_filter_idc: u32,
+    slice_alpha_c0_offset_div2: i32,
+    slice_beta_offset_div2: i32,
+    chroma_qp_index_offset: i32,
+    mbaff: bool,
+) {
     if disable_deblocking_filter_idc == 1 {
         return;
     }
@@ -123,10 +166,19 @@ pub fn filter_frame_params(
     // For horizontal edges: blocks above edge row
 
     for mb_idx in 0..mb_info.len() {
-        let mb_col = mb_idx % mb_width;
-        let mb_row = mb_idx / mb_width;
-        let mb_x = mb_col * 16;
-        let mb_y = mb_row * 16;
+        // Compute spatial position and column/row for neighbor checks
+        let (mb_x, mb_y, mb_col, mb_row) = if mbaff {
+            let pair_addr = mb_idx / 2;
+            let pair_col = pair_addr % mb_width;
+            let pair_row = pair_addr / mb_width;
+            let is_bottom = mb_idx % 2 != 0;
+            (pair_col * 16, pair_row * 32 + if is_bottom { 16 } else { 0 },
+             pair_col, pair_row * 2 + if is_bottom { 1 } else { 0 })
+        } else {
+            let col = mb_idx % mb_width;
+            let row = mb_idx / mb_width;
+            (col * 16, row * 16, col, row)
+        };
         let mb_q = &mb_info[mb_idx];
 
         // -- Vertical edges (left to right) --
@@ -144,11 +196,18 @@ pub fn filter_frame_params(
                 continue;
             }
 
-            let mb_p = if is_mb_edge {
-                &mb_info[mb_idx - 1]
+            // Left neighbor MB
+            let left_mb_idx = if !is_mb_edge {
+                mb_idx // internal edge, same MB
+            } else if mbaff {
+                // MBAFF: left = same position (top/bottom) in left pair
+                let pair_addr = mb_idx / 2;
+                (pair_addr - 1) * 2 + (mb_idx % 2)
             } else {
-                mb_q
+                mb_idx - 1
             };
+            let mb_p = &mb_info[left_mb_idx];
+
 
             let qp_q = mb_q.qp_y;
             let qp_p = mb_p.qp_y;
@@ -204,9 +263,13 @@ pub fn filter_frame_params(
 
             // Chroma: per-pixel bS from all 4 luma segments
             if edge % 2 == 0 {
-                let c_edge_x = mb_col * 8 + (edge / 2) * 4;
+                let c_edge_x = if mbaff {
+                    (mb_idx / 2 % mb_width) * 8 + (edge / 2) * 4
+                } else {
+                    mb_col * 8 + (edge / 2) * 4
+                };
                 for cseg in 0..2 {
-                    let cy = mb_row * 8 + cseg * 4;
+                    let cy = mb_y / 2 + cseg * 4;
                     let c_bs = [
                         seg_bs[cseg * 2],
                         seg_bs[cseg * 2],
@@ -244,22 +307,44 @@ pub fn filter_frame_params(
         // -- Horizontal edges (top to bottom) --
         for edge in 0..4 {
             let edge_y = mb_y + edge * 4;
-            if edge == 0 && mb_row == 0 {
-                continue;
-            }
 
             let is_mb_edge = edge == 0;
+
+            // Check if there's an above neighbor
+            if is_mb_edge {
+                if mbaff {
+                    // Top MB of first pair row has no above
+                    let pair_addr = mb_idx / 2;
+                    let pair_row = pair_addr / mb_width;
+                    if mb_idx % 2 == 0 && pair_row == 0 {
+                        continue;
+                    }
+                } else if mb_row == 0 {
+                    continue;
+                }
+            }
 
             // 8x8 transform: skip internal odd edges (spec 8.7.2.1).
             if !is_mb_edge && (edge & 1) != 0 && mb_q.is_8x8dct {
                 continue;
             }
 
-            let mb_p = if is_mb_edge {
-                &mb_info[mb_idx - mb_width]
+            // Above neighbor MB
+            let above_mb_idx = if !is_mb_edge {
+                mb_idx // internal edge, same MB
+            } else if mbaff {
+                if mb_idx % 2 != 0 {
+                    // Bottom MB: above = top of same pair
+                    mb_idx - 1
+                } else {
+                    // Top MB: above = bottom of above pair
+                    let pair_addr = mb_idx / 2;
+                    (pair_addr - mb_width) * 2 + 1
+                }
             } else {
-                mb_q
+                mb_idx - mb_width
             };
+            let mb_p = &mb_info[above_mb_idx];
 
             let qp_q = mb_q.qp_y;
             let qp_p = mb_p.qp_y;
@@ -315,9 +400,9 @@ pub fn filter_frame_params(
 
             // Chroma: per-pixel bS from all 4 luma segments
             if edge % 2 == 0 {
-                let c_edge_y = mb_row * 8 + (edge / 2) * 4;
+                let c_edge_y = mb_y / 2 + (edge / 2) * 4;
                 for cseg in 0..2 {
-                    let cx = mb_col * 8 + cseg * 4;
+                    let cx = mb_x / 2 + cseg * 4;
                     let c_bs = [
                         seg_bs[cseg * 2],
                         seg_bs[cseg * 2],
