@@ -5,6 +5,8 @@ While working on rust_media, it was found that there isn't any sufficiently good
 Hence, the idea is to attempt to create an open source h264 decoder.
 Yes, most devices have hardware h264 decoder, but if we want to be truly portable, then software implementation of h264 decoder is needed.
 
+Supports Baseline, Main, and High profiles (8-bit 4:2:0) with CAVLC and CABAC entropy coding, all partition types (16x16 through 4x4), B-frames with spatial/temporal direct mode, weighted prediction, deblocking filter, and MBAFF interlaced content. 174 byte-exact tests against FFmpeg, verified up to 1080p.
+
 ## Design
 
 - **Input:** Both Annex B (start code delimited `00 00 00 01` / `00 00 01`) and AVCC (length-prefixed, used inside MP4/MKV containers) bitstreams are supported. The decoder itself accepts `NalUnit` values; the choice of parser determines the input format.

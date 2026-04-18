@@ -60,7 +60,7 @@ Everything else is `pub(crate)` or behind the `dev-internals` feature flag.
 
 ## Status
 
-I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). Multi-reference (ref>1) with ref_pic_list_modification supported. Multi-slice frames fully supported for both CABAC and CAVLC (I, P, and B-frames byte-exact). 126 unit tests (76 byte-exact stream tests against FFmpeg + AVCC parser tests + OrderedDecoder roundtrip), including x264 `--preset medium` with and without deblocking (320x240, 60 frames, ref=4, bframes=3), multi-slice streams with up to 4 slices per frame, and 1080p streams (1920x1080, 10 frames, CABAC/CAVLC, with/without deblocking). Also verified byte-exact at 720p (1280x720, 300 frames, bframes=3 ref=4). Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices. NEON SIMD acceleration on aarch64 for luma half-pel filters (~28% speedup) achieving 67 fps at 1080p.
+I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABAC. High profile 8x8 transform supported for both CAVLC and CABAC (intra and inter). Multi-reference (ref>1) with ref_pic_list_modification supported. Multi-slice frames fully supported for both CABAC and CAVLC (I, P, and B-frames byte-exact). MBAFF (Macroblock-Adaptive Frame-Field) interlaced content fully supported with frame-coded MB pairs — all MBAFF code paths byte-exact including I/P/B slices, CABAC/CAVLC, deblocking, High profile 8x8 DCT, and implicit weighted bi-prediction. 174 unit tests (including 11 MBAFF-specific byte-exact stream tests), x264 `--preset medium` with and without deblocking (320x240, 60 frames, ref=4, bframes=3), multi-slice streams with up to 4 slices per frame, and 1080p streams (1920x1080, 10 frames, CABAC/CAVLC, with/without deblocking). Also verified byte-exact at 720p (1280x720, 300 frames, bframes=3 ref=4). Explicit weighted prediction for P-slices and B-slices, plus implicit weighted bi-prediction for B-slices. NEON SIMD acceleration on aarch64 for luma half-pel filters (~28% speedup) achieving 67 fps at 1080p.
 
 ### Completed
 
@@ -175,6 +175,7 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
   straight+swapped comparison.
 - 8x8 transform: internal odd edges (positions 4 and 12 within MB) skipped
   per spec 8.7.2.1 — they fall inside 8x8 transform blocks
+- MBAFF-aware: pair-based MB position, left/above neighbor addressing for MB pairs
 - Applied automatically after slice decode
 
 **Multi-Slice Frame Support** (`src/decoder.rs`, `src/decode_cabac.rs`, `src/decode_cavlc.rs`)
@@ -190,11 +191,26 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - CAVLC `compute_nc` checks slice boundaries for cross-MB nC derivation
 - CAVLC continuation slice error recovery: backup/restore of `PictureState`
 
+**MBAFF (Macroblock-Adaptive Frame-Field)** (`src/decoder.rs`, `src/mv_pred.rs`, `src/neighbor.rs`, `src/deblock.rs`)
+- Slice header: `field_pic_flag`, `bottom_field_flag`, `mbaff_frame_flag` parsing
+- MB-pair addressing: `mb_idx = pair_addr * 2 + {0=top, 1=bottom}`, pair-based pixel coordinates
+- `mb_field_decoding_flag`: per-pair flag decoded via CABAC (contexts 70-72) and CAVLC (1 bit),
+  with correct skip/non-skip ordering for I/P/B slices
+- MBAFF neighbor derivation (spec Tables 6-3, 6-4): `mbaff_left_neighbor`, `mbaff_above_neighbor`
+  with y-coordinate remapping for all 4 frame/field mode combinations
+- All 4 MV neighbor functions (left, above, above-right, above-left) MBAFF-aware
+  with MVy scaling (×2 field→frame, /2 frame→field) at cross-mode boundaries
+- All CABAC/CAVLC context functions MBAFF-aware: `cabac_amvd`, `cabac_neighbor_ref`,
+  `cabac_neighbor_nz_luma/chroma`, `predict_i4x4_mode`, `compute_nc`
+- POC computation: `min(TopFieldOrderCnt, BottomFieldOrderCnt)` for types 0 and 1
+- Deblocking: pair-based iteration with correct left/above neighbor addressing
+- CABAC end-of-slice: `cabac_terminate` after bottom MBs only
+
 **Error Handling** (`src/error.rs`)
 - `DecodeError` enum with `UnexpectedEof`, `InvalidSyntax`, `Unsupported` variants
 - Prediction functions use graceful fallback instead of panicking
 
-**Test Coverage** (126 tests, all byte-exact against FFmpeg)
+**Test Coverage** (174 tests, all byte-exact against FFmpeg)
 - Intra (CAVLC): single_frame, multi_mb_frame, i4x4_frame, deblock_frame,
   mixed_i4x4_frame, gradient_48x32, edges (QP=10/35), smooth_80x48,
   noise_16x16, scaling_test
@@ -250,10 +266,22 @@ I-frame, P-frame, and B-frame decoding fully functional with both CAVLC and CABA
 - 1080p (SHA-256 hash comparison): 1080p_test (1920x1080, 10-frame, CABAC bframes=3 ref=2 no-deblock),
   1080p_deblock_test (same with deblocking ON),
   1080p_cavlc_test (CAVLC, bframes=3 ref=2 no-deblock)
+- MBAFF: mbaff_cavlc_test (64x64, 6-frame, CAVLC frame-coded pairs),
+  mbaff_p_cavlc_8f_test (64x64, 8-frame, CAVLC P-frames),
+  mbaff_high_cavlc_test (64x64, 6-frame, High profile CAVLC 8x8 transform),
+  mbaff_cabac_i_test (32x32, 1-frame, CABAC I-frame),
+  mbaff_cabac_64_test (64x64, 1-frame, CABAC I-frame),
+  mbaff_cabac_p_test (64x64, 5-frame, CABAC P-frames),
+  mbaff_cabac_b_test (64x64, 8-frame, CABAC bframes=2 ref=2),
+  mbaff_cavlc_b_test (64x64, 8-frame, CAVLC bframes=2 ref=2),
+  mbaff_deblock_cavlc_test (64x64, 8-frame, CAVLC Main profile deblocking),
+  mbaff_deblock_cabac_test (64x64, 8-frame, CABAC Main profile bframes=2 ref=2 deblocking),
+  mbaff_high_deblock_test (64x64, 8-frame, High profile 8x8dct bframes=2 ref=2 deblocking)
 
 ### Not Yet Implemented
 
-- MBAFF/interlaced mode (mb_adaptive_frame_field, field pictures)
+- MBAFF field-coded MB pairs (field pictures within MBAFF frames — frame-coded pairs fully supported)
+- Field pictures (`field_pic_flag=1`, pure field coding without MBAFF)
 - High 10/4:2:2/4:4:4 profiles (>8-bit, non-4:2:0 chroma)
 - SP/SI slice types (parsed but not decoded)
 - Slice groups / FMO (returns error)
