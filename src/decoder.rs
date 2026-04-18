@@ -699,6 +699,10 @@ impl Decoder {
 
         let stride = coded_width as usize;
         let mbaff = header.mbaff_frame_flag;
+        let mut mb_ly_stride = stride;
+        let mut mb_ly_offset = 0usize;
+        let mut mb_lc_stride = (coded_width / 2) as usize;
+        let mut mb_lc_offset = 0usize;
 
         // Macro to construct a SliceContext from the local variables.
         // Used at each call site that delegates to a SliceContext method.
@@ -735,6 +739,10 @@ impl Decoder {
                     last_qp_delta_nonzero,
                     mbaff,
                     mb_field_decoding: &mut _mb_field_decoding,
+                    ly_stride: mb_ly_stride,
+                    ly_offset: mb_ly_offset,
+                    lc_stride: mb_lc_stride,
+                    lc_offset: mb_lc_offset,
                 }
             };
         }
@@ -836,6 +844,15 @@ impl Decoder {
                 if mb_skip_run > 0 {
                     mb_skip_run -= 1;
                     mb_skip[mb_idx] = true; // Mark as skipped for MBAFF field flag inference
+                    // Set layout for skip MBs (field_flag already known)
+                    {
+                        let mut ctx = make_ctx!();
+                        ctx.set_mb_layout(mb_idx, mb_x, mb_y);
+                        mb_ly_stride = ctx.ly_stride;
+                        mb_ly_offset = ctx.ly_offset;
+                        mb_lc_stride = ctx.lc_stride;
+                        mb_lc_offset = ctx.lc_offset;
+                    }
                     if is_p_slice {
                         // P_Skip: MV = median predictor, ref_idx = 0, no residual
                         make_ctx!().decode_p_skip_mb(mb_idx, mb_x, mb_y, &params);
@@ -875,6 +892,7 @@ impl Decoder {
 
             {
                 let mut ctx = make_ctx!();
+                ctx.set_mb_layout(mb_idx, mb_x, mb_y);
                 ctx.decode_cavlc_mb(&mut reader, mb_idx, mb_x, mb_y, &params)?;
                 prev_mb_qp = ctx.prev_mb_qp;
                 last_qp_delta_nonzero = ctx.last_qp_delta_nonzero;
@@ -2495,5 +2513,11 @@ mod tests {
     #[test]
     fn test_mbaff_high_deblock() {
         decode_multiframe_and_compare("mbaff_high_deblock_test", 8, 64, 64);
+    }
+
+    /// MBAFF field-coded I-frames (64x64, 3 frames, all-field-coded pairs, keyint=1)
+    #[test]
+    fn test_mbaff_field_i() {
+        decode_multiframe_and_compare("mbaff_field_i_test", 3, 64, 64);
     }
 }

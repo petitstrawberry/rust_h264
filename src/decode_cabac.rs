@@ -96,7 +96,11 @@ impl SliceContext<'_> {
                 self.decode_mbaff_field_flag(cr, st, mb_idx);
             }
         }
-        // For P/B slices, field_flag is handled inside the skip path below.
+        // For non-P/B, set layout now (field_flag already read).
+        // For P/B, layout is set after skip/field_flag handling below.
+        if !(sp.is_p_slice || sp.is_b_slice) {
+            self.set_mb_layout(mb_idx, mb_x, mb_y);
+        }
 
         // P/B-slice CABAC path
         if sp.is_p_slice || sp.is_b_slice {
@@ -134,6 +138,7 @@ impl SliceContext<'_> {
                 }
                 // Bottom MB skipped (regardless of top): no field_flag needed.
             }
+            self.set_mb_layout(mb_idx, mb_x, mb_y);
 
             if is_skip {
                 self.mb_skip[mb_idx] = true;
@@ -884,19 +889,17 @@ impl SliceContext<'_> {
                     let mut off = 0;
                     for r in 0..16 {
                         for c in 0..16 {
-                            let idx = (mb_y + r) * self.stride + mb_x + c;
+                            let idx = self.ly_offset + r * self.ly_stride + mb_x + c;
                             if idx < self.frame.y.len() {
                                 self.frame.y[idx] = pcm_data[off];
                             }
                             off += 1;
                         }
                     }
-                    let cw = (self.width / 2) as usize;
                     let cx = mb_x / 2;
-                    let cy = mb_y / 2;
                     for r in 0..8 {
                         for c in 0..8 {
-                            let idx = (cy + r) * cw + cx + c;
+                            let idx = self.lc_offset + r * self.lc_stride + cx + c;
                             if idx < self.frame.u.len() {
                                 self.frame.u[idx] = pcm_data[off];
                             }
@@ -905,7 +908,7 @@ impl SliceContext<'_> {
                     }
                     for r in 0..8 {
                         for c in 0..8 {
-                            let idx = (cy + r) * cw + cx + c;
+                            let idx = self.lc_offset + r * self.lc_stride + cx + c;
                             if idx < self.frame.v.len() {
                                 self.frame.v[idx] = pcm_data[off];
                             }
@@ -1063,16 +1066,20 @@ impl SliceContext<'_> {
                                 .ok_or(DecodeError::InvalidSyntax(
                                     "P-slice references empty ref_pic_list",
                                 ))?;
+                            let (mc_y, ref_stride, ref_y_off, _mc_cy, _c_ref_stride, _c_ref_off) =
+                                self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
                             let mut luma_pred = [0u8; 256]; // stack: max 16x16
-                            inter_pred::luma_mc(
+                            inter_pred::luma_mc_stride(
                                 ref_pic,
                                 (mb_x + px) as i32,
-                                (mb_y + py) as i32,
+                                mc_y + py as i32,
                                 mv[0] as i32,
                                 mv[1] as i32,
                                 spw,
                                 sph,
                                 &mut luma_pred,
+                                ref_stride,
+                                ref_y_off,
                             );
                             if sp.use_weight == 1 {
                                 sp.wctx
@@ -1080,16 +1087,14 @@ impl SliceContext<'_> {
                             }
                             for r in 0..sph {
                                 for c in 0..spw {
-                                    self.frame.y[(mb_y + py + r) * self.stride + mb_x + px + c] =
+                                    self.frame.y[self.ly_offset + (py + r) * self.ly_stride + mb_x + px + c] =
                                         luma_pred[r * spw + c];
                                 }
                             }
                         }
                     }
                     // Chroma MC for P_8x8 (per sub-partition)
-                    let cw = (self.width / 2) as usize;
                     let cx = mb_x / 2;
-                    let cy = mb_y / 2;
                     for smb in 0..4 {
                         let (sy, sx) = sub_mb_origins[smb];
                         let ref_pic = sp
@@ -1099,6 +1104,8 @@ impl SliceContext<'_> {
                             .ok_or(DecodeError::InvalidSyntax(
                                 "P_8x8 references empty ref_pic_list",
                             ))?;
+                        let (_mc_y, _rs, _ref_y_off, mc_cy, c_ref_stride, c_ref_off) =
+                            self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
                         let sub_parts: &[(usize, usize, usize, usize)] = match sub_mb_types[smb] {
                             0 => &[(0, 0, 8, 8)],
                             1 => &[(0, 0, 8, 4), (0, 4, 8, 4)],
@@ -1121,11 +1128,11 @@ impl SliceContext<'_> {
                             let mut cb_pred = [0u8; 64]; // stack: max 8x8
                             let mut cr_pred_buf = [0u8; 64]; // stack: max 8x8
                             inter_pred::chroma_mc(
-                                &ref_pic.u,
-                                cw,
+                                &ref_pic.u[c_ref_off..],
+                                c_ref_stride,
                                 (self.height / 2) as usize,
                                 (cx + ccx) as i32,
-                                (cy + ccy) as i32,
+                                (mc_cy + ccy) as i32,
                                 mv[0] as i32,
                                 mv[1] as i32,
                                 ccw,
@@ -1133,11 +1140,11 @@ impl SliceContext<'_> {
                                 &mut cb_pred,
                             );
                             inter_pred::chroma_mc(
-                                &ref_pic.v,
-                                cw,
+                                &ref_pic.v[c_ref_off..],
+                                c_ref_stride,
                                 (self.height / 2) as usize,
                                 (cx + ccx) as i32,
-                                (cy + ccy) as i32,
+                                (mc_cy + ccy) as i32,
                                 mv[0] as i32,
                                 mv[1] as i32,
                                 ccw,
@@ -1157,9 +1164,9 @@ impl SliceContext<'_> {
                             }
                             for r in 0..cch {
                                 for c in 0..ccw {
-                                    self.frame.u[(cy + ccy + r) * cw + cx + ccx + c] =
+                                    self.frame.u[self.lc_offset + (ccy + r) * self.lc_stride + cx + ccx + c] =
                                         cb_pred[r * ccw + c];
-                                    self.frame.v[(cy + ccy + r) * cw + cx + ccx + c] =
+                                    self.frame.v[self.lc_offset + (ccy + r) * self.lc_stride + cx + ccx + c] =
                                         cr_pred_buf[r * ccw + c];
                                 }
                             }
@@ -1276,16 +1283,20 @@ impl SliceContext<'_> {
                             .ok_or(DecodeError::InvalidSyntax(
                                 "P 16x8/8x16 references empty ref_pic_list",
                             ))?;
+                        let (mc_y, ref_stride, ref_y_off, mc_cy, c_ref_stride, c_ref_off) =
+                            self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
                         let mut luma_pred = [0u8; 256]; // stack: max 16x16
-                        inter_pred::luma_mc(
+                        inter_pred::luma_mc_stride(
                             ref_pic,
                             (mb_x + px_off) as i32,
-                            (mb_y + py_off) as i32,
+                            mc_y + py_off as i32,
                             mv[0] as i32,
                             mv[1] as i32,
                             part_w,
                             part_h,
                             &mut luma_pred,
+                            ref_stride,
+                            ref_y_off,
                         );
                         if sp.use_weight == 1 {
                             sp.wctx
@@ -1294,27 +1305,25 @@ impl SliceContext<'_> {
                         for r in 0..part_h {
                             for c in 0..part_w {
                                 self.frame.y
-                                    [(mb_y + py_off + r) * self.stride + mb_x + px_off + c] =
+                                    [self.ly_offset + (py_off + r) * self.ly_stride + mb_x + px_off + c] =
                                     luma_pred[r * part_w + c];
                             }
                         }
 
                         // Chroma
-                        let cw = (self.width / 2) as usize;
                         let cx_off = px_off / 2;
                         let cy_off = py_off / 2;
                         let chroma_mb_x = mb_x / 2;
-                        let chroma_mb_y = mb_y / 2;
                         let chw = part_w.max(2) / 2;
                         let chh = part_h.max(2) / 2;
                         let mut cb_pred = [0u8; 64]; // stack: max 8x8
                         let mut cr_pred_buf = [0u8; 64]; // stack: max 8x8
                         inter_pred::chroma_mc(
-                            &ref_pic.u,
-                            cw,
+                            &ref_pic.u[c_ref_off..],
+                            c_ref_stride,
                             (self.height / 2) as usize,
                             (chroma_mb_x + cx_off) as i32,
-                            (chroma_mb_y + cy_off) as i32,
+                            (mc_cy + cy_off) as i32,
                             mv[0] as i32,
                             mv[1] as i32,
                             chw,
@@ -1322,11 +1331,11 @@ impl SliceContext<'_> {
                             &mut cb_pred,
                         );
                         inter_pred::chroma_mc(
-                            &ref_pic.v,
-                            cw,
+                            &ref_pic.v[c_ref_off..],
+                            c_ref_stride,
                             (self.height / 2) as usize,
                             (chroma_mb_x + cx_off) as i32,
-                            (chroma_mb_y + cy_off) as i32,
+                            (mc_cy + cy_off) as i32,
                             mv[0] as i32,
                             mv[1] as i32,
                             chw,
@@ -1342,10 +1351,10 @@ impl SliceContext<'_> {
                         for r in 0..chh {
                             for c in 0..chw {
                                 self.frame.u
-                                    [(chroma_mb_y + cy_off + r) * cw + chroma_mb_x + cx_off + c] =
+                                    [self.lc_offset + (cy_off + r) * self.lc_stride + chroma_mb_x + cx_off + c] =
                                     cb_pred[r * chw + c];
                                 self.frame.v
-                                    [(chroma_mb_y + cy_off + r) * cw + chroma_mb_x + cx_off + c] =
+                                    [self.lc_offset + (cy_off + r) * self.lc_stride + chroma_mb_x + cx_off + c] =
                                     cr_pred_buf[r * chw + c];
                             }
                         }
@@ -1487,10 +1496,10 @@ impl SliceContext<'_> {
                       // Add residual to prediction
                     for r in 0..16 {
                         for c in 0..16 {
-                            let val = (self.frame.y[(mb_y + r) * self.stride + mb_x + c] as i32
+                            let val = (self.frame.y[self.ly_offset + r * self.ly_stride + mb_x + c] as i32
                                 + luma_residual[r * 16 + c])
                                 .clamp(0, 255) as u8;
-                            self.frame.y[(mb_y + r) * self.stride + mb_x + c] = val;
+                            self.frame.y[self.ly_offset + r * self.ly_stride + mb_x + c] = val;
                         }
                     }
                 }
@@ -1535,9 +1544,9 @@ impl SliceContext<'_> {
                         self.mb_cbp[mb_idx] |= 0x80;
                     }
 
-                    let chroma_width = (self.width / 2) as usize;
                     let chroma_mb_x = mb_x / 2;
-                    let chroma_mb_y = mb_y / 2;
+                    let lc_off = self.lc_offset;
+                    let lc_str = self.lc_stride;
                     for (plane_dc, frame_plane, scale_idx) in [
                         (&mut chroma_dc_cb, &mut self.frame.u, 4usize),
                         (&mut chroma_dc_cr, &mut self.frame.v, 5usize),
@@ -1608,11 +1617,11 @@ impl SliceContext<'_> {
                         for y in 0..8 {
                             for x in 0..8 {
                                 let val = (frame_plane
-                                    [(chroma_mb_y + y) * chroma_width + chroma_mb_x + x]
+                                    [lc_off + y * lc_str + chroma_mb_x + x]
                                     as i32
                                     + chroma_residual[y * 8 + x])
                                     .clamp(0, 255) as u8;
-                                frame_plane[(chroma_mb_y + y) * chroma_width + chroma_mb_x + x] =
+                                frame_plane[lc_off + y * lc_str + chroma_mb_x + x] =
                                     val;
                             }
                         }
@@ -2613,33 +2622,42 @@ impl SliceContext<'_> {
                 for _sp_i in 0..b_sub_count {
                     let sub_part = &b_sub_parts[_sp_i];
                     let abs_x = mb_x + sub_part.x;
-                    let abs_y = mb_y + sub_part.y;
                     let mut luma_pred = [0u8; 256]; // stack: max 16x16
 
                     if sub_part.pred_l0 && sub_part.pred_l1 {
                         let mut p0 = [0u8; 256]; // stack: max 16x16
                         let mut p1 = [0u8; 256]; // stack: max 16x16
-                        inter_pred::luma_mc(
-                            ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0)
-                                .ok_or(DecodeError::InvalidSyntax("empty ref list"))?,
+                        let ref_l0 = ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0)
+                            .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
+                        let (mc_y_l0, ref_stride_l0, ref_y_off_l0, _mc_cy_l0, _c_ref_stride_l0, _c_ref_off_l0) =
+                            self.mc_params(mb_idx, mb_y, ref_l0.width as usize);
+                        inter_pred::luma_mc_stride(
+                            ref_l0,
                             abs_x as i32,
-                            abs_y as i32,
+                            mc_y_l0 + sub_part.y as i32,
                             sub_part.mv_l0[0] as i32,
                             sub_part.mv_l0[1] as i32,
                             sub_part.w,
                             sub_part.h,
                             &mut p0,
+                            ref_stride_l0,
+                            ref_y_off_l0,
                         );
-                        inter_pred::luma_mc(
-                            ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1)
-                                .ok_or(DecodeError::InvalidSyntax("empty ref list"))?,
+                        let ref_l1 = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1)
+                            .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
+                        let (mc_y_l1, ref_stride_l1, ref_y_off_l1, _mc_cy_l1, _c_ref_stride_l1, _c_ref_off_l1) =
+                            self.mc_params(mb_idx, mb_y, ref_l1.width as usize);
+                        inter_pred::luma_mc_stride(
+                            ref_l1,
                             abs_x as i32,
-                            abs_y as i32,
+                            mc_y_l1 + sub_part.y as i32,
                             sub_part.mv_l1[0] as i32,
                             sub_part.mv_l1[1] as i32,
                             sub_part.w,
                             sub_part.h,
                             &mut p1,
+                            ref_stride_l1,
+                            ref_y_off_l1,
                         );
                         sp.wctx.apply_bi(
                             &p0,
@@ -2651,16 +2669,21 @@ impl SliceContext<'_> {
                             0,
                         );
                     } else if sub_part.pred_l0 {
-                        inter_pred::luma_mc(
-                            ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0)
-                                .ok_or(DecodeError::InvalidSyntax("empty ref list"))?,
+                        let ref_pic = ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0)
+                            .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
+                        let (mc_y, ref_stride, ref_y_off, _mc_cy, _c_ref_stride, _c_ref_off) =
+                            self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
+                        inter_pred::luma_mc_stride(
+                            ref_pic,
                             abs_x as i32,
-                            abs_y as i32,
+                            mc_y + sub_part.y as i32,
                             sub_part.mv_l0[0] as i32,
                             sub_part.mv_l0[1] as i32,
                             sub_part.w,
                             sub_part.h,
                             &mut luma_pred,
+                            ref_stride,
+                            ref_y_off,
                         );
                         if sp.use_weight == 1 {
                             sp.wctx.apply_uni(
@@ -2672,16 +2695,21 @@ impl SliceContext<'_> {
                             );
                         }
                     } else if sub_part.pred_l1 {
-                        inter_pred::luma_mc(
-                            ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1)
-                                .ok_or(DecodeError::InvalidSyntax("empty ref list"))?,
+                        let ref_pic = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1)
+                            .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
+                        let (mc_y, ref_stride, ref_y_off, _mc_cy, _c_ref_stride, _c_ref_off) =
+                            self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
+                        inter_pred::luma_mc_stride(
+                            ref_pic,
                             abs_x as i32,
-                            abs_y as i32,
+                            mc_y + sub_part.y as i32,
                             sub_part.mv_l1[0] as i32,
                             sub_part.mv_l1[1] as i32,
                             sub_part.w,
                             sub_part.h,
                             &mut luma_pred,
+                            ref_stride,
+                            ref_y_off,
                         );
                         if sp.use_weight == 1 {
                             sp.wctx.apply_uni(
@@ -2696,15 +2724,13 @@ impl SliceContext<'_> {
 
                     for r in 0..sub_part.h {
                         for c in 0..sub_part.w {
-                            self.frame.y[(abs_y + r) * self.stride + abs_x + c] =
+                            self.frame.y[self.ly_offset + (sub_part.y + r) * self.ly_stride + abs_x + c] =
                                 luma_pred[r * sub_part.w + c];
                         }
                     }
                     // Chroma MC
-                    let cw = (self.width / 2) as usize;
                     let chroma_h = (self.height / 2) as usize;
                     let cx = abs_x / 2;
-                    let cy = abs_y / 2;
                     let chw = sub_part.w.max(2) / 2;
                     let chh = sub_part.h.max(2) / 2;
 
@@ -2715,16 +2741,21 @@ impl SliceContext<'_> {
                                 .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
                             let ref_l1 = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1)
                                 .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
-                            let cr0 = if plane_idx == 0 { &ref_l0.u } else { &ref_l0.v };
-                            let cr1 = if plane_idx == 0 { &ref_l1.u } else { &ref_l1.v };
+                            let (_mc_y_l0, _rs_l0, _ref_y_off_l0, mc_cy_l0, c_ref_stride_l0, c_ref_off_l0) =
+                                self.mc_params(mb_idx, mb_y, ref_l0.width as usize);
+                            let (_mc_y_l1, _rs_l1, _ref_y_off_l1, mc_cy_l1, c_ref_stride_l1, c_ref_off_l1) =
+                                self.mc_params(mb_idx, mb_y, ref_l1.width as usize);
+                            let cr0 = if plane_idx == 0 { &ref_l0.u[c_ref_off_l0..] } else { &ref_l0.v[c_ref_off_l0..] };
+                            let cr1 = if plane_idx == 0 { &ref_l1.u[c_ref_off_l1..] } else { &ref_l1.v[c_ref_off_l1..] };
                             let mut c0 = vec![0u8; chw * chh];
                             let mut c1 = vec![0u8; chw * chh];
+                            let cy_off = sub_part.y / 2;
                             inter_pred::chroma_mc(
                                 cr0,
-                                cw,
+                                c_ref_stride_l0,
                                 chroma_h,
                                 cx as i32,
-                                cy as i32,
+                                (mc_cy_l0 + cy_off) as i32,
                                 sub_part.mv_l0[0] as i32,
                                 sub_part.mv_l0[1] as i32,
                                 chw,
@@ -2733,10 +2764,10 @@ impl SliceContext<'_> {
                             );
                             inter_pred::chroma_mc(
                                 cr1,
-                                cw,
+                                c_ref_stride_l1,
                                 chroma_h,
                                 cx as i32,
-                                cy as i32,
+                                (mc_cy_l1 + cy_off) as i32,
                                 sub_part.mv_l1[0] as i32,
                                 sub_part.mv_l1[1] as i32,
                                 chw,
@@ -2755,17 +2786,20 @@ impl SliceContext<'_> {
                         } else if sub_part.pred_l0 {
                             let ref_pic = ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0)
                                 .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
+                            let (_mc_y, _rs, _ref_y_off, mc_cy, c_ref_stride, c_ref_off) =
+                                self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
                             let plane = if plane_idx == 0 {
-                                &ref_pic.u
+                                &ref_pic.u[c_ref_off..]
                             } else {
-                                &ref_pic.v
+                                &ref_pic.v[c_ref_off..]
                             };
+                            let cy_off = sub_part.y / 2;
                             inter_pred::chroma_mc(
                                 plane,
-                                cw,
+                                c_ref_stride,
                                 chroma_h,
                                 cx as i32,
-                                cy as i32,
+                                (mc_cy + cy_off) as i32,
                                 sub_part.mv_l0[0] as i32,
                                 sub_part.mv_l0[1] as i32,
                                 chw,
@@ -2784,17 +2818,20 @@ impl SliceContext<'_> {
                         } else if sub_part.pred_l1 {
                             let ref_pic = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1)
                                 .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
+                            let (_mc_y, _rs, _ref_y_off, mc_cy, c_ref_stride, c_ref_off) =
+                                self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
                             let plane = if plane_idx == 0 {
-                                &ref_pic.u
+                                &ref_pic.u[c_ref_off..]
                             } else {
-                                &ref_pic.v
+                                &ref_pic.v[c_ref_off..]
                             };
+                            let cy_off = sub_part.y / 2;
                             inter_pred::chroma_mc(
                                 plane,
-                                cw,
+                                c_ref_stride,
                                 chroma_h,
                                 cx as i32,
-                                cy as i32,
+                                (mc_cy + cy_off) as i32,
                                 sub_part.mv_l1[0] as i32,
                                 sub_part.mv_l1[1] as i32,
                                 chw,
@@ -2808,9 +2845,12 @@ impl SliceContext<'_> {
                         } else {
                             &mut self.frame.v
                         };
+                        let local_cy = sub_part.y / 2;
+                        let lc_off = self.lc_offset;
+                        let lc_str = self.lc_stride;
                         for r in 0..chh {
                             for c in 0..chw {
-                                fp[(cy + r) * cw + cx + c] = chroma_pred[r * chw + c];
+                                fp[lc_off + (local_cy + r) * lc_str + cx + c] = chroma_pred[r * chw + c];
                             }
                         }
                     }
@@ -2942,10 +2982,10 @@ impl SliceContext<'_> {
                     } // close if use_8x8_b_inter else
                     for r in 0..16 {
                         for c in 0..16 {
-                            let val = (self.frame.y[(mb_y + r) * self.stride + mb_x + c] as i32
+                            let val = (self.frame.y[self.ly_offset + r * self.ly_stride + mb_x + c] as i32
                                 + luma_residual[r * 16 + c])
                                 .clamp(0, 255) as u8;
-                            self.frame.y[(mb_y + r) * self.stride + mb_x + c] = val;
+                            self.frame.y[self.ly_offset + r * self.ly_stride + mb_x + c] = val;
                         }
                     }
                 }
@@ -2990,9 +3030,9 @@ impl SliceContext<'_> {
                         self.mb_cbp[mb_idx] |= 0x80;
                     }
 
-                    let chroma_width = (self.width / 2) as usize;
                     let chroma_mb_x = mb_x / 2;
-                    let chroma_mb_y = mb_y / 2;
+                    let lc_off = self.lc_offset;
+                    let lc_str = self.lc_stride;
                     for (plane_dc, frame_plane, scale_idx) in [
                         (&mut chroma_dc_cb, &mut self.frame.u, 4usize),
                         (&mut chroma_dc_cr, &mut self.frame.v, 5usize),
@@ -3063,11 +3103,11 @@ impl SliceContext<'_> {
                         for y in 0..8 {
                             for x in 0..8 {
                                 let val = (frame_plane
-                                    [(chroma_mb_y + y) * chroma_width + chroma_mb_x + x]
+                                    [lc_off + y * lc_str + chroma_mb_x + x]
                                     as i32
                                     + chroma_residual[y * 8 + x])
                                     .clamp(0, 255) as u8;
-                                frame_plane[(chroma_mb_y + y) * chroma_width + chroma_mb_x + x] =
+                                frame_plane[lc_off + y * lc_str + chroma_mb_x + x] =
                                     val;
                             }
                         }
@@ -3115,19 +3155,17 @@ impl SliceContext<'_> {
             let mut off = 0;
             for r in 0..16 {
                 for c in 0..16 {
-                    let idx = (mb_y + r) * self.stride + mb_x + c;
+                    let idx = self.ly_offset + r * self.ly_stride + mb_x + c;
                     if idx < self.frame.y.len() {
                         self.frame.y[idx] = pcm_data[off];
                     }
                     off += 1;
                 }
             }
-            let cw = (self.width / 2) as usize;
             let cx = mb_x / 2;
-            let cy = mb_y / 2;
             for r in 0..8 {
                 for c in 0..8 {
-                    let idx = (cy + r) * cw + cx + c;
+                    let idx = self.lc_offset + r * self.lc_stride + cx + c;
                     if idx < self.frame.u.len() {
                         self.frame.u[idx] = pcm_data[off];
                     }
@@ -3136,7 +3174,7 @@ impl SliceContext<'_> {
             }
             for r in 0..8 {
                 for c in 0..8 {
-                    let idx = (cy + r) * cw + cx + c;
+                    let idx = self.lc_offset + r * self.lc_stride + cx + c;
                     if idx < self.frame.v.len() {
                         self.frame.v[idx] = pcm_data[off];
                     }
@@ -3848,19 +3886,17 @@ impl SliceContext<'_> {
             let mut off = 0;
             for r in 0..16 {
                 for c in 0..16 {
-                    let idx = (mb_y + r) * self.stride + mb_x + c;
+                    let idx = self.ly_offset + r * self.ly_stride + mb_x + c;
                     if idx < self.frame.y.len() {
                         self.frame.y[idx] = pcm_data[off];
                     }
                     off += 1;
                 }
             }
-            let cw = (self.width / 2) as usize;
             let cx = mb_x / 2;
-            let cy = mb_y / 2;
             for r in 0..8 {
                 for c in 0..8 {
-                    let idx = (cy + r) * cw + cx + c;
+                    let idx = self.lc_offset + r * self.lc_stride + cx + c;
                     if idx < self.frame.u.len() {
                         self.frame.u[idx] = pcm_data[off];
                     }
@@ -3869,7 +3905,7 @@ impl SliceContext<'_> {
             }
             for r in 0..8 {
                 for c in 0..8 {
-                    let idx = (cy + r) * cw + cx + c;
+                    let idx = self.lc_offset + r * self.lc_stride + cx + c;
                     if idx < self.frame.v.len() {
                         self.frame.v[idx] = pcm_data[off];
                     }

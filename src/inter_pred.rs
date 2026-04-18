@@ -344,6 +344,26 @@ pub fn luma_mc(
     block_h: usize,
     output: &mut [u8],
 ) {
+    luma_mc_stride(ref_pic, x, y, dx, dy, block_w, block_h, output, ref_pic.width as usize, 0);
+}
+
+/// Luma motion compensation with explicit reference stride and buffer offset.
+/// For field-coded MBAFF MBs, pass `ref_stride = ref_pic.width * 2`,
+/// `ref_y_offset = ref_pic.width` (for bottom field) or `0` (for top field),
+/// and `y` in field-line units.
+#[allow(clippy::too_many_arguments)]
+pub fn luma_mc_stride(
+    ref_pic: &DecodedPicture,
+    x: i32,
+    y: i32,
+    dx: i32,
+    dy: i32,
+    block_w: usize,
+    block_h: usize,
+    output: &mut [u8],
+    ref_stride: usize,
+    ref_y_offset: usize,
+) {
     // Guard against malformed block sizes that would overrun the output buffer
     if block_w == 0 || block_h == 0 || block_w * block_h > output.len() {
         return;
@@ -355,11 +375,16 @@ pub fn luma_mc(
     let y_int = y + (dy >> 2);
 
     let pic_w = ref_pic.width as i32;
-    let pic_h = ref_pic.height as i32;
-    let stride = ref_pic.width as usize;
+    let pic_h = if ref_stride == ref_pic.width as usize {
+        ref_pic.height as i32
+    } else {
+        // Field-coded: effective height is half the frame
+        (ref_pic.height / 2) as i32
+    };
+    let stride = ref_stride;
     let bw = block_w as i32;
     let bh = block_h as i32;
-    let ref_y = &ref_pic.y;
+    let ref_y = &ref_pic.y[ref_y_offset..];
 
     // Determine margins needed for the filter type
     // Half-pel filters need 2 pixels before and 3 after the block
@@ -383,6 +408,48 @@ pub fn luma_mc(
         // Access reference buffer directly without per-pixel clamping
         luma_mc_inner(ref_y, stride, x_int as usize, y_int as usize,
                       block_w, block_h, frac_x, frac_y, output);
+    } else if ref_y_offset > 0 || stride != ref_pic.width as usize {
+        // Field-coded boundary fallback: extract field lines into a temporary
+        // DecodedPicture and use the standard interpolation on it.
+        let field_h = pic_h as usize;
+        let field_w = pic_w as usize;
+        let mut field_buf = vec![0u8; field_w * field_h];
+        for r in 0..field_h {
+            let src_off = ref_y_offset + r * stride;
+            let dst_off = r * field_w;
+            for c in 0..field_w {
+                if src_off + c < ref_pic.y.len() {
+                    field_buf[dst_off + c] = ref_pic.y[src_off + c];
+                }
+            }
+        }
+        let field_pic = DecodedPicture {
+            y: field_buf,
+            u: vec![],
+            v: vec![],
+            width: field_w as u32,
+            height: field_h as u32,
+            pic_order_cnt: 0,
+            frame_num: 0,
+            mv_l0: vec![],
+            ref_idx_l0: vec![],
+            ref_poc_l0: vec![],
+            mv_l1: vec![],
+            ref_idx_l1: vec![],
+            mb_width: 0,
+            is_intra: false,
+        };
+        for row in 0..block_h {
+            for col in 0..block_w {
+                output[row * block_w + col] = luma_interp(
+                    &field_pic,
+                    x_int + col as i32,
+                    y_int + row as i32,
+                    frac_x,
+                    frac_y,
+                );
+            }
+        }
     } else {
         // Boundary fallback: per-pixel with clamping
         for row in 0..block_h {
@@ -744,6 +811,13 @@ pub fn chroma_mc(
     if block_w == 0 || block_h == 0 || block_w * block_h > output.len() {
         return;
     }
+    // For field-coded MBAFF, the effective height is derived from the available
+    // plane data, which may be smaller than the frame chroma height.
+    let ref_height = if ref_width > 0 {
+        ref_height.min(ref_plane.len() / ref_width)
+    } else {
+        ref_height
+    };
     let frac_x = dx.rem_euclid(8);
     let frac_y = dy.rem_euclid(8);
     let x_int = x + (dx >> 3);
