@@ -2465,4 +2465,16 @@ mod tests {
     fn test_mbaff_cabac_p() {
         decode_multiframe_and_compare("mbaff_cabac_p_test", 5, 64, 64);
     }
+
+    /// MBAFF CABAC B-frames (64x64, 8 frames, testsrc2, bframes=2 ref=2)
+    #[test]
+    fn test_mbaff_cabac_b() {
+        decode_multiframe_and_compare("mbaff_cabac_b_test", 8, 64, 64);
+    }
+
+    /// MBAFF CAVLC B-frames (64x64, 8 frames, testsrc2, bframes=2 ref=2)
+    #[test]
+    fn test_mbaff_cavlc_b() {
+        decode_multiframe_and_compare("mbaff_cavlc_b_test", 8, 64, 64);
+    }
 }
