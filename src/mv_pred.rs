@@ -1052,7 +1052,13 @@ pub(crate) fn get_mv_neighbor_above_right_mbaff(
                 ref_idx_store_l0[above_mb * 16 + blk],
             ))
         } else {
-            // Above-right MB in MBAFF: pair to the right of the above pair
+            // Above-right MB in MBAFF: pair to the right of the above pair.
+            // For bottom MBs, the "above" is the top of the same pair.
+            // The pair to the right of the above is in the same pair row,
+            // which hasn't been decoded yet → unavailable.
+            if mb_idx % 2 != 0 {
+                return None;
+            }
             let pair_addr = mb_idx / 2;
             let pair_col = pair_addr % mb_width;
             if pair_col + 1 >= mb_width {
@@ -1063,7 +1069,11 @@ pub(crate) fn get_mv_neighbor_above_right_mbaff(
                 None => return None,
             };
             let above_right_pair = above_pair + 1;
-            let ar_mb = above_right_pair * 2 + (if mb_idx % 2 == 0 { 1 } else { mb_idx % 2 });
+            // Top MB: above is bottom of previous pair row → already decoded.
+            // Use the same top/bottom position as the above MB.
+            let above_mb_pos = mbaff_above_neighbor(mb_idx, mb_width, mb_field_decoding)
+                .map(|(m, _)| m % 2).unwrap_or(1);
+            let ar_mb = above_right_pair * 2 + above_mb_pos;
             if mb_slice_id.get(ar_mb).copied() != Some(cur_slice_id) {
                 return None;
             }

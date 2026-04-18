@@ -831,7 +831,7 @@ impl Decoder {
             // P/B-slice skip run handling
             if is_p_slice || is_b_slice {
                 if mb_skip_run < 0 {
-                    mb_skip_run = reader.read_ue()? as i32;
+                        mb_skip_run = reader.read_ue()? as i32;
                 }
                 if mb_skip_run > 0 {
                     mb_skip_run -= 1;
@@ -2483,5 +2483,11 @@ mod tests {
     #[test]
     fn test_mbaff_deblock_cavlc() {
         decode_multiframe_and_compare("mbaff_deblock_cavlc_test", 8, 64, 64);
+    }
+
+    /// MBAFF CABAC deblocking with B-frames (64x64, 8 frames, Main profile, bframes=2 ref=2)
+    #[test]
+    fn test_mbaff_deblock_cabac() {
+        decode_multiframe_and_compare("mbaff_deblock_cabac_test", 8, 64, 64);
     }
 }

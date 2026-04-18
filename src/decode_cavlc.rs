@@ -43,7 +43,6 @@ impl SliceContext<'_> {
         } else {
             (raw_mb_type - inter_limit, false)
         };
-
         if is_inter && sp.is_b_slice {
             // === Inter (B) macroblock ===
             // Table 7-11: mb_type 0=B_Direct_16x16, 1=B_L0_16x16,
@@ -1222,7 +1221,6 @@ impl SliceContext<'_> {
                             MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                         );
                         let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
-
                         // Store MV for all 4x4 blocks in this sub-partition
                         for r in (0..sph).step_by(4) {
                             for c in (0..spw).step_by(4) {
@@ -1278,7 +1276,6 @@ impl SliceContext<'_> {
                         MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
                     );
                     let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
-
                     let (py_off, px_off) = match mb_type {
                         1 => (p * 8, 0),
                         2 => (0, p * 8),
