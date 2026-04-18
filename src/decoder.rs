@@ -2490,4 +2490,10 @@ mod tests {
     fn test_mbaff_deblock_cabac() {
         decode_multiframe_and_compare("mbaff_deblock_cabac_test", 8, 64, 64);
     }
+
+    /// MBAFF High profile with 8x8 DCT + deblocking + B-frames (64x64, 8 frames)
+    #[test]
+    fn test_mbaff_high_deblock() {
+        decode_multiframe_and_compare("mbaff_high_deblock_test", 8, 64, 64);
+    }
 }

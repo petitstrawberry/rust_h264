@@ -17,6 +17,7 @@ pub(crate) struct MbaffCtx<'a> {
     pub mb_field_decoding: &'a [bool],
 }
 
+#[allow(dead_code)]
 impl<'a> MbaffCtx<'a> {
     /// Non-MBAFF (progressive) context — zero overhead.
     pub const PROGRESSIVE: MbaffCtx<'static> = MbaffCtx {

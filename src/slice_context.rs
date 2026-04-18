@@ -112,6 +112,7 @@ use crate::deblock::MbType;
 
 impl SliceContext<'_> {
     /// Returns true if this MB is field-coded (MBAFF only).
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn is_field_mb(&self, mb_idx: usize) -> bool {
         self.mbaff && self.mb_field_decoding[mb_idx / 2]
@@ -119,6 +120,7 @@ impl SliceContext<'_> {
 
     /// Compute the luma line stride for a given MB.
     /// For field-coded MBs, the stride doubles (every other line).
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn luma_stride(&self, mb_idx: usize) -> usize {
         if self.is_field_mb(mb_idx) {
@@ -129,6 +131,7 @@ impl SliceContext<'_> {
     }
 
     /// Compute the chroma line stride for a given MB.
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn chroma_stride(&self, mb_idx: usize) -> usize {
         if self.is_field_mb(mb_idx) {
@@ -140,6 +143,7 @@ impl SliceContext<'_> {
 
     /// Compute the luma base Y offset (byte offset of row 0) for a given MB.
     /// For frame-coded: mb_y * width. For field MBs: accounts for interleaving.
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn luma_y_base(&self, mb_idx: usize, mb_y: usize) -> usize {
         if !self.is_field_mb(mb_idx) {
@@ -159,6 +163,7 @@ impl SliceContext<'_> {
     }
 
     /// Compute the chroma base Y offset for a given MB.
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn chroma_y_base(&self, mb_idx: usize, mb_y: usize) -> usize {
         let cw = (self.width / 2) as usize;
@@ -256,6 +261,7 @@ impl SliceContext<'_> {
     }
 
     /// Check if left MB neighbor exists (for boundary checks, no slice ID check).
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn has_left_mb(&self, mb_idx: usize) -> bool {
         if !self.mbaff {
@@ -266,6 +272,7 @@ impl SliceContext<'_> {
     }
 
     /// Check if above MB neighbor exists (for boundary checks, no slice ID check).
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn has_above_mb(&self, mb_idx: usize) -> bool {
         if !self.mbaff {
