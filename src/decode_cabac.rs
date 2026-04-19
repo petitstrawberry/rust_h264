@@ -959,7 +959,7 @@ impl SliceContext<'_> {
                     let mut sub_ref = [0i8; 4];
                     if raw_mb_type == 3 {
                         for (smb, sr) in sub_ref.iter_mut().enumerate() {
-                            if sp.num_ref_idx_l0_active > 1 {
+                            if self.effective_num_ref(mb_idx, sp.num_ref_idx_l0_active) > 1 {
                                 let (sy, sx) = sub_mb_origins[smb];
                                 let (left_ref, top_ref) = cabac_neighbor_ref(
                                     self.ref_idx_store_l0,
@@ -1061,13 +1061,13 @@ impl SliceContext<'_> {
                             // MC
                             let ref_pic = sp
                                 .ref_pic_list
-                                .get(ref_idx as usize)
+                                .get(self.frame_ref_idx(mb_idx, ref_idx) as usize)
                                 .or_else(|| sp.ref_pic_list.last())
                                 .ok_or(DecodeError::InvalidSyntax(
                                     "P-slice references empty ref_pic_list",
                                 ))?;
                             let (mc_y, ref_stride, ref_y_off, _mc_cy, _c_ref_stride, _c_ref_off) =
-                                self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
+                                self.mc_params(mb_idx, mb_y, ref_pic.width as usize, ref_idx);
                             let mut luma_pred = [0u8; 256]; // stack: max 16x16
                             inter_pred::luma_mc_stride(
                                 ref_pic,
@@ -1099,13 +1099,13 @@ impl SliceContext<'_> {
                         let (sy, sx) = sub_mb_origins[smb];
                         let ref_pic = sp
                             .ref_pic_list
-                            .get(sub_ref[smb] as usize)
+                            .get(self.frame_ref_idx(mb_idx, sub_ref[smb]) as usize)
                             .or_else(|| sp.ref_pic_list.last())
                             .ok_or(DecodeError::InvalidSyntax(
                                 "P_8x8 references empty ref_pic_list",
                             ))?;
                         let (_mc_y, _rs, _ref_y_off, mc_cy, c_ref_stride, c_ref_off) =
-                            self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
+                            self.mc_params(mb_idx, mb_y, ref_pic.width as usize, sub_ref[smb]);
                         let sub_parts: &[(usize, usize, usize, usize)] = match sub_mb_types[smb] {
                             0 => &[(0, 0, 8, 8)],
                             1 => &[(0, 0, 8, 4), (0, 4, 8, 4)],
@@ -1176,7 +1176,7 @@ impl SliceContext<'_> {
                     // P_L0_16x16, P16x8, P8x16
                     let mut part_ref = [0i8; 2];
                     for (p, ref_entry) in part_ref.iter_mut().enumerate().take(num_parts) {
-                        if sp.num_ref_idx_l0_active > 1 {
+                        if self.effective_num_ref(mb_idx, sp.num_ref_idx_l0_active) > 1 {
                             let (py_off, px_off) = match raw_mb_type {
                                 1 => (p * 8, 0),
                                 2 => (0, p * 8),
@@ -1278,13 +1278,13 @@ impl SliceContext<'_> {
                         // MC
                         let ref_pic = sp
                             .ref_pic_list
-                            .get(part_ref[p] as usize)
+                            .get(self.frame_ref_idx(mb_idx, part_ref[p]) as usize)
                             .or_else(|| sp.ref_pic_list.last())
                             .ok_or(DecodeError::InvalidSyntax(
                                 "P 16x8/8x16 references empty ref_pic_list",
                             ))?;
                         let (mc_y, ref_stride, ref_y_off, mc_cy, c_ref_stride, c_ref_off) =
-                            self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
+                            self.mc_params(mb_idx, mb_y, ref_pic.width as usize, part_ref[p]);
                         let mut luma_pred = [0u8; 256]; // stack: max 16x16
                         inter_pred::luma_mc_stride(
                             ref_pic,
@@ -1775,7 +1775,7 @@ impl SliceContext<'_> {
                     let mut ref_l0 = 0i8;
                     let mut ref_l1 = 0i8;
 
-                    if pred_l0 && sp.num_ref_idx_l0_active > 1 {
+                    if pred_l0 && self.effective_num_ref(mb_idx, sp.num_ref_idx_l0_active) > 1 {
                         let (left_ref, top_ref) = cabac_neighbor_ref(
                             self.ref_idx_store_l0,
                             mb_idx,
@@ -1793,7 +1793,7 @@ impl SliceContext<'_> {
                         );
                         ref_l0 = cr.decode_ref_idx(st, left_ref, top_ref);
                     }
-                    if pred_l1 && sp.num_ref_idx_l1_active > 1 {
+                    if pred_l1 && self.effective_num_ref(mb_idx, sp.num_ref_idx_l1_active) > 1 {
                         let (left_ref, top_ref) = cabac_neighbor_ref(
                             self.ref_idx_store_l1,
                             mb_idx,
@@ -1954,7 +1954,7 @@ impl SliceContext<'_> {
                     let mut part_ref_l1 = [-1i8; 2];
                     for p in 0..2 {
                         if pred_flags[p].0 {
-                            if sp.num_ref_idx_l0_active > 1 {
+                            if self.effective_num_ref(mb_idx, sp.num_ref_idx_l0_active) > 1 {
                                 let (py_off, px_off) =
                                     if part_h == 8 { (p * 8, 0) } else { (0, p * 8) };
                                 let (left_ref, top_ref) = cabac_neighbor_ref(
@@ -1990,7 +1990,7 @@ impl SliceContext<'_> {
                     }
                     for p in 0..2 {
                         if pred_flags[p].1 {
-                            if sp.num_ref_idx_l1_active > 1 {
+                            if self.effective_num_ref(mb_idx, sp.num_ref_idx_l1_active) > 1 {
                                 let (py_off, px_off) =
                                     if part_h == 8 { (p * 8, 0) } else { (0, p * 8) };
                                 let (left_ref, top_ref) = cabac_neighbor_ref(
@@ -2235,7 +2235,7 @@ impl SliceContext<'_> {
                         } else {
                             let (_, _, pl0, _) = B_SUB_TABLE[sub_mb_types[smb] as usize];
                             if pl0 {
-                                if sp.num_ref_idx_l0_active > 1 {
+                                if self.effective_num_ref(mb_idx, sp.num_ref_idx_l0_active) > 1 {
                                     let (sy, sx) = sub_mb_origins[smb];
                                     let (left_ref, top_ref) = cabac_neighbor_ref(
                                         self.ref_idx_store_l0,
@@ -2275,7 +2275,7 @@ impl SliceContext<'_> {
                         } else {
                             let (_, _, _, pl1) = B_SUB_TABLE[sub_mb_types[smb] as usize];
                             if pl1 {
-                                if sp.num_ref_idx_l1_active > 1 {
+                                if self.effective_num_ref(mb_idx, sp.num_ref_idx_l1_active) > 1 {
                                     let (sy, sx) = sub_mb_origins[smb];
                                     let (left_ref, top_ref) = cabac_neighbor_ref(
                                         self.ref_idx_store_l1,
@@ -2627,10 +2627,11 @@ impl SliceContext<'_> {
                     if sub_part.pred_l0 && sub_part.pred_l1 {
                         let mut p0 = [0u8; 256]; // stack: max 16x16
                         let mut p1 = [0u8; 256]; // stack: max 16x16
-                        let ref_l0 = ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0)
+                        let frame_ri_l0 = self.frame_ref_idx(mb_idx, sub_part.ref_idx_l0);
+                        let ref_l0 = ref_pic_safe(sp.ref_pic_list_l0, frame_ri_l0)
                             .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
                         let (mc_y_l0, ref_stride_l0, ref_y_off_l0, _mc_cy_l0, _c_ref_stride_l0, _c_ref_off_l0) =
-                            self.mc_params(mb_idx, mb_y, ref_l0.width as usize);
+                            self.mc_params(mb_idx, mb_y, ref_l0.width as usize, sub_part.ref_idx_l0);
                         inter_pred::luma_mc_stride(
                             ref_l0,
                             abs_x as i32,
@@ -2643,10 +2644,11 @@ impl SliceContext<'_> {
                             ref_stride_l0,
                             ref_y_off_l0,
                         );
-                        let ref_l1 = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1)
+                        let frame_ri_l1 = self.frame_ref_idx(mb_idx, sub_part.ref_idx_l1);
+                        let ref_l1 = ref_pic_safe(sp.ref_pic_list_l1, frame_ri_l1)
                             .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
                         let (mc_y_l1, ref_stride_l1, ref_y_off_l1, _mc_cy_l1, _c_ref_stride_l1, _c_ref_off_l1) =
-                            self.mc_params(mb_idx, mb_y, ref_l1.width as usize);
+                            self.mc_params(mb_idx, mb_y, ref_l1.width as usize, sub_part.ref_idx_l1);
                         inter_pred::luma_mc_stride(
                             ref_l1,
                             abs_x as i32,
@@ -2669,10 +2671,10 @@ impl SliceContext<'_> {
                             0,
                         );
                     } else if sub_part.pred_l0 {
-                        let ref_pic = ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0)
+                        let ref_pic = ref_pic_safe(sp.ref_pic_list_l0, self.frame_ref_idx(mb_idx, sub_part.ref_idx_l0))
                             .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
                         let (mc_y, ref_stride, ref_y_off, _mc_cy, _c_ref_stride, _c_ref_off) =
-                            self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
+                            self.mc_params(mb_idx, mb_y, ref_pic.width as usize, sub_part.ref_idx_l0);
                         inter_pred::luma_mc_stride(
                             ref_pic,
                             abs_x as i32,
@@ -2695,10 +2697,10 @@ impl SliceContext<'_> {
                             );
                         }
                     } else if sub_part.pred_l1 {
-                        let ref_pic = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1)
+                        let ref_pic = ref_pic_safe(sp.ref_pic_list_l1, self.frame_ref_idx(mb_idx, sub_part.ref_idx_l1))
                             .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
                         let (mc_y, ref_stride, ref_y_off, _mc_cy, _c_ref_stride, _c_ref_off) =
-                            self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
+                            self.mc_params(mb_idx, mb_y, ref_pic.width as usize, sub_part.ref_idx_l1);
                         inter_pred::luma_mc_stride(
                             ref_pic,
                             abs_x as i32,
@@ -2737,14 +2739,14 @@ impl SliceContext<'_> {
                     for plane_idx in 0..2 {
                         let mut chroma_pred = [0u8; 64]; // stack: max 8x8
                         if sub_part.pred_l0 && sub_part.pred_l1 {
-                            let ref_l0 = ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0)
+                            let ref_l0 = ref_pic_safe(sp.ref_pic_list_l0, self.frame_ref_idx(mb_idx, sub_part.ref_idx_l0))
                                 .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
-                            let ref_l1 = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1)
+                            let ref_l1 = ref_pic_safe(sp.ref_pic_list_l1, self.frame_ref_idx(mb_idx, sub_part.ref_idx_l1))
                                 .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
                             let (_mc_y_l0, _rs_l0, _ref_y_off_l0, mc_cy_l0, c_ref_stride_l0, c_ref_off_l0) =
-                                self.mc_params(mb_idx, mb_y, ref_l0.width as usize);
+                                self.mc_params(mb_idx, mb_y, ref_l0.width as usize, sub_part.ref_idx_l0);
                             let (_mc_y_l1, _rs_l1, _ref_y_off_l1, mc_cy_l1, c_ref_stride_l1, c_ref_off_l1) =
-                                self.mc_params(mb_idx, mb_y, ref_l1.width as usize);
+                                self.mc_params(mb_idx, mb_y, ref_l1.width as usize, sub_part.ref_idx_l1);
                             let cr0 = if plane_idx == 0 { &ref_l0.u[c_ref_off_l0..] } else { &ref_l0.v[c_ref_off_l0..] };
                             let cr1 = if plane_idx == 0 { &ref_l1.u[c_ref_off_l1..] } else { &ref_l1.v[c_ref_off_l1..] };
                             let mut c0 = vec![0u8; chw * chh];
@@ -2784,10 +2786,10 @@ impl SliceContext<'_> {
                                 plane_idx,
                             );
                         } else if sub_part.pred_l0 {
-                            let ref_pic = ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0)
+                            let ref_pic = ref_pic_safe(sp.ref_pic_list_l0, self.frame_ref_idx(mb_idx, sub_part.ref_idx_l0))
                                 .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
                             let (_mc_y, _rs, _ref_y_off, mc_cy, c_ref_stride, c_ref_off) =
-                                self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
+                                self.mc_params(mb_idx, mb_y, ref_pic.width as usize, sub_part.ref_idx_l0);
                             let plane = if plane_idx == 0 {
                                 &ref_pic.u[c_ref_off..]
                             } else {
@@ -2816,10 +2818,10 @@ impl SliceContext<'_> {
                                 );
                             }
                         } else if sub_part.pred_l1 {
-                            let ref_pic = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1)
+                            let ref_pic = ref_pic_safe(sp.ref_pic_list_l1, self.frame_ref_idx(mb_idx, sub_part.ref_idx_l1))
                                 .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
                             let (_mc_y, _rs, _ref_y_off, mc_cy, c_ref_stride, c_ref_off) =
-                                self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
+                                self.mc_params(mb_idx, mb_y, ref_pic.width as usize, sub_part.ref_idx_l1);
                             let plane = if plane_idx == 0 {
                                 &ref_pic.u[c_ref_off..]
                             } else {

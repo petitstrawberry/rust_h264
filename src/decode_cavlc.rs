@@ -851,7 +851,7 @@ impl SliceContext<'_> {
                     let ref_l0 = ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0)
                         .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
                     let (mc_y_l0, ref_stride_l0, ref_y_off_l0, _mc_cy_l0, _c_ref_stride_l0, _c_ref_off_l0) =
-                        self.mc_params(mb_idx, mb_y, ref_l0.width as usize);
+                        self.mc_params(mb_idx, mb_y, ref_l0.width as usize, sub_part.ref_idx_l0);
                     inter_pred::luma_mc_stride(
                         ref_l0,
                         (mb_x + sub_part.x) as i32,
@@ -867,7 +867,7 @@ impl SliceContext<'_> {
                     let ref_l1 = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1)
                         .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
                     let (mc_y_l1, ref_stride_l1, ref_y_off_l1, _mc_cy_l1, _c_ref_stride_l1, _c_ref_off_l1) =
-                        self.mc_params(mb_idx, mb_y, ref_l1.width as usize);
+                        self.mc_params(mb_idx, mb_y, ref_l1.width as usize, sub_part.ref_idx_l1);
                     inter_pred::luma_mc_stride(
                         ref_l1,
                         (mb_x + sub_part.x) as i32,
@@ -893,7 +893,7 @@ impl SliceContext<'_> {
                     let ref_pic = ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0)
                         .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
                     let (mc_y, ref_stride, ref_y_off, _mc_cy, _c_ref_stride, _c_ref_off) =
-                        self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
+                        self.mc_params(mb_idx, mb_y, ref_pic.width as usize, sub_part.ref_idx_l0);
                     inter_pred::luma_mc_stride(
                         ref_pic,
                         (mb_x + sub_part.x) as i32,
@@ -919,7 +919,7 @@ impl SliceContext<'_> {
                     let ref_pic = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1)
                         .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
                     let (mc_y, ref_stride, ref_y_off, _mc_cy, _c_ref_stride, _c_ref_off) =
-                        self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
+                        self.mc_params(mb_idx, mb_y, ref_pic.width as usize, sub_part.ref_idx_l1);
                     inter_pred::luma_mc_stride(
                         ref_pic,
                         (mb_x + sub_part.x) as i32,
@@ -1009,15 +1009,15 @@ impl SliceContext<'_> {
                     // We'll handle L0/L1 separately inside; store L0 params as placeholder
                     let ref_l0 = ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0);
                     let w = ref_l0.map(|r| r.width as usize).unwrap_or(self.width as usize);
-                    sub_mc.push(self.mc_params(mb_idx, mb_y, w));
+                    sub_mc.push(self.mc_params(mb_idx, mb_y, w, sub_part.ref_idx_l0));
                 } else if sub_part.pred_l0 {
                     let ref_pic = ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0);
                     let w = ref_pic.map(|r| r.width as usize).unwrap_or(self.width as usize);
-                    sub_mc.push(self.mc_params(mb_idx, mb_y, w));
+                    sub_mc.push(self.mc_params(mb_idx, mb_y, w, sub_part.ref_idx_l0));
                 } else {
                     let ref_pic = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1);
                     let w = ref_pic.map(|r| r.width as usize).unwrap_or(self.width as usize);
-                    sub_mc.push(self.mc_params(mb_idx, mb_y, w));
+                    sub_mc.push(self.mc_params(mb_idx, mb_y, w, sub_part.ref_idx_l1));
                 }
             }
             // Also precompute L1 mc_params for bi-pred sub_parts
@@ -1026,7 +1026,7 @@ impl SliceContext<'_> {
                 if sub_part.pred_l0 && sub_part.pred_l1 {
                     let ref_l1 = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1);
                     let w = ref_l1.map(|r| r.width as usize).unwrap_or(self.width as usize);
-                    sub_mc_l1.push(self.mc_params(mb_idx, mb_y, w));
+                    sub_mc_l1.push(self.mc_params(mb_idx, mb_y, w, sub_part.ref_idx_l1));
                 } else {
                     sub_mc_l1.push((0, 0, 0, 0, 0, 0)); // unused
                 }
@@ -1224,12 +1224,14 @@ impl SliceContext<'_> {
                 let sub_mb_origins = [(0, 0), (0, 8), (8, 0), (8, 8)];
 
                 // Parse ref_idx for each 8x8 sub-MB
+                // Field-coded MBs double the effective ref count (each frame ref → 2 field refs)
+                let eff_num_ref_l0 = self.effective_num_ref(mb_idx, sp.num_ref_idx_l0_active);
                 let mut sub_ref = [0i8; 4];
                 if mb_type == 3 {
                     // P_8x8: parse ref_idx per sub-MB
                     for sr in &mut sub_ref {
-                        if sp.num_ref_idx_l0_active > 1 {
-                            *sr = reader.read_te(sp.num_ref_idx_l0_active - 1)? as i8;
+                        if eff_num_ref_l0 > 1 {
+                            *sr = reader.read_te(eff_num_ref_l0 - 1)? as i8;
                         }
                     }
                 }
@@ -1300,10 +1302,11 @@ impl SliceContext<'_> {
                     _ => unreachable!(),
                 };
 
+                let eff_num_ref_l0 = self.effective_num_ref(mb_idx, sp.num_ref_idx_l0_active);
                 let mut part_ref = [0i8; 2];
                 for ref_entry in part_ref.iter_mut().take(num_parts) {
-                    if sp.num_ref_idx_l0_active > 1 {
-                        *ref_entry = reader.read_te(sp.num_ref_idx_l0_active - 1)? as i8;
+                    if eff_num_ref_l0 > 1 {
+                        *ref_entry = reader.read_te(eff_num_ref_l0 - 1)? as i8;
                     }
                 }
 
@@ -1472,15 +1475,16 @@ impl SliceContext<'_> {
 
             // Motion compensate and add residual for each sub-partition
             for sub_part in &sub_parts {
+                let fri = self.frame_ref_idx(mb_idx, sub_part.ref_idx);
                 let ref_pic = sp
                     .ref_pic_list
-                    .get(sub_part.ref_idx as usize)
+                    .get(fri as usize)
                     .or_else(|| sp.ref_pic_list.last())
                     .ok_or(DecodeError::InvalidSyntax(
                         "P sub-partition references empty ref_pic_list",
                     ))?;
                 let (mc_y, ref_stride, ref_y_off, _mc_cy, _c_ref_stride, _c_ref_off) =
-                    self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
+                    self.mc_params(mb_idx, mb_y, ref_pic.width as usize, sub_part.ref_idx);
                 let mut luma_pred = [0u8; 256];
                 inter_pred::luma_mc_stride(
                     ref_pic,
@@ -1560,11 +1564,12 @@ impl SliceContext<'_> {
             // Precompute mc_params per sub_part before entering the plane loop
             // (avoids borrow conflict with &mut self.frame inside the loop).
             let p_sub_mc: Vec<(i32, usize, usize, usize, usize, usize)> = sub_parts.iter().map(|sp_part| {
+                let fri = self.frame_ref_idx(mb_idx, sp_part.ref_idx);
                 let ref_pic = sp.ref_pic_list
-                    .get(sp_part.ref_idx as usize)
+                    .get(fri as usize)
                     .or_else(|| sp.ref_pic_list.last());
                 let w = ref_pic.map(|r| r.width as usize).unwrap_or(self.width as usize);
-                self.mc_params(mb_idx, mb_y, w)
+                self.mc_params(mb_idx, mb_y, w, sp_part.ref_idx)
             }).collect();
 
             // Chroma MC + residual for each chroma plane
@@ -1623,9 +1628,16 @@ impl SliceContext<'_> {
                         if cw == 0 || ch == 0 {
                             continue;
                         }
+                        let fri_val = p_sub_mc[sp_i]; // mc_params already computed
+                        let _ = fri_val; // ref_idx mapping is embedded in mc_params
+                        let fri = if self.mbaff && self.mb_field_decoding[mb_idx / 2] {
+                            sub_part.ref_idx / 2
+                        } else {
+                            sub_part.ref_idx
+                        };
                         let part_ref_pic = sp
                             .ref_pic_list
-                            .get(sub_part.ref_idx as usize)
+                            .get(fri as usize)
                             .or_else(|| sp.ref_pic_list.last())
                             .ok_or(DecodeError::InvalidSyntax(
                                 "P sub-partition chroma references empty ref_pic_list",

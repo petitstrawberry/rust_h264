@@ -2520,4 +2520,10 @@ mod tests {
     fn test_mbaff_field_i() {
         decode_multiframe_and_compare("mbaff_field_i_test", 3, 64, 64);
     }
+
+    /// MBAFF field-coded P-frames CAVLC (64x64, 4 frames, all-field-coded pairs)
+    #[test]
+    fn test_mbaff_field_p() {
+        decode_multiframe_and_compare("mbaff_field_p_test", 4, 64, 64);
+    }
 }

@@ -144,39 +144,56 @@ impl SliceContext<'_> {
         let _ = mb_x; // mb_x not needed for layout, only mb_y
     }
 
-    /// Returns MC parameters for the current MB.
-    /// Returns `(mc_y, ref_stride, mc_cy, c_ref_stride)`:
-    /// - `mc_y`: luma y in field-line units (field_line * 2*width gives correct byte offset for top field)
-    /// - `ref_stride`: reference luma stride (width for frame, width*2 for field)
-    /// - `mc_cy`: chroma y in field-line units
-    /// - `c_ref_stride`: reference chroma stride
-    ///
-    /// For field-coded bottom MBs, callers must add `ref_width` (luma) or `ref_width/2` (chroma)
-    /// to the reference buffer pointer to start at the bottom field.
-    #[inline]
+    /// Returns MC parameters for the current field-coded or frame-coded MB.
+    /// `ref_idx` is the decoded reference index for the partition being MC'd.
     /// Returns `(mc_y, ref_stride, ref_y_offset, mc_cy, c_ref_stride, c_ref_offset)`.
-    pub(crate) fn mc_params(&self, mb_idx: usize, mb_y: usize, ref_width: usize) -> (i32, usize, usize, usize, usize, usize) {
+    ///
+    /// For field-coded MBs, the reference index is in field units:
+    /// - Even ref_idx → same-parity field (top→top, bottom→bottom)
+    /// - Odd ref_idx → opposite-parity field (top→bottom, bottom→top)
+    /// The actual frame reference is at `ref_list[ref_idx / 2]`.
+    #[inline]
+    pub(crate) fn mc_params(&self, mb_idx: usize, mb_y: usize, ref_width: usize, ref_idx: i8) -> (i32, usize, usize, usize, usize, usize) {
         if self.mbaff && self.mb_field_decoding[mb_idx / 2] {
             let pair_row = (mb_idx / 2) / self.mb_width as usize;
             let is_bottom = mb_idx % 2 != 0;
             let mc_y = (pair_row * 16) as i32;
             let ref_stride = ref_width * 2;
-            let ref_y_off = if is_bottom { ref_width } else { 0 };
+            // Determine which field of the reference to read:
+            // Even ref_idx → same parity, odd ref_idx → opposite parity
+            let ref_is_bottom = is_bottom ^ (ref_idx % 2 != 0);
+            let ref_y_off = if ref_is_bottom { ref_width } else { 0 };
             let mc_cy = (pair_row * 8) as usize;
             let cw = ref_width / 2;
             let c_ref_stride = cw * 2;
-            let c_ref_off = if is_bottom { cw } else { 0 };
+            let c_ref_off = if ref_is_bottom { cw } else { 0 };
             (mc_y, ref_stride, ref_y_off, mc_cy, c_ref_stride, c_ref_off)
         } else {
             (mb_y as i32, ref_width, 0, mb_y / 2, ref_width / 2, 0)
         }
     }
 
-    /// Returns true if this MB is field-coded (bottom field).
-    /// Used by MC callers to offset the reference pointer for bottom field access.
+    /// Map a field-coded ref_idx to the frame-level reference list index.
+    /// For field-coded MBs, ref_idx is doubled (2 fields per frame ref).
+    /// For frame-coded, returns ref_idx unchanged.
     #[inline]
-    pub(crate) fn is_bottom_field(&self, mb_idx: usize) -> bool {
-        self.mbaff && self.mb_field_decoding[mb_idx / 2] && mb_idx % 2 != 0
+    pub(crate) fn frame_ref_idx(&self, mb_idx: usize, ref_idx: i8) -> i8 {
+        if self.mbaff && self.mb_field_decoding[mb_idx / 2] {
+            ref_idx / 2
+        } else {
+            ref_idx
+        }
+    }
+
+    /// Returns the effective num_ref_idx_active for the current MB.
+    /// Field-coded MBs double the count (each frame ref → 2 field refs).
+    #[inline]
+    pub(crate) fn effective_num_ref(&self, mb_idx: usize, num_ref: u32) -> u32 {
+        if self.mbaff && self.mb_field_decoding[mb_idx / 2] {
+            (num_ref * 2).min(32)
+        } else {
+            num_ref
+        }
     }
 
     /// Returns true if this MB is field-coded (MBAFF only).
@@ -396,7 +413,7 @@ impl SliceContext<'_> {
         );
         if let Some(ref_pic) = ref_pic_list.first() {
             let (mc_y, ref_stride, ref_y_off, mc_cy, c_ref_stride, c_ref_off) =
-                self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
+                self.mc_params(mb_idx, mb_y, ref_pic.width as usize, 0i8);
             // Luma MC
             let mut luma_pred = [0u8; 256];
             inter_pred::luma_mc_stride(
@@ -662,7 +679,7 @@ impl SliceContext<'_> {
                 let Some(ref_l0) = ref_pic_safe(ref_pic_list_l0, r0) else { return; };
                 let Some(ref_l1) = ref_pic_safe(ref_pic_list_l1, r1) else { return; };
                 let (mc_y_l0, ref_stride_l0, ref_y_off_l0, _mc_cy_l0, _c_ref_stride_l0, _c_ref_off_l0) =
-                    self.mc_params(mb_idx, mb_y, ref_l0.width as usize);
+                    self.mc_params(mb_idx, mb_y, ref_l0.width as usize, r0);
                 inter_pred::luma_mc_stride(
                     ref_l0,
                     bx as i32,
@@ -676,7 +693,7 @@ impl SliceContext<'_> {
                     ref_y_off_l0,
                 );
                 let (mc_y_l1, ref_stride_l1, ref_y_off_l1, _mc_cy_l1, _c_ref_stride_l1, _c_ref_off_l1) =
-                    self.mc_params(mb_idx, mb_y, ref_l1.width as usize);
+                    self.mc_params(mb_idx, mb_y, ref_l1.width as usize, r1);
                 inter_pred::luma_mc_stride(
                     ref_l1,
                     bx as i32,
@@ -693,7 +710,7 @@ impl SliceContext<'_> {
             } else if bp0 {
                 let Some(ref_pic) = ref_pic_safe(ref_pic_list_l0, r0) else { return; };
                 let (mc_y, ref_stride, ref_y_off, _mc_cy, _c_ref_stride, _c_ref_off) =
-                    self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
+                    self.mc_params(mb_idx, mb_y, ref_pic.width as usize, r0);
                 inter_pred::luma_mc_stride(
                     ref_pic,
                     bx as i32,
@@ -712,7 +729,7 @@ impl SliceContext<'_> {
             } else if bp1 {
                 let Some(ref_pic) = ref_pic_safe(ref_pic_list_l1, r1) else { return; };
                 let (mc_y, ref_stride, ref_y_off, _mc_cy, _c_ref_stride, _c_ref_off) =
-                    self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
+                    self.mc_params(mb_idx, mb_y, ref_pic.width as usize, r1);
                 inter_pred::luma_mc_stride(
                     ref_pic,
                     bx as i32,
@@ -765,9 +782,9 @@ impl SliceContext<'_> {
                     let Some(rl0) = ref_pic_safe(ref_pic_list_l0, r0) else { return; };
                     let Some(rl1) = ref_pic_safe(ref_pic_list_l1, r1) else { return; };
                     let (_mc_y_l0, _rs_l0, _ref_y_off_l0, mc_cy_l0, c_ref_stride_l0, c_ref_off_l0) =
-                        self.mc_params(mb_idx, mb_y, rl0.width as usize);
+                        self.mc_params(mb_idx, mb_y, rl0.width as usize, r0);
                     let (_mc_y_l1, _rs_l1, _ref_y_off_l1, mc_cy_l1, c_ref_stride_l1, c_ref_off_l1) =
-                        self.mc_params(mb_idx, mb_y, rl1.width as usize);
+                        self.mc_params(mb_idx, mb_y, rl1.width as usize, r1);
                     let cr0 = if plane_idx == 0 { &rl0.u[c_ref_off_l0..] } else { &rl0.v[c_ref_off_l0..] };
                     let cr1 = if plane_idx == 0 { &rl1.u[c_ref_off_l1..] } else { &rl1.v[c_ref_off_l1..] };
                     inter_pred::chroma_mc(
@@ -806,7 +823,7 @@ impl SliceContext<'_> {
                 } else if bp0 {
                     let Some(ref_pic) = ref_pic_safe(ref_pic_list_l0, r0) else { return; };
                     let (_mc_y, _rs, _ref_y_off, mc_cy, c_ref_stride, c_ref_off) =
-                        self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
+                        self.mc_params(mb_idx, mb_y, ref_pic.width as usize, r0);
                     let cr = if plane_idx == 0 {
                         &ref_pic.u[c_ref_off..]
                     } else {
@@ -830,7 +847,7 @@ impl SliceContext<'_> {
                 } else if bp1 {
                     let Some(ref_pic) = ref_pic_safe(ref_pic_list_l1, r1) else { return; };
                     let (_mc_y, _rs, _ref_y_off, mc_cy, c_ref_stride, c_ref_off) =
-                        self.mc_params(mb_idx, mb_y, ref_pic.width as usize);
+                        self.mc_params(mb_idx, mb_y, ref_pic.width as usize, r1);
                     let cr = if plane_idx == 0 {
                         &ref_pic.u[c_ref_off..]
                     } else {
