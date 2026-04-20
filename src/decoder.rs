@@ -612,7 +612,7 @@ impl Decoder {
                 chroma_qp_index_offset: pps.chroma_qp_index_offset,
                 mb_width,
                 mb_height,
-                mb_field_decoding: vec![false; (total_mbs + 1) / 2],
+                mb_field_decoding: vec![false; total_mbs.div_ceil(2)],
                 mbaff_frame_flag: header.mbaff_frame_flag,
             }
         };

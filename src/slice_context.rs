@@ -151,6 +151,7 @@ impl SliceContext<'_> {
     /// For field-coded MBs, the reference index is in field units:
     /// - Even ref_idx → same-parity field (top→top, bottom→bottom)
     /// - Odd ref_idx → opposite-parity field (top→bottom, bottom→top)
+    ///
     /// The actual frame reference is at `ref_list[ref_idx / 2]`.
     #[inline]
     pub(crate) fn mc_params(
@@ -169,7 +170,7 @@ impl SliceContext<'_> {
             // Even ref_idx → same parity, odd ref_idx → opposite parity
             let ref_is_bottom = is_bottom ^ (ref_idx % 2 != 0);
             let ref_y_off = if ref_is_bottom { ref_width } else { 0 };
-            let mc_cy = (pair_row * 8) as usize;
+            let mc_cy = pair_row * 8;
             let cw = ref_width / 2;
             let c_ref_stride = cw * 2;
             let c_ref_off = if ref_is_bottom { cw } else { 0 };

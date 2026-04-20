@@ -234,12 +234,10 @@ pub(crate) fn cabac_neighbor_nz_luma(
         } else {
             let has_above = if !mbaff {
                 mb_idx >= mb_width
+            } else if _mb_field_decoding[mb_idx / 2] {
+                (mb_idx / 2) >= mb_width
             } else {
-                if _mb_field_decoding[mb_idx / 2] {
-                    (mb_idx / 2) >= mb_width
-                } else {
-                    mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
-                }
+                mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
             };
             if !has_above {
                 return is_intra;
@@ -316,12 +314,10 @@ pub(crate) fn cabac_neighbor_nz_chroma(
         } else {
             let has_above = if !mbaff {
                 mb_idx >= mb_width
+            } else if _mb_field_decoding[mb_idx / 2] {
+                (mb_idx / 2) >= mb_width
             } else {
-                if _mb_field_decoding[mb_idx / 2] {
-                    (mb_idx / 2) >= mb_width
-                } else {
-                    mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
-                }
+                mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
             };
             if !has_above {
                 return is_intra;
@@ -458,12 +454,10 @@ pub(crate) fn get_neighbor_i4x4_mode(
                 // Top edge of MB
                 let has_above = if !mbaff {
                     mb_idx >= mb_width
+                } else if _mb_field_decoding[mb_idx / 2] {
+                    (mb_idx / 2) >= mb_width
                 } else {
-                    if _mb_field_decoding[mb_idx / 2] {
-                        (mb_idx / 2) >= mb_width
-                    } else {
-                        mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
-                    }
+                    mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
                 };
                 let above_mb = if !has_above {
                     0 // dummy, not used
@@ -597,12 +591,10 @@ pub(crate) fn compute_nc(
     } else {
         let has_above = if !mbaff {
             mb_idx >= mb_width
+        } else if _mb_field_decoding[mb_idx / 2] {
+            (mb_idx / 2) >= mb_width
         } else {
-            if _mb_field_decoding[mb_idx / 2] {
-                (mb_idx / 2) >= mb_width
-            } else {
-                mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
-            }
+            mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
         };
         if has_above {
             let above_nb = if !mbaff {
