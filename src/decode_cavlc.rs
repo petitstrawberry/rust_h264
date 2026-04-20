@@ -1934,7 +1934,6 @@ impl SliceContext<'_> {
                     self.reconstruct_luma_8x8_block(
                         i8x8,
                         mb_x,
-                        mb_y,
                         pred_modes[i8x8 * 4],
                         &luma_residual,
                         above_mb_avail,
@@ -2082,7 +2081,6 @@ impl SliceContext<'_> {
             // I16x16 prediction + residual
             self.reconstruct_luma_16x16(
                 mb_x,
-                mb_y,
                 intra16x16_pred_mode,
                 &luma_residual,
                 above_mb_avail,

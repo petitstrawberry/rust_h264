@@ -923,7 +923,6 @@ impl SliceContext<'_> {
         qp_c: i32,
         chroma_scale: &[u8; 16],
         mb_x: usize,
-        _mb_y: usize,
     ) {
         let chroma_mb_x = mb_x / 2;
 
@@ -987,7 +986,6 @@ impl SliceContext<'_> {
         &mut self,
         i8x8: usize,
         mb_x: usize,
-        mb_y: usize,
         pred_mode: u8,
         luma_residual: &[i32; 256],
         above_mb_avail: bool,
@@ -998,7 +996,6 @@ impl SliceContext<'_> {
         let row_off = (i8x8 / 2) * 8;
         let col_off = (i8x8 % 2) * 8;
         let px = mb_x + col_off;
-        let py = mb_y + row_off;
 
         // Above samples (16: 8 above + 8 above-right)
         let above_base = self.ly_offset + row_off * self.ly_stride;
@@ -1178,7 +1175,6 @@ impl SliceContext<'_> {
     pub(crate) fn reconstruct_luma_16x16(
         &mut self,
         mb_x: usize,
-        mb_y: usize,
         pred_mode: u8,
         luma_residual: &[i32; 256],
         above_avail: bool,
@@ -1229,7 +1225,6 @@ impl SliceContext<'_> {
     pub(crate) fn predict_chroma_intra(
         &self,
         mb_x: usize,
-        mb_y: usize,
         intra_chroma_pred_mode: u8,
         above_avail: bool,
         left_avail: bool,

@@ -351,7 +351,6 @@ impl SliceContext<'_> {
                             self.reconstruct_luma_8x8_block(
                                 i8x8,
                                 mb_x,
-                                mb_y,
                                 pred_modes[i8x8 * 4],
                                 &luma_residual,
                                 above_mb_avail,
@@ -435,7 +434,6 @@ impl SliceContext<'_> {
                     let _chroma_mb_y = mb_y / 2;
                     let (pred_u, pred_v) = self.predict_chroma_intra(
                         mb_x,
-                        mb_y,
                         intra_chroma_pred_mode,
                         above_mb_avail,
                         left_mb_avail,
@@ -586,7 +584,6 @@ impl SliceContext<'_> {
                             _qp_c,
                             &sp.scaling_list_4x4[1],
                             mb_x,
-                            mb_y,
                         );
                         self.reconstruct_chroma_plane(
                             &mut chroma_dc_cr,
@@ -597,7 +594,6 @@ impl SliceContext<'_> {
                             _qp_c,
                             &sp.scaling_list_4x4[2],
                             mb_x,
-                            mb_y,
                         );
                     }
                     self.mb_info[mb_idx] = MbInfo {
@@ -733,7 +729,6 @@ impl SliceContext<'_> {
                     // I16x16 prediction + residual
                     self.reconstruct_luma_16x16(
                         mb_x,
-                        mb_y,
                         i16_pred,
                         &luma_residual,
                         above_mb_avail,
@@ -747,7 +742,6 @@ impl SliceContext<'_> {
                     let _chroma_mb_y = mb_y / 2;
                     let (pred_u, pred_v) = self.predict_chroma_intra(
                         mb_x,
-                        mb_y,
                         intra_chroma_pred_mode,
                         above_mb_avail,
                         left_mb_avail,
@@ -898,7 +892,6 @@ impl SliceContext<'_> {
                             qp_c,
                             &sp.scaling_list_4x4[1],
                             mb_x,
-                            mb_y,
                         );
                         self.reconstruct_chroma_plane(
                             &mut chroma_dc_cr,
@@ -909,7 +902,6 @@ impl SliceContext<'_> {
                             qp_c,
                             &sp.scaling_list_4x4[2],
                             mb_x,
-                            mb_y,
                         );
                     }
 
@@ -3500,7 +3492,6 @@ impl SliceContext<'_> {
                     self.reconstruct_luma_8x8_block(
                         i8x8,
                         mb_x,
-                        mb_y,
                         pred_modes[i8x8 * 4],
                         &luma_residual,
                         above_mb_avail,
@@ -3586,7 +3577,6 @@ impl SliceContext<'_> {
             // Chroma prediction (slice boundary: cross-slice neighbors unavailable)
             let (pred_u, pred_v) = self.predict_chroma_intra(
                 mb_x,
-                mb_y,
                 intra_chroma_pred_mode,
                 above_mb_avail,
                 left_mb_avail,
@@ -3720,7 +3710,6 @@ impl SliceContext<'_> {
                     _qp_c,
                     &sp.scaling_list_4x4[1],
                     mb_x,
-                    mb_y,
                 );
                 self.reconstruct_chroma_plane(
                     &mut chroma_dc_cr,
@@ -3731,7 +3720,6 @@ impl SliceContext<'_> {
                     _qp_c,
                     &sp.scaling_list_4x4[2],
                     mb_x,
-                    mb_y,
                 );
             }
 
@@ -3866,7 +3854,6 @@ impl SliceContext<'_> {
             // I16x16 prediction + residual
             self.reconstruct_luma_16x16(
                 mb_x,
-                mb_y,
                 intra16x16_pred_mode,
                 &luma_residual,
                 above_mb_avail_i,
@@ -3880,7 +3867,6 @@ impl SliceContext<'_> {
             let _chroma_mb_y = mb_y / 2;
             let (pred_u, pred_v) = self.predict_chroma_intra(
                 mb_x,
-                mb_y,
                 intra_chroma_pred_mode,
                 above_mb_avail_i,
                 left_mb_avail_i,
@@ -4011,7 +3997,6 @@ impl SliceContext<'_> {
                     qp_c,
                     &sp.scaling_list_4x4[1],
                     mb_x,
-                    mb_y,
                 );
                 self.reconstruct_chroma_plane(
                     &mut chroma_dc_cr,
@@ -4022,7 +4007,6 @@ impl SliceContext<'_> {
                     qp_c,
                     &sp.scaling_list_4x4[2],
                     mb_x,
-                    mb_y,
                 );
             }
 
