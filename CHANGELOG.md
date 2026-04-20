@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-04-19
+
+### Added
+- **MBAFF (Macroblock-Adaptive Frame-Field) interlaced support** — the decoder
+  now handles interlaced H.264 content encoded with `mb_adaptive_frame_field_flag`.
+  Both frame-coded and field-coded MB pairs are fully supported:
+  - Pair-based MB addressing with `mb_field_decoding_flag` decode (CABAC contexts
+    70-72 and CAVLC 1-bit)
+  - MBAFF neighbor derivation per spec Tables 6-3/6-4 with y-coordinate remapping
+    for all 4 frame/field mode combinations
+  - MVy scaling at cross frame/field boundaries (×2 field→frame, /2 frame→field)
+  - All CABAC/CAVLC context functions updated for MBAFF pair-based addressing
+  - Field-coded pixel layout with doubled stride and field-line offset
+  - Field-aware motion compensation via `luma_mc_stride` with per-field reference
+    buffer offset for top/bottom field access
+  - Field reference lists: `num_ref_idx` doubled for field-coded MBs, `ref_idx`
+    maps same-parity and opposite-parity fields
+  - Field-coded CABAC significance/last coefficient contexts (ctxIdx 277+/338+
+    per spec Table 9-34)
+  - Field-coded CABAC neighbor addressing: bottom field MBs use same-field MB
+    from above pair (not top of current pair)
+  - MBAFF-aware deblocking filter with pair-based iteration and correct
+    left/above neighbor addressing
+  - MBAFF-aware POC computation: `min(TopFieldOrderCnt, BottomFieldOrderCnt)`
+    for POC types 0 and 1
+- 15 new MBAFF-specific byte-exact tests covering CAVLC/CABAC, I/P/B slices,
+  frame-coded and field-coded pairs, deblocking, High profile 8x8 DCT, and
+  implicit weighted bi-prediction. Total test count: 178.
+
+### Fixed
+- POC computation for `pic_order_cnt_type` 0 and 1 now correctly returns
+  `min(TopFieldOrderCnt, BottomFieldOrderCnt)` instead of just
+  `TopFieldOrderCnt`. Fixes implicit weighted bi-prediction for MBAFF
+  B-frames with non-zero `delta_pic_order_cnt_bottom`.
+- Above-right MV neighbor for MBAFF bottom MBs no longer reads from
+  undecoded pairs due to `mb_slice_id` initialization matching
+  `this_slice_id=0`. Falls back to above-left correctly.
+- **Fuzzing robustness**: fixed multiple integer overflow panics found by
+  fuzzing on malformed bitstreams:
+  - IDCT 4x4 and 8x8 add/sub overflows (use wrapping arithmetic)
+  - POC type 1 multiplication overflow and MSB computation overflow
+  - POC shift overflow (clamp shift amount)
+  - Dequant DC multiply overflow
+  - SPS scaling list delta add overflow
+  - Deblocking filter multiply overflow
+  - SPS width overflow
+- **Bounds checking**: fixed multiple out-of-bounds panics on malformed
+  bitstreams:
+  - Chroma MC reference plane boundary checks
+  - CABAC I_PCM frame buffer index validation
+  - Bitstream reader position validation
+  - Empty reference list safe indexing
+  - CAVLC coefficient position underflow guard
+  - Missing bounds/range validation on values from malformed bitstreams
+
 ## [0.3.0] - 2026-04-09
 
 ### Added
