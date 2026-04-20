@@ -309,6 +309,7 @@ pub fn inverse_dct_8x8(block: &mut [i32; 64]) {
 }
 
 /// 8x8 IDCT butterfly using wrapping arithmetic to avoid overflow panics.
+#[allow(clippy::too_many_arguments)]
 #[inline(always)]
 fn idct8_butterfly(
     x0: i32,

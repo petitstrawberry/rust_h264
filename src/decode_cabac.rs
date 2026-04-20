@@ -1,4 +1,5 @@
 //! CABAC macroblock decode — skip detection, mb_type dispatch, residual decode.
+#![allow(clippy::needless_range_loop)]
 
 use crate::cabac::CabacReader;
 use crate::deblock::{MbInfo, MbType};
@@ -55,6 +56,7 @@ impl SliceContext<'_> {
         self.mb_field_decoding[pair_addr] = cr.get_cabac(&mut st[ctx_idx as usize]) != 0;
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn decode_cabac_mb(
         &mut self,
         cr: &mut CabacReader,

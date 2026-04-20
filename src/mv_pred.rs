@@ -526,7 +526,7 @@ pub(crate) fn derive_spatial_direct_blk(
 
 /// Derive temporal direct mode MVs for a specific 4x4 block within an MB.
 /// Per spec 8.4.1.2.3, reads the co-located block's MV and scales by POC distance.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn derive_temporal_direct_blk(
     col_pic: &DecodedPicture,
     ref_pic_list_l0: &[Rc<DecodedPicture>],
