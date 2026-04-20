@@ -91,7 +91,7 @@ impl SliceContext<'_> {
         // This matches FFmpeg/x264's CABAC encoding order.
         if self.mbaff && !(sp.is_p_slice || sp.is_b_slice) {
             // I-slice: field_flag for all top MBs (no skip flags exist)
-            if mb_idx % 2 == 0 {
+            if mb_idx.is_multiple_of(2) {
                 self.decode_mbaff_field_flag(cr, st, mb_idx);
             }
         }
@@ -119,7 +119,7 @@ impl SliceContext<'_> {
 
             // MBAFF: after skip flag, handle field_flag based on skip result
             if self.mbaff {
-                let is_top = mb_idx % 2 == 0;
+                let is_top = mb_idx.is_multiple_of(2);
                 if is_top && is_skip {
                     // Top MB is skipped. Check bottom skip immediately (FFmpeg pattern).
                     // The bottom's skip_flag is decoded WITHOUT field_flag first.
@@ -210,7 +210,7 @@ impl SliceContext<'_> {
                         && self.mb_slice_id[mb_idx - self.mb_width as usize + 1]
                             == self.this_slice_id
                         && self.is_intra_neighbor_avail(mb_idx - self.mb_width as usize + 1, sp)
-                } else if mb_idx % 2 != 0 {
+                } else if !mb_idx.is_multiple_of(2) {
                     // MBAFF bottom MBs: above-right is in the next pair (not yet decoded)
                     false
                 } else {
@@ -3435,7 +3435,7 @@ impl SliceContext<'_> {
             } else {
                 // For MBAFF bottom MBs, the above-right is in the next pair which
                 // hasn't been decoded yet — so it's unavailable.
-                if mb_idx % 2 != 0 {
+                if !mb_idx.is_multiple_of(2) {
                     false
                 } else {
                     self.above_mb(mb_idx)

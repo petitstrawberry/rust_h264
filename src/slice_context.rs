@@ -128,7 +128,7 @@ impl SliceContext<'_> {
             // Field-coded MB pair: doubled stride, field-line offset
             let pair_row = (mb_idx / 2) / self.mb_width as usize;
             let pair_y = pair_row * 32;
-            let is_bottom = mb_idx % 2 != 0;
+            let is_bottom = !mb_idx.is_multiple_of(2);
             self.ly_stride = w * 2;
             self.ly_offset = (pair_y + if is_bottom { 1 } else { 0 }) * w;
             self.lc_stride = cw * 2;
@@ -163,7 +163,7 @@ impl SliceContext<'_> {
     ) -> (i32, usize, usize, usize, usize, usize) {
         if self.mbaff && self.mb_field_decoding[mb_idx / 2] {
             let pair_row = (mb_idx / 2) / self.mb_width as usize;
-            let is_bottom = mb_idx % 2 != 0;
+            let is_bottom = !mb_idx.is_multiple_of(2);
             let mc_y = (pair_row * 16) as i32;
             let ref_stride = ref_width * 2;
             // Determine which field of the reference to read:
@@ -263,7 +263,7 @@ impl SliceContext<'_> {
             }
             Some(above)
         } else {
-            let is_top = mb_idx % 2 == 0;
+            let is_top = mb_idx.is_multiple_of(2);
             let pair_addr = mb_idx / 2;
             let is_field = self.mb_field_decoding[pair_addr];
             if !is_top && !is_field {

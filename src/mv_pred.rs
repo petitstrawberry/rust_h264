@@ -783,7 +783,7 @@ fn mbaff_left_neighbor(
         return None;
     }
     let left_pair = pair_addr - 1;
-    let is_top = mb_idx % 2 == 0;
+    let is_top = mb_idx.is_multiple_of(2);
     let cur_is_field = mb_field_decoding[pair_addr];
     let left_is_field = mb_field_decoding[left_pair];
 
@@ -832,7 +832,7 @@ fn mbaff_above_neighbor(
     mb_field_decoding: &[bool],
 ) -> Option<(usize, usize)> {
     let pair_addr = mb_idx / 2;
-    let is_top = mb_idx % 2 == 0;
+    let is_top = mb_idx.is_multiple_of(2);
 
     if !is_top {
         // Bottom MB: above is top MB of same pair
@@ -1102,7 +1102,7 @@ pub(crate) fn get_mv_neighbor_above_right_mbaff(
             // For bottom MBs, the "above" is the top of the same pair.
             // The pair to the right of the above is in the same pair row,
             // which hasn't been decoded yet → unavailable.
-            if mb_idx % 2 != 0 {
+            if !mb_idx.is_multiple_of(2) {
                 return None;
             }
             let pair_addr = mb_idx / 2;

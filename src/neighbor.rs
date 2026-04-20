@@ -28,7 +28,7 @@ pub(crate) fn cabac_amvd(
         (has_left, left, has_above, above)
     } else {
         let pair_addr = mb_idx / 2;
-        let has_left = pair_addr % mb_width != 0;
+        let has_left = !pair_addr.is_multiple_of(mb_width);
         let left = if has_left {
             (pair_addr - 1) * 2 + (mb_idx % 2)
         } else {
@@ -40,14 +40,12 @@ pub(crate) fn cabac_amvd(
             pair_addr >= mb_width
         } else {
             // Frame-coded: above is top of same pair (always available for bottom)
-            mb_idx % 2 != 0 || pair_addr >= mb_width
+            !mb_idx.is_multiple_of(2) || pair_addr >= mb_width
         };
         let above = if !has_above {
             0
-        } else if mb_idx % 2 != 0 && !is_field {
+        } else if !mb_idx.is_multiple_of(2) && !is_field {
             mb_idx - 1 // Frame-coded: top of same pair
-        } else if mb_idx % 2 != 0 {
-            (pair_addr - mb_width) * 2 + 1 // Field-coded: bottom of above pair
         } else {
             (pair_addr - mb_width) * 2 + 1
         };
@@ -117,7 +115,7 @@ pub(crate) fn cabac_neighbor_ref(
         (has_left, left, has_above, above)
     } else {
         let pair_addr = mb_idx / 2;
-        let has_left = pair_addr % mb_width != 0;
+        let has_left = !pair_addr.is_multiple_of(mb_width);
         let left = if has_left {
             (pair_addr - 1) * 2 + (mb_idx % 2)
         } else {
@@ -129,14 +127,12 @@ pub(crate) fn cabac_neighbor_ref(
             pair_addr >= mb_width
         } else {
             // Frame-coded: above is top of same pair (always available for bottom)
-            mb_idx % 2 != 0 || pair_addr >= mb_width
+            !mb_idx.is_multiple_of(2) || pair_addr >= mb_width
         };
         let above = if !has_above {
             0
-        } else if mb_idx % 2 != 0 && !is_field {
+        } else if !mb_idx.is_multiple_of(2) && !is_field {
             mb_idx - 1 // Frame-coded: top of same pair
-        } else if mb_idx % 2 != 0 {
-            (pair_addr - mb_width) * 2 + 1 // Field-coded: bottom of above pair
         } else {
             (pair_addr - mb_width) * 2 + 1
         };
@@ -221,7 +217,7 @@ pub(crate) fn cabac_neighbor_nz_luma(
             let has_left = if !mbaff {
                 mb_idx.checked_rem(mb_width) != Some(0)
             } else {
-                (mb_idx / 2) % mb_width != 0
+                !(mb_idx / 2).is_multiple_of(mb_width)
             };
             if !has_left {
                 return is_intra;
@@ -237,17 +233,15 @@ pub(crate) fn cabac_neighbor_nz_luma(
             } else if _mb_field_decoding[mb_idx / 2] {
                 (mb_idx / 2) >= mb_width
             } else {
-                mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
+                !mb_idx.is_multiple_of(2) || (mb_idx / 2) >= mb_width
             };
             if !has_above {
                 return is_intra;
             }
             if !mbaff {
                 mb_idx - mb_width
-            } else if mb_idx % 2 != 0 && !_mb_field_decoding[mb_idx / 2] {
+            } else if !mb_idx.is_multiple_of(2) && !_mb_field_decoding[mb_idx / 2] {
                 mb_idx - 1 // Frame-coded: top of same pair
-            } else if mb_idx % 2 != 0 {
-                ((mb_idx / 2) - mb_width) * 2 + 1 // Field-coded: bottom of above pair
             } else {
                 ((mb_idx / 2) - mb_width) * 2 + 1
             }
@@ -301,7 +295,7 @@ pub(crate) fn cabac_neighbor_nz_chroma(
             let has_left = if !mbaff {
                 mb_idx.checked_rem(mb_width) != Some(0)
             } else {
-                (mb_idx / 2) % mb_width != 0
+                !(mb_idx / 2).is_multiple_of(mb_width)
             };
             if !has_left {
                 return is_intra;
@@ -317,17 +311,15 @@ pub(crate) fn cabac_neighbor_nz_chroma(
             } else if _mb_field_decoding[mb_idx / 2] {
                 (mb_idx / 2) >= mb_width
             } else {
-                mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
+                !mb_idx.is_multiple_of(2) || (mb_idx / 2) >= mb_width
             };
             if !has_above {
                 return is_intra;
             }
             if !mbaff {
                 mb_idx - mb_width
-            } else if mb_idx % 2 != 0 && !_mb_field_decoding[mb_idx / 2] {
+            } else if !mb_idx.is_multiple_of(2) && !_mb_field_decoding[mb_idx / 2] {
                 mb_idx - 1 // Frame-coded: top of same pair
-            } else if mb_idx % 2 != 0 {
-                ((mb_idx / 2) - mb_width) * 2 + 1 // Field-coded: bottom of above pair
             } else {
                 ((mb_idx / 2) - mb_width) * 2 + 1
             }
@@ -418,7 +410,7 @@ pub(crate) fn get_neighbor_i4x4_mode(
                 let has_left = if !mbaff {
                     !mb_idx.is_multiple_of(mb_width)
                 } else {
-                    (mb_idx / 2) % mb_width != 0
+                    !(mb_idx / 2).is_multiple_of(mb_width)
                 };
                 let left_mb = if !has_left {
                     0 // dummy, not used
@@ -457,18 +449,16 @@ pub(crate) fn get_neighbor_i4x4_mode(
                 } else if _mb_field_decoding[mb_idx / 2] {
                     (mb_idx / 2) >= mb_width
                 } else {
-                    mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
+                    !mb_idx.is_multiple_of(2) || (mb_idx / 2) >= mb_width
                 };
                 let above_mb = if !has_above {
                     0 // dummy, not used
                 } else if !mbaff {
                     mb_idx - mb_width
-                } else if mb_idx % 2 != 0 && !_mb_field_decoding[mb_idx / 2] {
+                } else if !mb_idx.is_multiple_of(2) && !_mb_field_decoding[mb_idx / 2] {
                     mb_idx - 1 // Frame-coded: top of same pair
-                } else if mb_idx % 2 != 0 {
-                    ((mb_idx / 2) - mb_width) * 2 + 1 // Field-coded: bottom of above pair
                 } else {
-                    (mb_idx / 2 - mb_width) * 2 + 1
+                    ((mb_idx / 2) - mb_width) * 2 + 1
                 };
                 if has_above && mb_slice_id[above_mb] == cur_slice_id && intra_avail[above_mb] {
                     let above_blk = match blk_idx {
@@ -538,7 +528,7 @@ pub(crate) fn compute_nc(
         let has_left = if !mbaff {
             !mb_idx.is_multiple_of(mb_width)
         } else {
-            (mb_idx / 2) % mb_width != 0
+            !(mb_idx / 2).is_multiple_of(mb_width)
         };
         if has_left {
             let left_nb = if !mbaff {
@@ -594,17 +584,15 @@ pub(crate) fn compute_nc(
         } else if _mb_field_decoding[mb_idx / 2] {
             (mb_idx / 2) >= mb_width
         } else {
-            mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
+            !mb_idx.is_multiple_of(2) || (mb_idx / 2) >= mb_width
         };
         if has_above {
             let above_nb = if !mbaff {
                 mb_idx - mb_width
-            } else if mb_idx % 2 != 0 && !_mb_field_decoding[mb_idx / 2] {
+            } else if !mb_idx.is_multiple_of(2) && !_mb_field_decoding[mb_idx / 2] {
                 mb_idx - 1 // Frame-coded: top of same pair
-            } else if mb_idx % 2 != 0 {
-                ((mb_idx / 2) - mb_width) * 2 + 1 // Field-coded: bottom of above pair
             } else {
-                (mb_idx / 2 - mb_width) * 2 + 1
+                ((mb_idx / 2) - mb_width) * 2 + 1
             };
             if mb_slice_id[above_nb] == cur_slice_id {
                 Some(nc_array[above_nb * blks_per_mb + above_blk])

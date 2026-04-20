@@ -1792,7 +1792,7 @@ impl SliceContext<'_> {
                 && (mb_idx % self.mb_width as usize) + 1 < self.mb_width as usize
                 && self.mb_slice_id[mb_idx - self.mb_width as usize + 1] == self.this_slice_id
                 && self.is_intra_neighbor_avail(mb_idx - self.mb_width as usize + 1, sp)
-        } else if mb_idx % 2 != 0 {
+        } else if !mb_idx.is_multiple_of(2) {
             // MBAFF bottom MBs: above-right is in the next pair (not yet decoded)
             false
         } else {
