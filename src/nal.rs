@@ -409,9 +409,9 @@ mod tests {
         // Sps (header byte 0x67 = nal_ref_idc=3, type=7) with payload [0xBB, 0xCC]
         let data = [
             0x00, 0x00, 0x00, 0x02, // length = 2
-            0x65, 0xAA,             // IDR
+            0x65, 0xAA, // IDR
             0x00, 0x00, 0x00, 0x03, // length = 3
-            0x67, 0xBB, 0xCC,       // SPS
+            0x67, 0xBB, 0xCC, // SPS
         ];
         let nals = parse_avcc(&data, 4);
         assert_eq!(nals.len(), 2);
@@ -434,7 +434,7 @@ mod tests {
     fn test_parse_avcc_2byte_length() {
         let data = [
             0x00, 0x02, 0x65, 0xAA, // length=2, IDR + payload
-            0x00, 0x01, 0x67,       // length=1, SPS header only
+            0x00, 0x01, 0x67, // length=1, SPS header only
         ];
         let nals = parse_avcc(&data, 2);
         assert_eq!(nals.len(), 2);
@@ -452,14 +452,13 @@ mod tests {
         //        numPPS=1
         //        pps_len=2, pps=[0x68, 0xCE]
         let data = [
-            0x01, 0x42, 0x00, 0x1E,
-            0xFF,                       // lengthSizeMinusOne = 3
-            0xE1,                       // numOfSequenceParameterSets = 1
-            0x00, 0x04,                 // sps length
-            0x67, 0x42, 0x00, 0x1E,     // sps NAL (header + 3 bytes RBSP)
-            0x01,                       // numOfPictureParameterSets = 1
-            0x00, 0x02,                 // pps length
-            0x68, 0xCE,                 // pps NAL
+            0x01, 0x42, 0x00, 0x1E, 0xFF, // lengthSizeMinusOne = 3
+            0xE1, // numOfSequenceParameterSets = 1
+            0x00, 0x04, // sps length
+            0x67, 0x42, 0x00, 0x1E, // sps NAL (header + 3 bytes RBSP)
+            0x01, // numOfPictureParameterSets = 1
+            0x00, 0x02, // pps length
+            0x68, 0xCE, // pps NAL
         ];
         let cfg = parse_avcc_config(&data).unwrap();
         assert_eq!(cfg.length_size, 4);

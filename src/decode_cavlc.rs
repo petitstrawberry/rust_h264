@@ -97,7 +97,10 @@ impl SliceContext<'_> {
                         ref_idx,
                         self.mb_slice_id,
                         self.this_slice_id,
-                        MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
+                        MbaffCtx {
+                            mbaff: self.mbaff,
+                            mb_field_decoding: self.mb_field_decoding,
+                        },
                     );
                     let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
 
@@ -210,7 +213,10 @@ impl SliceContext<'_> {
                         ref_idx_l0,
                         self.mb_slice_id,
                         self.this_slice_id,
-                        MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
+                        MbaffCtx {
+                            mbaff: self.mbaff,
+                            mb_field_decoding: self.mb_field_decoding,
+                        },
                     );
                     let mv_l0 = [mvp_l0_x + mvd_l0_x, mvp_l0_y + mvd_l0_y];
 
@@ -227,7 +233,10 @@ impl SliceContext<'_> {
                         ref_idx_l1,
                         self.mb_slice_id,
                         self.this_slice_id,
-                        MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
+                        MbaffCtx {
+                            mbaff: self.mbaff,
+                            mb_field_decoding: self.mb_field_decoding,
+                        },
                     );
                     let mv_l1 = [mvp_l1_x + mvd_l1_x, mvp_l1_y + mvd_l1_y];
 
@@ -339,7 +348,10 @@ impl SliceContext<'_> {
                                 part_ref_l0[p],
                                 self.mb_slice_id,
                                 self.this_slice_id,
-                                MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
+                                MbaffCtx {
+                                    mbaff: self.mbaff,
+                                    mb_field_decoding: self.mb_field_decoding,
+                                },
                             );
                             mv_l0_parts[p] = [mvp_x + mvd_x, mvp_y + mvd_y];
                             // Store MV immediately for partition 1 to read partition 0
@@ -378,7 +390,10 @@ impl SliceContext<'_> {
                                 part_ref_l1[p],
                                 self.mb_slice_id,
                                 self.this_slice_id,
-                                MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
+                                MbaffCtx {
+                                    mbaff: self.mbaff,
+                                    mb_field_decoding: self.mb_field_decoding,
+                                },
                             );
                             mv_l1_parts[p] = [mvp_x + mvd_x, mvp_y + mvd_y];
                             for r in (0..part_h).step_by(4) {
@@ -591,7 +606,10 @@ impl SliceContext<'_> {
                                     sub_ref_l0[layout.smb],
                                     self.mb_slice_id,
                                     self.this_slice_id,
-                                    MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
+                                    MbaffCtx {
+                                        mbaff: self.mbaff,
+                                        mb_field_decoding: self.mb_field_decoding,
+                                    },
                                 );
                                 let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
                                 sub_mvs[idx].mv_l0 = mv;
@@ -634,7 +652,10 @@ impl SliceContext<'_> {
                                     sub_ref_l1[layout.smb],
                                     self.mb_slice_id,
                                     self.this_slice_id,
-                                    MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
+                                    MbaffCtx {
+                                        mbaff: self.mbaff,
+                                        mb_field_decoding: self.mb_field_decoding,
+                                    },
                                 );
                                 let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
                                 sub_mvs[idx].mv_l1 = mv;
@@ -778,9 +799,8 @@ impl SliceContext<'_> {
                             16,
                             self.mb_slice_id,
                             self.this_slice_id,
-                        
-                        self.mbaff,
-                        self.mb_field_decoding,
+                            self.mbaff,
+                            self.mb_field_decoding,
                         );
                         let mut quad_coeffs = [0i32; 16];
                         let tc = parse_residual_block_cavlc(reader, &mut quad_coeffs, 16, nc)?;
@@ -813,9 +833,8 @@ impl SliceContext<'_> {
                             16,
                             self.mb_slice_id,
                             self.this_slice_id,
-                        
-                        self.mbaff,
-                        self.mb_field_decoding,
+                            self.mbaff,
+                            self.mb_field_decoding,
                         );
                         let mut block_coeffs = [0i32; 16];
                         let tc = parse_residual_block_cavlc(reader, &mut block_coeffs, 16, nc)?;
@@ -850,8 +869,14 @@ impl SliceContext<'_> {
                     let mut pred_l1 = vec![0u8; sub_part.w * sub_part.h];
                     let ref_l0 = ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0)
                         .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
-                    let (mc_y_l0, ref_stride_l0, ref_y_off_l0, _mc_cy_l0, _c_ref_stride_l0, _c_ref_off_l0) =
-                        self.mc_params(mb_idx, mb_y, ref_l0.width as usize, sub_part.ref_idx_l0);
+                    let (
+                        mc_y_l0,
+                        ref_stride_l0,
+                        ref_y_off_l0,
+                        _mc_cy_l0,
+                        _c_ref_stride_l0,
+                        _c_ref_off_l0,
+                    ) = self.mc_params(mb_idx, mb_y, ref_l0.width as usize, sub_part.ref_idx_l0);
                     inter_pred::luma_mc_stride(
                         ref_l0,
                         (mb_x + sub_part.x) as i32,
@@ -866,8 +891,14 @@ impl SliceContext<'_> {
                     );
                     let ref_l1 = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1)
                         .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
-                    let (mc_y_l1, ref_stride_l1, ref_y_off_l1, _mc_cy_l1, _c_ref_stride_l1, _c_ref_off_l1) =
-                        self.mc_params(mb_idx, mb_y, ref_l1.width as usize, sub_part.ref_idx_l1);
+                    let (
+                        mc_y_l1,
+                        ref_stride_l1,
+                        ref_y_off_l1,
+                        _mc_cy_l1,
+                        _c_ref_stride_l1,
+                        _c_ref_off_l1,
+                    ) = self.mc_params(mb_idx, mb_y, ref_l1.width as usize, sub_part.ref_idx_l1);
                     inter_pred::luma_mc_stride(
                         ref_l1,
                         (mb_x + sub_part.x) as i32,
@@ -948,8 +979,11 @@ impl SliceContext<'_> {
                         let val = (luma_pred[r * sub_part.w + c] as i32
                             + luma_residual[(sub_part.y + r) * 16 + sub_part.x + c])
                             .clamp(0, 255) as u8;
-                        self.frame.y
-                            [self.ly_offset + (sub_part.y + r) * self.ly_stride + mb_x + sub_part.x + c] = val;
+                        self.frame.y[self.ly_offset
+                            + (sub_part.y + r) * self.ly_stride
+                            + mb_x
+                            + sub_part.x
+                            + c] = val;
                     }
                 }
             }
@@ -973,9 +1007,8 @@ impl SliceContext<'_> {
                         4,
                         self.mb_slice_id,
                         self.this_slice_id,
-
-                    self.mbaff,
-                    self.mb_field_decoding,
+                        self.mbaff,
+                        self.mb_field_decoding,
                     );
                     let tc =
                         parse_residual_block_cavlc(reader, &mut chroma_ac_scan_cb[blk], 15, nc)?;
@@ -990,9 +1023,8 @@ impl SliceContext<'_> {
                         4,
                         self.mb_slice_id,
                         self.this_slice_id,
-
-                    self.mbaff,
-                    self.mb_field_decoding,
+                        self.mbaff,
+                        self.mb_field_decoding,
                     );
                     let tc =
                         parse_residual_block_cavlc(reader, &mut chroma_ac_scan_cr[blk], 15, nc)?;
@@ -1003,29 +1035,39 @@ impl SliceContext<'_> {
             let chroma_mb_x = mb_x / 2;
             // Precompute mc_params per sub_part before entering the plane loop
             // (avoids borrow conflict with &mut self.frame inside the loop).
-            let mut sub_mc: Vec<(i32, usize, usize, usize, usize, usize)> = Vec::with_capacity(sub_parts.len());
+            let mut sub_mc: Vec<(i32, usize, usize, usize, usize, usize)> =
+                Vec::with_capacity(sub_parts.len());
             for sub_part in sub_parts.iter() {
                 if sub_part.pred_l0 && sub_part.pred_l1 {
                     // We'll handle L0/L1 separately inside; store L0 params as placeholder
                     let ref_l0 = ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0);
-                    let w = ref_l0.map(|r| r.width as usize).unwrap_or(self.width as usize);
+                    let w = ref_l0
+                        .map(|r| r.width as usize)
+                        .unwrap_or(self.width as usize);
                     sub_mc.push(self.mc_params(mb_idx, mb_y, w, sub_part.ref_idx_l0));
                 } else if sub_part.pred_l0 {
                     let ref_pic = ref_pic_safe(sp.ref_pic_list_l0, sub_part.ref_idx_l0);
-                    let w = ref_pic.map(|r| r.width as usize).unwrap_or(self.width as usize);
+                    let w = ref_pic
+                        .map(|r| r.width as usize)
+                        .unwrap_or(self.width as usize);
                     sub_mc.push(self.mc_params(mb_idx, mb_y, w, sub_part.ref_idx_l0));
                 } else {
                     let ref_pic = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1);
-                    let w = ref_pic.map(|r| r.width as usize).unwrap_or(self.width as usize);
+                    let w = ref_pic
+                        .map(|r| r.width as usize)
+                        .unwrap_or(self.width as usize);
                     sub_mc.push(self.mc_params(mb_idx, mb_y, w, sub_part.ref_idx_l1));
                 }
             }
             // Also precompute L1 mc_params for bi-pred sub_parts
-            let mut sub_mc_l1: Vec<(i32, usize, usize, usize, usize, usize)> = Vec::with_capacity(sub_parts.len());
+            let mut sub_mc_l1: Vec<(i32, usize, usize, usize, usize, usize)> =
+                Vec::with_capacity(sub_parts.len());
             for sub_part in sub_parts.iter() {
                 if sub_part.pred_l0 && sub_part.pred_l1 {
                     let ref_l1 = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1);
-                    let w = ref_l1.map(|r| r.width as usize).unwrap_or(self.width as usize);
+                    let w = ref_l1
+                        .map(|r| r.width as usize)
+                        .unwrap_or(self.width as usize);
                     sub_mc_l1.push(self.mc_params(mb_idx, mb_y, w, sub_part.ref_idx_l1));
                 } else {
                     sub_mc_l1.push((0, 0, 0, 0, 0, 0)); // unused
@@ -1093,10 +1135,32 @@ impl SliceContext<'_> {
                             .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
                         let ref_l1 = ref_pic_safe(sp.ref_pic_list_l1, sub_part.ref_idx_l1)
                             .ok_or(DecodeError::InvalidSyntax("empty ref list"))?;
-                        let (_mc_y_l0, _rs_l0, _ref_y_off_l0, mc_cy_l0, c_ref_stride_l0, c_ref_off_l0) = sub_mc[sp_i];
-                        let (_mc_y_l1, _rs_l1, _ref_y_off_l1, mc_cy_l1, c_ref_stride_l1, c_ref_off_l1) = sub_mc_l1[sp_i];
-                        let cr_l0 = if scale_idx == 4 { &ref_l0.u[c_ref_off_l0..] } else { &ref_l0.v[c_ref_off_l0..] };
-                        let cr_l1 = if scale_idx == 4 { &ref_l1.u[c_ref_off_l1..] } else { &ref_l1.v[c_ref_off_l1..] };
+                        let (
+                            _mc_y_l0,
+                            _rs_l0,
+                            _ref_y_off_l0,
+                            mc_cy_l0,
+                            c_ref_stride_l0,
+                            c_ref_off_l0,
+                        ) = sub_mc[sp_i];
+                        let (
+                            _mc_y_l1,
+                            _rs_l1,
+                            _ref_y_off_l1,
+                            mc_cy_l1,
+                            c_ref_stride_l1,
+                            c_ref_off_l1,
+                        ) = sub_mc_l1[sp_i];
+                        let cr_l0 = if scale_idx == 4 {
+                            &ref_l0.u[c_ref_off_l0..]
+                        } else {
+                            &ref_l0.v[c_ref_off_l0..]
+                        };
+                        let cr_l1 = if scale_idx == 4 {
+                            &ref_l1.u[c_ref_off_l1..]
+                        } else {
+                            &ref_l1.v[c_ref_off_l1..]
+                        };
                         let mut c_l0 = vec![0u8; cw * ch];
                         let mut c_l1 = vec![0u8; cw * ch];
                         inter_pred::chroma_mc(
@@ -1269,7 +1333,10 @@ impl SliceContext<'_> {
                             ref_idx,
                             self.mb_slice_id,
                             self.this_slice_id,
-                            MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
+                            MbaffCtx {
+                                mbaff: self.mbaff,
+                                mb_field_decoding: self.mb_field_decoding,
+                            },
                         );
                         let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
                         // Store MV for all 4x4 blocks in this sub-partition
@@ -1325,7 +1392,10 @@ impl SliceContext<'_> {
                         part_ref[p],
                         self.mb_slice_id,
                         self.this_slice_id,
-                        MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
+                        MbaffCtx {
+                            mbaff: self.mbaff,
+                            mb_field_decoding: self.mb_field_decoding,
+                        },
                     );
                     let mv = [mvp_x + mvd_x, mvp_y + mvd_y];
                     let (py_off, px_off) = match mb_type {
@@ -1409,9 +1479,8 @@ impl SliceContext<'_> {
                             16,
                             self.mb_slice_id,
                             self.this_slice_id,
-                        
-                        self.mbaff,
-                        self.mb_field_decoding,
+                            self.mbaff,
+                            self.mb_field_decoding,
                         );
                         let mut quad_coeffs = [0i32; 16];
                         let tc = parse_residual_block_cavlc(reader, &mut quad_coeffs, 16, nc)?;
@@ -1447,9 +1516,8 @@ impl SliceContext<'_> {
                             16,
                             self.mb_slice_id,
                             self.this_slice_id,
-                        
-                        self.mbaff,
-                        self.mb_field_decoding,
+                            self.mbaff,
+                            self.mb_field_decoding,
                         );
                         let mut block_coeffs = [0i32; 16];
                         let tc = parse_residual_block_cavlc(reader, &mut block_coeffs, 16, nc)?;
@@ -1507,8 +1575,11 @@ impl SliceContext<'_> {
                         let val = (luma_pred[r * sub_part.w + c] as i32
                             + luma_residual[(sub_part.y + r) * 16 + sub_part.x + c])
                             .clamp(0, 255) as u8;
-                        self.frame.y
-                            [self.ly_offset + (sub_part.y + r) * self.ly_stride + mb_x + sub_part.x + c] = val;
+                        self.frame.y[self.ly_offset
+                            + (sub_part.y + r) * self.ly_stride
+                            + mb_x
+                            + sub_part.x
+                            + c] = val;
                     }
                 }
             }
@@ -1532,9 +1603,8 @@ impl SliceContext<'_> {
                         4,
                         self.mb_slice_id,
                         self.this_slice_id,
-
-                    self.mbaff,
-                    self.mb_field_decoding,
+                        self.mbaff,
+                        self.mb_field_decoding,
                     );
                     let tc =
                         parse_residual_block_cavlc(reader, &mut chroma_ac_scan_cb[blk], 15, nc)?;
@@ -1549,9 +1619,8 @@ impl SliceContext<'_> {
                         4,
                         self.mb_slice_id,
                         self.this_slice_id,
-
-                    self.mbaff,
-                    self.mb_field_decoding,
+                        self.mbaff,
+                        self.mb_field_decoding,
                     );
                     let tc =
                         parse_residual_block_cavlc(reader, &mut chroma_ac_scan_cr[blk], 15, nc)?;
@@ -1563,14 +1632,20 @@ impl SliceContext<'_> {
 
             // Precompute mc_params per sub_part before entering the plane loop
             // (avoids borrow conflict with &mut self.frame inside the loop).
-            let p_sub_mc: Vec<(i32, usize, usize, usize, usize, usize)> = sub_parts.iter().map(|sp_part| {
-                let fri = self.frame_ref_idx(mb_idx, sp_part.ref_idx);
-                let ref_pic = sp.ref_pic_list
-                    .get(fri as usize)
-                    .or_else(|| sp.ref_pic_list.last());
-                let w = ref_pic.map(|r| r.width as usize).unwrap_or(self.width as usize);
-                self.mc_params(mb_idx, mb_y, w, sp_part.ref_idx)
-            }).collect();
+            let p_sub_mc: Vec<(i32, usize, usize, usize, usize, usize)> = sub_parts
+                .iter()
+                .map(|sp_part| {
+                    let fri = self.frame_ref_idx(mb_idx, sp_part.ref_idx);
+                    let ref_pic = sp
+                        .ref_pic_list
+                        .get(fri as usize)
+                        .or_else(|| sp.ref_pic_list.last());
+                    let w = ref_pic
+                        .map(|r| r.width as usize)
+                        .unwrap_or(self.width as usize);
+                    self.mc_params(mb_idx, mb_y, w, sp_part.ref_idx)
+                })
+                .collect();
 
             // Chroma MC + residual for each chroma plane
             // Each partition gets its own chroma MC with its own MV
@@ -1642,7 +1717,8 @@ impl SliceContext<'_> {
                             .ok_or(DecodeError::InvalidSyntax(
                                 "P sub-partition chroma references empty ref_pic_list",
                             ))?;
-                        let (_mc_y, _rs, _ref_y_off, mc_cy, c_ref_stride, c_ref_off) = p_sub_mc[sp_i];
+                        let (_mc_y, _rs, _ref_y_off, mc_cy, c_ref_stride, c_ref_off) =
+                            p_sub_mc[sp_i];
                         let chroma_ref = if scale_idx == 4 {
                             &part_ref_pic.u[c_ref_off..]
                         } else {
@@ -1682,7 +1758,8 @@ impl SliceContext<'_> {
                         for x in 0..8 {
                             let val = (chroma_pred[y * 8 + x] as i32 + chroma_residual[y * 8 + x])
                                 .clamp(0, 255) as u8;
-                            frame_plane[self.lc_offset + y * self.lc_stride + chroma_mb_x + x] = val;
+                            frame_plane[self.lc_offset + y * self.lc_stride + chroma_mb_x + x] =
+                                val;
                         }
                     }
                 }
@@ -1766,9 +1843,8 @@ impl SliceContext<'_> {
                     self.mb_slice_id,
                     self.this_slice_id,
                     &intra_avail,
-                
-                self.mbaff,
-                self.mb_field_decoding,
+                    self.mbaff,
+                    self.mb_field_decoding,
                 );
                 let mode = if prev_flag != 0 {
                     predicted
@@ -1829,9 +1905,8 @@ impl SliceContext<'_> {
                             16,
                             self.mb_slice_id,
                             self.this_slice_id,
-                        
-                        self.mbaff,
-                        self.mb_field_decoding,
+                            self.mbaff,
+                            self.mb_field_decoding,
                         );
                         let mut quad_coeffs = [0i32; 16];
                         let tc = parse_residual_block_cavlc(reader, &mut quad_coeffs, 16, nc)?;
@@ -1886,9 +1961,8 @@ impl SliceContext<'_> {
                             16,
                             self.mb_slice_id,
                             self.this_slice_id,
-                        
-                        self.mbaff,
-                        self.mb_field_decoding,
+                            self.mbaff,
+                            self.mb_field_decoding,
                         );
                         let tc = parse_residual_block_cavlc(reader, &mut block_coeffs, 16, nc)?;
                         self.nc_luma[mb_idx * 16 + blk] = tc;
@@ -1944,9 +2018,8 @@ impl SliceContext<'_> {
                 16,
                 self.mb_slice_id,
                 self.this_slice_id,
-            
-            self.mbaff,
-            self.mb_field_decoding,
+                self.mbaff,
+                self.mb_field_decoding,
             );
             parse_residual_block_cavlc(reader, &mut luma_dc, 16, nc_dc)?;
 
@@ -1962,9 +2035,8 @@ impl SliceContext<'_> {
                         16,
                         self.mb_slice_id,
                         self.this_slice_id,
-                    
-                    self.mbaff,
-                    self.mb_field_decoding,
+                        self.mbaff,
+                        self.mb_field_decoding,
                     );
                     let tc = parse_residual_block_cavlc(reader, &mut luma_ac_scan[blk], 15, nc)?;
                     self.nc_luma[mb_idx * 16 + blk] = tc;
@@ -2096,9 +2168,8 @@ impl SliceContext<'_> {
                     4,
                     self.mb_slice_id,
                     self.this_slice_id,
-                
-                self.mbaff,
-                self.mb_field_decoding,
+                    self.mbaff,
+                    self.mb_field_decoding,
                 );
                 let tc = parse_residual_block_cavlc(reader, &mut chroma_ac_scan_cb[blk], 15, nc)?;
                 self.nc_cb[mb_idx * 4 + blk] = tc;
@@ -2112,9 +2183,8 @@ impl SliceContext<'_> {
                     4,
                     self.mb_slice_id,
                     self.this_slice_id,
-                
-                self.mbaff,
-                self.mb_field_decoding,
+                    self.mbaff,
+                    self.mb_field_decoding,
                 );
                 let tc = parse_residual_block_cavlc(reader, &mut chroma_ac_scan_cr[blk], 15, nc)?;
                 self.nc_cr[mb_idx * 4 + blk] = tc;

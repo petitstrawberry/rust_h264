@@ -254,7 +254,9 @@ impl Dpb {
                 if pred_pic_num >= abs_diff {
                     pred_pic_num - abs_diff
                 } else {
-                    pred_pic_num.wrapping_add(max_pic_num).wrapping_sub(abs_diff)
+                    pred_pic_num
+                        .wrapping_add(max_pic_num)
+                        .wrapping_sub(abs_diff)
                 }
             } else {
                 let sum = pred_pic_num.wrapping_add(abs_diff);
@@ -379,13 +381,24 @@ impl Dpb {
         let expected_poc = if nal_ref_idc == 0 && abs_frame_num > 0 {
             let cycle = (abs_frame_num - 1) / num_ref_frames_in_cycle.max(1) as i32;
             let idx = ((abs_frame_num - 1) % num_ref_frames_in_cycle.max(1) as i32) as usize;
-            let partial: i32 = sps.offset_for_ref_frame[..=idx].iter().copied().fold(0i32, |a, b| a.wrapping_add(b));
-            cycle.wrapping_mul(expected_delta_per_cycle).wrapping_add(partial).wrapping_add(sps.offset_for_non_ref_pic)
+            let partial: i32 = sps.offset_for_ref_frame[..=idx]
+                .iter()
+                .copied()
+                .fold(0i32, |a, b| a.wrapping_add(b));
+            cycle
+                .wrapping_mul(expected_delta_per_cycle)
+                .wrapping_add(partial)
+                .wrapping_add(sps.offset_for_non_ref_pic)
         } else if abs_frame_num > 0 {
             let cycle = (abs_frame_num - 1) / num_ref_frames_in_cycle.max(1) as i32;
             let idx = ((abs_frame_num - 1) % num_ref_frames_in_cycle.max(1) as i32) as usize;
-            let partial: i32 = sps.offset_for_ref_frame[..=idx].iter().copied().fold(0i32, |a, b| a.wrapping_add(b));
-            cycle.wrapping_mul(expected_delta_per_cycle).wrapping_add(partial)
+            let partial: i32 = sps.offset_for_ref_frame[..=idx]
+                .iter()
+                .copied()
+                .fold(0i32, |a, b| a.wrapping_add(b));
+            cycle
+                .wrapping_mul(expected_delta_per_cycle)
+                .wrapping_add(partial)
         } else {
             0
         };

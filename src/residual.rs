@@ -77,7 +77,7 @@ pub fn inverse_dct_4x4(block: &mut [i32; 16]) {
         let z2 = (W(block[s + 1] >> 1) - W(block[s + 3])).0;
         let z3 = (W(block[s + 1]) + W(block[s + 3] >> 1)).0;
 
-        block[s]     = (W(z0) + W(z3)).0;
+        block[s] = (W(z0) + W(z3)).0;
         block[s + 1] = (W(z1) + W(z2)).0;
         block[s + 2] = (W(z1) - W(z2)).0;
         block[s + 3] = (W(z0) - W(z3)).0;
@@ -90,9 +90,9 @@ pub fn inverse_dct_4x4(block: &mut [i32; 16]) {
         let z2 = (W(block[4 + j] >> 1) - W(block[12 + j])).0;
         let z3 = (W(block[4 + j]) + W(block[12 + j] >> 1)).0;
 
-        block[j]      = (W(z0) + W(z3)).0 >> 6;
-        block[4 + j]  = (W(z1) + W(z2)).0 >> 6;
-        block[8 + j]  = (W(z1) - W(z2)).0 >> 6;
+        block[j] = (W(z0) + W(z3)).0 >> 6;
+        block[4 + j] = (W(z1) + W(z2)).0 >> 6;
+        block[8 + j] = (W(z1) - W(z2)).0 >> 6;
         block[12 + j] = (W(z0) - W(z3)).0 >> 6;
     }
 }
@@ -130,7 +130,8 @@ pub fn dequant_4x4(block: &mut [i32; 16], qp: i32, scale: &[u8; 16]) {
             if qp_per >= 4 {
                 block[idx] = block[idx].wrapping_mul(v).wrapping_shl((qp_per - 4) as u32);
             } else {
-                block[idx] = (block[idx].wrapping_mul(v).wrapping_add(1 << (3 - qp_per))) >> (4 - qp_per);
+                block[idx] =
+                    (block[idx].wrapping_mul(v).wrapping_add(1 << (3 - qp_per))) >> (4 - qp_per);
             }
         }
     }
@@ -265,10 +266,16 @@ pub fn inverse_dct_8x8(block: &mut [i32; 64]) {
     for i in 0..8 {
         let s = i * 8;
         let (b0, b2, b4, b6, b1, b3, b5, b7) = idct8_butterfly(
-            block[s], block[s+1], block[s+2], block[s+3],
-            block[s+4], block[s+5], block[s+6], block[s+7],
+            block[s],
+            block[s + 1],
+            block[s + 2],
+            block[s + 3],
+            block[s + 4],
+            block[s + 5],
+            block[s + 6],
+            block[s + 7],
         );
-        block[s]     = (W(b0) + W(b7)).0;
+        block[s] = (W(b0) + W(b7)).0;
         block[s + 1] = (W(b2) + W(b5)).0;
         block[s + 2] = (W(b4) + W(b3)).0;
         block[s + 3] = (W(b6) + W(b1)).0;
@@ -281,11 +288,17 @@ pub fn inverse_dct_8x8(block: &mut [i32; 64]) {
     // Second pass: columns, with >> 6 normalization
     for i in 0..8 {
         let (b0, b2, b4, b6, b1, b3, b5, b7) = idct8_butterfly(
-            block[i], block[i+8], block[i+16], block[i+24],
-            block[i+32], block[i+40], block[i+48], block[i+56],
+            block[i],
+            block[i + 8],
+            block[i + 16],
+            block[i + 24],
+            block[i + 32],
+            block[i + 40],
+            block[i + 48],
+            block[i + 56],
         );
-        block[i]      = (W(b0) + W(b7)).0 >> 6;
-        block[i + 8]  = (W(b2) + W(b5)).0 >> 6;
+        block[i] = (W(b0) + W(b7)).0 >> 6;
+        block[i + 8] = (W(b2) + W(b5)).0 >> 6;
         block[i + 16] = (W(b4) + W(b3)).0 >> 6;
         block[i + 24] = (W(b6) + W(b1)).0 >> 6;
         block[i + 32] = (W(b6) - W(b1)).0 >> 6;
@@ -297,10 +310,16 @@ pub fn inverse_dct_8x8(block: &mut [i32; 64]) {
 
 /// 8x8 IDCT butterfly using wrapping arithmetic to avoid overflow panics.
 #[inline(always)]
-fn idct8_butterfly(x0: i32, x1: i32, x2: i32, x3: i32,
-                   x4: i32, x5: i32, x6: i32, x7: i32)
-    -> (i32, i32, i32, i32, i32, i32, i32, i32)
-{
+fn idct8_butterfly(
+    x0: i32,
+    x1: i32,
+    x2: i32,
+    x3: i32,
+    x4: i32,
+    x5: i32,
+    x6: i32,
+    x7: i32,
+) -> (i32, i32, i32, i32, i32, i32, i32, i32) {
     use std::num::Wrapping as W;
     let a0 = (W(x0) + W(x4)).0;
     let a2 = (W(x0) - W(x4)).0;
@@ -351,9 +370,9 @@ pub const BLOCK_INDEX_TO_OFFSET: [(usize, usize); 16] = [
 /// 4x4 block at grid position (row, col) where row/col are in 0..4.
 /// Replaces O(16) linear scans of `BLOCK_INDEX_TO_OFFSET.iter().position()`.
 pub const OFFSET_TO_BLOCK: [[usize; 4]; 4] = [
-    [0, 1, 4, 5],   // row 0
-    [2, 3, 6, 7],   // row 1
-    [8, 9, 12, 13], // row 2
+    [0, 1, 4, 5],     // row 0
+    [2, 3, 6, 7],     // row 1
+    [8, 9, 12, 13],   // row 2
     [10, 11, 14, 15], // row 3
 ];
 
@@ -395,7 +414,8 @@ pub fn dequant_4x4_full(block: &mut [i32; 16], qp: i32, scale: &[u8; 16]) {
                 if qp_per >= 4 {
                     block[idx] = block[idx].wrapping_mul(v).wrapping_shl((qp_per - 4) as u32);
                 } else {
-                    block[idx] = (block[idx].wrapping_mul(v).wrapping_add(1 << (3 - qp_per))) >> (4 - qp_per);
+                    block[idx] = (block[idx].wrapping_mul(v).wrapping_add(1 << (3 - qp_per)))
+                        >> (4 - qp_per);
                 }
             }
         }

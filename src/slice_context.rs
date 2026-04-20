@@ -42,8 +42,8 @@ use crate::intra_pred::{
     predict_chroma_8x8, predict_intra_16x16, predict_intra_4x4, predict_intra_8x8,
 };
 use crate::mv_pred::{
-    derive_spatial_direct_blk, derive_temporal_direct_blk, predict_mv_skip, ref_pic_safe,
-    MbaffCtx, WeightContext,
+    derive_spatial_direct_blk, derive_temporal_direct_blk, predict_mv_skip, ref_pic_safe, MbaffCtx,
+    WeightContext,
 };
 use crate::neighbor::dequant_4x4_ac_raster;
 use crate::residual::BLOCK_INDEX_TO_OFFSET;
@@ -153,7 +153,13 @@ impl SliceContext<'_> {
     /// - Odd ref_idx → opposite-parity field (top→bottom, bottom→top)
     /// The actual frame reference is at `ref_list[ref_idx / 2]`.
     #[inline]
-    pub(crate) fn mc_params(&self, mb_idx: usize, mb_y: usize, ref_width: usize, ref_idx: i8) -> (i32, usize, usize, usize, usize, usize) {
+    pub(crate) fn mc_params(
+        &self,
+        mb_idx: usize,
+        mb_y: usize,
+        ref_width: usize,
+        ref_idx: i8,
+    ) -> (i32, usize, usize, usize, usize, usize) {
         if self.mbaff && self.mb_field_decoding[mb_idx / 2] {
             let pair_row = (mb_idx / 2) / self.mb_width as usize;
             let is_bottom = mb_idx % 2 != 0;
@@ -336,7 +342,10 @@ impl SliceContext<'_> {
             self.mb_width as usize,
             self.mb_slice_id,
             self.this_slice_id,
-            MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
+            MbaffCtx {
+                mbaff: self.mbaff,
+                mb_field_decoding: self.mb_field_decoding,
+            },
         );
         if let Some(ref_pic) = ref_pic_list.first() {
             let (mc_y, ref_stride, ref_y_off, mc_cy, c_ref_stride, c_ref_off) =
@@ -360,7 +369,8 @@ impl SliceContext<'_> {
             }
             for r in 0..16 {
                 for c in 0..16 {
-                    self.frame.y[self.ly_offset + r * self.ly_stride + mb_x + c] = luma_pred[r * 16 + c];
+                    self.frame.y[self.ly_offset + r * self.ly_stride + mb_x + c] =
+                        luma_pred[r * 16 + c];
                 }
             }
             // Chroma MC
@@ -448,7 +458,10 @@ impl SliceContext<'_> {
                     self.mb_slice_id,
                     self.this_slice_id,
                     direct_8x8_inference_flag,
-                    MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
+                    MbaffCtx {
+                        mbaff: self.mbaff,
+                        mb_field_decoding: self.mb_field_decoding,
+                    },
                 );
                 let base = mb_idx * 16;
                 for blk in blk_start..blk_start + 4 {
@@ -474,7 +487,10 @@ impl SliceContext<'_> {
                         self.mb_slice_id,
                         self.this_slice_id,
                         direct_8x8_inference_flag,
-                        MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
+                        MbaffCtx {
+                            mbaff: self.mbaff,
+                            mb_field_decoding: self.mb_field_decoding,
+                        },
                     );
                     for blk in first_blk..first_blk + 4 {
                         self.mv_store_l0[base + blk] = mv_l0;
@@ -498,7 +514,10 @@ impl SliceContext<'_> {
                         self.mb_slice_id,
                         self.this_slice_id,
                         direct_8x8_inference_flag,
-                        MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
+                        MbaffCtx {
+                            mbaff: self.mbaff,
+                            mb_field_decoding: self.mb_field_decoding,
+                        },
                     );
                     self.mv_store_l0[mb_idx * 16 + blk] = mv_l0;
                     self.ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
@@ -520,7 +539,10 @@ impl SliceContext<'_> {
                     mb_idx,
                     first_blk,
                     direct_8x8_inference_flag,
-                    MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
+                    MbaffCtx {
+                        mbaff: self.mbaff,
+                        mb_field_decoding: self.mb_field_decoding,
+                    },
                 );
                 let base = mb_idx * 16;
                 for blk in blk_start..blk_start + 4 {
@@ -541,7 +563,10 @@ impl SliceContext<'_> {
                         mb_idx,
                         first_blk,
                         direct_8x8_inference_flag,
-                        MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
+                        MbaffCtx {
+                            mbaff: self.mbaff,
+                            mb_field_decoding: self.mb_field_decoding,
+                        },
                     );
                     for blk in first_blk..first_blk + 4 {
                         self.mv_store_l0[base + blk] = mv_l0;
@@ -560,7 +585,10 @@ impl SliceContext<'_> {
                         mb_idx,
                         blk,
                         direct_8x8_inference_flag,
-                        MbaffCtx { mbaff: self.mbaff, mb_field_decoding: self.mb_field_decoding },
+                        MbaffCtx {
+                            mbaff: self.mbaff,
+                            mb_field_decoding: self.mb_field_decoding,
+                        },
                     );
                     self.mv_store_l0[mb_idx * 16 + blk] = mv_l0;
                     self.ref_idx_store_l0[mb_idx * 16 + blk] = ri_l0;
@@ -603,10 +631,20 @@ impl SliceContext<'_> {
             if bp0 && bp1 {
                 let mut p0 = [0u8; 16];
                 let mut p1 = [0u8; 16];
-                let Some(ref_l0) = ref_pic_safe(ref_pic_list_l0, r0) else { return; };
-                let Some(ref_l1) = ref_pic_safe(ref_pic_list_l1, r1) else { return; };
-                let (mc_y_l0, ref_stride_l0, ref_y_off_l0, _mc_cy_l0, _c_ref_stride_l0, _c_ref_off_l0) =
-                    self.mc_params(mb_idx, mb_y, ref_l0.width as usize, r0);
+                let Some(ref_l0) = ref_pic_safe(ref_pic_list_l0, r0) else {
+                    return;
+                };
+                let Some(ref_l1) = ref_pic_safe(ref_pic_list_l1, r1) else {
+                    return;
+                };
+                let (
+                    mc_y_l0,
+                    ref_stride_l0,
+                    ref_y_off_l0,
+                    _mc_cy_l0,
+                    _c_ref_stride_l0,
+                    _c_ref_off_l0,
+                ) = self.mc_params(mb_idx, mb_y, ref_l0.width as usize, r0);
                 inter_pred::luma_mc_stride(
                     ref_l0,
                     bx as i32,
@@ -619,8 +657,14 @@ impl SliceContext<'_> {
                     ref_stride_l0,
                     ref_y_off_l0,
                 );
-                let (mc_y_l1, ref_stride_l1, ref_y_off_l1, _mc_cy_l1, _c_ref_stride_l1, _c_ref_off_l1) =
-                    self.mc_params(mb_idx, mb_y, ref_l1.width as usize, r1);
+                let (
+                    mc_y_l1,
+                    ref_stride_l1,
+                    ref_y_off_l1,
+                    _mc_cy_l1,
+                    _c_ref_stride_l1,
+                    _c_ref_off_l1,
+                ) = self.mc_params(mb_idx, mb_y, ref_l1.width as usize, r1);
                 inter_pred::luma_mc_stride(
                     ref_l1,
                     bx as i32,
@@ -635,7 +679,9 @@ impl SliceContext<'_> {
                 );
                 wctx.apply_bi(&p0, &p1, &mut blk_pred, r0 as usize, r1 as usize, false, 0);
             } else if bp0 {
-                let Some(ref_pic) = ref_pic_safe(ref_pic_list_l0, r0) else { return; };
+                let Some(ref_pic) = ref_pic_safe(ref_pic_list_l0, r0) else {
+                    return;
+                };
                 let (mc_y, ref_stride, ref_y_off, _mc_cy, _c_ref_stride, _c_ref_off) =
                     self.mc_params(mb_idx, mb_y, ref_pic.width as usize, r0);
                 inter_pred::luma_mc_stride(
@@ -654,7 +700,9 @@ impl SliceContext<'_> {
                     wctx.apply_uni(&mut blk_pred, 0, r0 as usize, false, 0);
                 }
             } else if bp1 {
-                let Some(ref_pic) = ref_pic_safe(ref_pic_list_l1, r1) else { return; };
+                let Some(ref_pic) = ref_pic_safe(ref_pic_list_l1, r1) else {
+                    return;
+                };
                 let (mc_y, ref_stride, ref_y_off, _mc_cy, _c_ref_stride, _c_ref_off) =
                     self.mc_params(mb_idx, mb_y, ref_pic.width as usize, r1);
                 inter_pred::luma_mc_stride(
@@ -681,7 +729,8 @@ impl SliceContext<'_> {
         }
         for r in 0..16 {
             for c in 0..16 {
-                self.frame.y[self.ly_offset + r * self.ly_stride + mb_x + c] = luma_pred[r * 16 + c];
+                self.frame.y[self.ly_offset + r * self.ly_stride + mb_x + c] =
+                    luma_pred[r * 16 + c];
             }
         }
 
@@ -706,14 +755,26 @@ impl SliceContext<'_> {
                 if bp0 && bp1 {
                     let mut c0 = [0u8; 16];
                     let mut c1 = [0u8; 16];
-                    let Some(rl0) = ref_pic_safe(ref_pic_list_l0, r0) else { return; };
-                    let Some(rl1) = ref_pic_safe(ref_pic_list_l1, r1) else { return; };
+                    let Some(rl0) = ref_pic_safe(ref_pic_list_l0, r0) else {
+                        return;
+                    };
+                    let Some(rl1) = ref_pic_safe(ref_pic_list_l1, r1) else {
+                        return;
+                    };
                     let (_mc_y_l0, _rs_l0, _ref_y_off_l0, mc_cy_l0, c_ref_stride_l0, c_ref_off_l0) =
                         self.mc_params(mb_idx, mb_y, rl0.width as usize, r0);
                     let (_mc_y_l1, _rs_l1, _ref_y_off_l1, mc_cy_l1, c_ref_stride_l1, c_ref_off_l1) =
                         self.mc_params(mb_idx, mb_y, rl1.width as usize, r1);
-                    let cr0 = if plane_idx == 0 { &rl0.u[c_ref_off_l0..] } else { &rl0.v[c_ref_off_l0..] };
-                    let cr1 = if plane_idx == 0 { &rl1.u[c_ref_off_l1..] } else { &rl1.v[c_ref_off_l1..] };
+                    let cr0 = if plane_idx == 0 {
+                        &rl0.u[c_ref_off_l0..]
+                    } else {
+                        &rl0.v[c_ref_off_l0..]
+                    };
+                    let cr1 = if plane_idx == 0 {
+                        &rl1.u[c_ref_off_l1..]
+                    } else {
+                        &rl1.v[c_ref_off_l1..]
+                    };
                     inter_pred::chroma_mc(
                         cr0,
                         c_ref_stride_l0,
@@ -748,7 +809,9 @@ impl SliceContext<'_> {
                         plane_idx,
                     );
                 } else if bp0 {
-                    let Some(ref_pic) = ref_pic_safe(ref_pic_list_l0, r0) else { return; };
+                    let Some(ref_pic) = ref_pic_safe(ref_pic_list_l0, r0) else {
+                        return;
+                    };
                     let (_mc_y, _rs, _ref_y_off, mc_cy, c_ref_stride, c_ref_off) =
                         self.mc_params(mb_idx, mb_y, ref_pic.width as usize, r0);
                     let cr = if plane_idx == 0 {
@@ -772,7 +835,9 @@ impl SliceContext<'_> {
                         wctx.apply_uni(&mut cblk_pred, 0, r0 as usize, true, plane_idx);
                     }
                 } else if bp1 {
-                    let Some(ref_pic) = ref_pic_safe(ref_pic_list_l1, r1) else { return; };
+                    let Some(ref_pic) = ref_pic_safe(ref_pic_list_l1, r1) else {
+                        return;
+                    };
                     let (_mc_y, _rs, _ref_y_off, mc_cy, c_ref_stride, c_ref_off) =
                         self.mc_params(mb_idx, mb_y, ref_pic.width as usize, r1);
                     let cr = if plane_idx == 0 {
@@ -1181,8 +1246,7 @@ impl SliceContext<'_> {
             let above = if cbase >= cstride && above_avail {
                 let mut buf = [0u8; 8];
                 buf.copy_from_slice(
-                    &plane_buf[cbase - cstride + chroma_mb_x
-                        ..cbase - cstride + chroma_mb_x + 8],
+                    &plane_buf[cbase - cstride + chroma_mb_x..cbase - cstride + chroma_mb_x + 8],
                 );
                 Some(buf)
             } else {

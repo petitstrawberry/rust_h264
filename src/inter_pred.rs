@@ -20,11 +20,15 @@ fn ref_luma(pic: &DecodedPicture, x: i32, y: i32) -> i32 {
 /// Fetch a chroma sample with boundary clipping.
 #[inline]
 fn ref_chroma(plane: &[u8], width: usize, height: usize, x: i32, y: i32) -> i32 {
-    if width == 0 || height == 0 { return 0; }
+    if width == 0 || height == 0 {
+        return 0;
+    }
     let cx = x.clamp(0, width as i32 - 1) as usize;
     let cy = y.clamp(0, height as i32 - 1) as usize;
     let idx = cy * width + cx;
-    if idx >= plane.len() { return 0; }
+    if idx >= plane.len() {
+        return 0;
+    }
     plane[idx] as i32
 }
 
@@ -41,8 +45,9 @@ fn avg(a: u8, b: u8) -> u8 {
 /// 6-tap FIR filter coefficient application on 6 consecutive samples.
 #[inline(always)]
 fn fir6(s: &[u8], i: usize) -> i32 {
-    s[i] as i32 - 5 * s[i + 1] as i32 + 20 * s[i + 2] as i32
-        + 20 * s[i + 3] as i32 - 5 * s[i + 4] as i32 + s[i + 5] as i32
+    s[i] as i32 - 5 * s[i + 1] as i32 + 20 * s[i + 2] as i32 + 20 * s[i + 3] as i32
+        - 5 * s[i + 4] as i32
+        + s[i + 5] as i32
 }
 
 /// 6-tap FIR on i32 intermediates (for hv second pass).
@@ -179,8 +184,10 @@ fn neon_row_half_pel_v(rows: [&[u8]; 6], out: &mut [u8], w: usize) {
     // Scalar tail
     while i < w {
         let val = rows[0][i] as i32 - 5 * rows[1][i] as i32
-            + 20 * rows[2][i] as i32 + 20 * rows[3][i] as i32
-            - 5 * rows[4][i] as i32 + rows[5][i] as i32;
+            + 20 * rows[2][i] as i32
+            + 20 * rows[3][i] as i32
+            - 5 * rows[4][i] as i32
+            + rows[5][i] as i32;
         out[i] = clip_u8((val + 16) >> 5);
         i += 1;
     }
@@ -222,8 +229,10 @@ fn neon_row_avg_int_v(int_row: &[u8], rows: [&[u8]; 6], out: &mut [u8], w: usize
     }
     while i < w {
         let val = rows[0][i] as i32 - 5 * rows[1][i] as i32
-            + 20 * rows[2][i] as i32 + 20 * rows[3][i] as i32
-            - 5 * rows[4][i] as i32 + rows[5][i] as i32;
+            + 20 * rows[2][i] as i32
+            + 20 * rows[3][i] as i32
+            - 5 * rows[4][i] as i32
+            + rows[5][i] as i32;
         let hp = clip_u8((val + 16) >> 5);
         out[i] = avg(int_row[i], hp);
         i += 1;
@@ -264,9 +273,15 @@ fn neon_row_avg_h_v(src_h: &[u8], rows_v: [&[u8]; 6], out: &mut [u8], w: usize) 
     }
     while i < w {
         let h_val = clip_u8((fir6(src_h, i) + 16) >> 5);
-        let v_val = clip_u8((rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
-            + 20 * rows_v[2][i] as i32 + 20 * rows_v[3][i] as i32
-            - 5 * rows_v[4][i] as i32 + rows_v[5][i] as i32 + 16) >> 5);
+        let v_val = clip_u8(
+            (rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
+                + 20 * rows_v[2][i] as i32
+                + 20 * rows_v[3][i] as i32
+                - 5 * rows_v[4][i] as i32
+                + rows_v[5][i] as i32
+                + 16)
+                >> 5,
+        );
         out[i] = avg(h_val, v_val);
         i += 1;
     }
@@ -284,8 +299,10 @@ fn row_half_pel_v(rows: [&[u8]; 6], out: &mut [u8], w: usize) {
     {
         for i in 0..w {
             let val = rows[0][i] as i32 - 5 * rows[1][i] as i32
-                + 20 * rows[2][i] as i32 + 20 * rows[3][i] as i32
-                - 5 * rows[4][i] as i32 + rows[5][i] as i32;
+                + 20 * rows[2][i] as i32
+                + 20 * rows[3][i] as i32
+                - 5 * rows[4][i] as i32
+                + rows[5][i] as i32;
             out[i] = clip_u8((val + 16) >> 5);
         }
     }
@@ -316,10 +333,16 @@ fn row_half_pel_hv(rows: [&[u8]; 6], out: &mut [u8], w: usize) {
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
 fn block_in_bounds(
-    x: i32, y: i32, w: i32, h: i32,
-    pic_w: i32, pic_h: i32,
-    margin_left: i32, margin_top: i32,
-    margin_right: i32, margin_bottom: i32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    pic_w: i32,
+    pic_h: i32,
+    margin_left: i32,
+    margin_top: i32,
+    margin_right: i32,
+    margin_bottom: i32,
 ) -> bool {
     x - margin_left >= 0
         && y - margin_top >= 0
@@ -377,17 +400,40 @@ pub fn luma_mc_stride(
 
     // Quarter-pel positions that average with an offset integer/half-pel sample
     // may need +1 in a direction
-    let extra_r: i32 = match frac_x { 3 => 1, _ => 0 };
-    let extra_b: i32 = match frac_y { 3 => 1, _ => 0 };
+    let extra_r: i32 = match frac_x {
+        3 => 1,
+        _ => 0,
+    };
+    let extra_b: i32 = match frac_y {
+        3 => 1,
+        _ => 0,
+    };
 
     if block_in_bounds(
-        x_int, y_int, bw + extra_r, bh + extra_b,
-        pic_w, pic_h, margin_l, margin_t, margin_r, margin_b,
+        x_int,
+        y_int,
+        bw + extra_r,
+        bh + extra_b,
+        pic_w,
+        pic_h,
+        margin_l,
+        margin_t,
+        margin_r,
+        margin_b,
     ) {
         // Fast path: entire block + filter margins are in bounds
         // Access reference buffer directly without per-pixel clamping
-        luma_mc_inner(ref_y, stride, x_int as usize, y_int as usize,
-                      block_w, block_h, frac_x, frac_y, output);
+        luma_mc_inner(
+            ref_y,
+            stride,
+            x_int as usize,
+            y_int as usize,
+            block_w,
+            block_h,
+            frac_x,
+            frac_y,
+            output,
+        );
     } else if ref_y_offset > 0 || stride != ref_pic.width as usize {
         // Field-coded boundary fallback: extract field lines into a temporary
         // DecodedPicture and use the standard interpolation on it.
@@ -536,12 +582,16 @@ fn luma_mc_inner(
                 let int_row = row(r as isize, 0, w);
                 let rows = vrows(0, r as isize, w);
                 #[cfg(target_arch = "aarch64")]
-                { neon_row_avg_int_v(int_row, rows, &mut output[r * w..], w); }
+                {
+                    neon_row_avg_int_v(int_row, rows, &mut output[r * w..], w);
+                }
                 #[cfg(not(target_arch = "aarch64"))]
                 for i in 0..w {
                     let val = rows[0][i] as i32 - 5 * rows[1][i] as i32
-                        + 20 * rows[2][i] as i32 + 20 * rows[3][i] as i32
-                        - 5 * rows[4][i] as i32 + rows[5][i] as i32;
+                        + 20 * rows[2][i] as i32
+                        + 20 * rows[3][i] as i32
+                        - 5 * rows[4][i] as i32
+                        + rows[5][i] as i32;
                     let hp = clip_u8((val + 16) >> 5);
                     output[r * w + i] = avg(int_row[i], hp);
                 }
@@ -553,12 +603,16 @@ fn luma_mc_inner(
                 let int_row = row(r as isize + 1, 0, w);
                 let rows = vrows(0, r as isize, w);
                 #[cfg(target_arch = "aarch64")]
-                { neon_row_avg_int_v(int_row, rows, &mut output[r * w..], w); }
+                {
+                    neon_row_avg_int_v(int_row, rows, &mut output[r * w..], w);
+                }
                 #[cfg(not(target_arch = "aarch64"))]
                 for i in 0..w {
                     let val = rows[0][i] as i32 - 5 * rows[1][i] as i32
-                        + 20 * rows[2][i] as i32 + 20 * rows[3][i] as i32
-                        - 5 * rows[4][i] as i32 + rows[5][i] as i32;
+                        + 20 * rows[2][i] as i32
+                        + 20 * rows[3][i] as i32
+                        - 5 * rows[4][i] as i32
+                        + rows[5][i] as i32;
                     let hp = clip_u8((val + 16) >> 5);
                     output[r * w + i] = avg(hp, int_row[i]);
                 }
@@ -588,11 +642,17 @@ fn luma_mc_inner(
                 let src_h = row(r as isize + 1, -2, w + 5);
                 let rows_hv = vrows(-2, r as isize, w + 5);
                 for i in 0..w {
-                    let hv_val = clip_u8((fir6_i32(
-                        fir6(rows_hv[0], i), fir6(rows_hv[1], i),
-                        fir6(rows_hv[2], i), fir6(rows_hv[3], i),
-                        fir6(rows_hv[4], i), fir6(rows_hv[5], i),
-                    ) + 512) >> 10);
+                    let hv_val = clip_u8(
+                        (fir6_i32(
+                            fir6(rows_hv[0], i),
+                            fir6(rows_hv[1], i),
+                            fir6(rows_hv[2], i),
+                            fir6(rows_hv[3], i),
+                            fir6(rows_hv[4], i),
+                            fir6(rows_hv[5], i),
+                        ) + 512)
+                            >> 10,
+                    );
                     let h_val = clip_u8((fir6(src_h, i) + 16) >> 5);
                     output[r * w + i] = avg(hv_val, h_val);
                 }
@@ -604,14 +664,26 @@ fn luma_mc_inner(
                 let rows_v = vrows(0, r as isize, w);
                 let rows_hv = vrows(-2, r as isize, w + 5);
                 for i in 0..w {
-                    let v_val = clip_u8((rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
-                        + 20 * rows_v[2][i] as i32 + 20 * rows_v[3][i] as i32
-                        - 5 * rows_v[4][i] as i32 + rows_v[5][i] as i32 + 16) >> 5);
-                    let hv_val = clip_u8((fir6_i32(
-                        fir6(rows_hv[0], i), fir6(rows_hv[1], i),
-                        fir6(rows_hv[2], i), fir6(rows_hv[3], i),
-                        fir6(rows_hv[4], i), fir6(rows_hv[5], i),
-                    ) + 512) >> 10);
+                    let v_val = clip_u8(
+                        (rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
+                            + 20 * rows_v[2][i] as i32
+                            + 20 * rows_v[3][i] as i32
+                            - 5 * rows_v[4][i] as i32
+                            + rows_v[5][i] as i32
+                            + 16)
+                            >> 5,
+                    );
+                    let hv_val = clip_u8(
+                        (fir6_i32(
+                            fir6(rows_hv[0], i),
+                            fir6(rows_hv[1], i),
+                            fir6(rows_hv[2], i),
+                            fir6(rows_hv[3], i),
+                            fir6(rows_hv[4], i),
+                            fir6(rows_hv[5], i),
+                        ) + 512)
+                            >> 10,
+                    );
                     output[r * w + i] = avg(v_val, hv_val);
                 }
             }
@@ -622,14 +694,26 @@ fn luma_mc_inner(
                 let rows_v = vrows(1, r as isize, w);
                 let rows_hv = vrows(-2, r as isize, w + 5);
                 for i in 0..w {
-                    let hv_val = clip_u8((fir6_i32(
-                        fir6(rows_hv[0], i), fir6(rows_hv[1], i),
-                        fir6(rows_hv[2], i), fir6(rows_hv[3], i),
-                        fir6(rows_hv[4], i), fir6(rows_hv[5], i),
-                    ) + 512) >> 10);
-                    let v_val = clip_u8((rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
-                        + 20 * rows_v[2][i] as i32 + 20 * rows_v[3][i] as i32
-                        - 5 * rows_v[4][i] as i32 + rows_v[5][i] as i32 + 16) >> 5);
+                    let hv_val = clip_u8(
+                        (fir6_i32(
+                            fir6(rows_hv[0], i),
+                            fir6(rows_hv[1], i),
+                            fir6(rows_hv[2], i),
+                            fir6(rows_hv[3], i),
+                            fir6(rows_hv[4], i),
+                            fir6(rows_hv[5], i),
+                        ) + 512)
+                            >> 10,
+                    );
+                    let v_val = clip_u8(
+                        (rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
+                            + 20 * rows_v[2][i] as i32
+                            + 20 * rows_v[3][i] as i32
+                            - 5 * rows_v[4][i] as i32
+                            + rows_v[5][i] as i32
+                            + 16)
+                            >> 5,
+                    );
                     output[r * w + i] = avg(hv_val, v_val);
                 }
             }
@@ -640,13 +724,21 @@ fn luma_mc_inner(
                 let src_h = row(r as isize, -2, w + 5);
                 let rows_v = vrows(0, r as isize, w);
                 #[cfg(target_arch = "aarch64")]
-                { neon_row_avg_h_v(src_h, rows_v, &mut output[r * w..], w); }
+                {
+                    neon_row_avg_h_v(src_h, rows_v, &mut output[r * w..], w);
+                }
                 #[cfg(not(target_arch = "aarch64"))]
                 for i in 0..w {
                     let h_val = clip_u8((fir6(src_h, i) + 16) >> 5);
-                    let v_val = clip_u8((rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
-                        + 20 * rows_v[2][i] as i32 + 20 * rows_v[3][i] as i32
-                        - 5 * rows_v[4][i] as i32 + rows_v[5][i] as i32 + 16) >> 5);
+                    let v_val = clip_u8(
+                        (rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
+                            + 20 * rows_v[2][i] as i32
+                            + 20 * rows_v[3][i] as i32
+                            - 5 * rows_v[4][i] as i32
+                            + rows_v[5][i] as i32
+                            + 16)
+                            >> 5,
+                    );
                     output[r * w + i] = avg(h_val, v_val);
                 }
             }
@@ -657,13 +749,21 @@ fn luma_mc_inner(
                 let src_h = row(r as isize, -2, w + 5);
                 let rows_v = vrows(1, r as isize, w);
                 #[cfg(target_arch = "aarch64")]
-                { neon_row_avg_h_v(src_h, rows_v, &mut output[r * w..], w); }
+                {
+                    neon_row_avg_h_v(src_h, rows_v, &mut output[r * w..], w);
+                }
                 #[cfg(not(target_arch = "aarch64"))]
                 for i in 0..w {
                     let h_val = clip_u8((fir6(src_h, i) + 16) >> 5);
-                    let v_val = clip_u8((rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
-                        + 20 * rows_v[2][i] as i32 + 20 * rows_v[3][i] as i32
-                        - 5 * rows_v[4][i] as i32 + rows_v[5][i] as i32 + 16) >> 5);
+                    let v_val = clip_u8(
+                        (rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
+                            + 20 * rows_v[2][i] as i32
+                            + 20 * rows_v[3][i] as i32
+                            - 5 * rows_v[4][i] as i32
+                            + rows_v[5][i] as i32
+                            + 16)
+                            >> 5,
+                    );
                     output[r * w + i] = avg(h_val, v_val);
                 }
             }
@@ -674,12 +774,20 @@ fn luma_mc_inner(
                 let src_h = row(r as isize + 1, -2, w + 5);
                 let rows_v = vrows(0, r as isize, w);
                 #[cfg(target_arch = "aarch64")]
-                { neon_row_avg_h_v(src_h, rows_v, &mut output[r * w..], w); }
+                {
+                    neon_row_avg_h_v(src_h, rows_v, &mut output[r * w..], w);
+                }
                 #[cfg(not(target_arch = "aarch64"))]
                 for i in 0..w {
-                    let v_val = clip_u8((rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
-                        + 20 * rows_v[2][i] as i32 + 20 * rows_v[3][i] as i32
-                        - 5 * rows_v[4][i] as i32 + rows_v[5][i] as i32 + 16) >> 5);
+                    let v_val = clip_u8(
+                        (rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
+                            + 20 * rows_v[2][i] as i32
+                            + 20 * rows_v[3][i] as i32
+                            - 5 * rows_v[4][i] as i32
+                            + rows_v[5][i] as i32
+                            + 16)
+                            >> 5,
+                    );
                     let h_val = clip_u8((fir6(src_h, i) + 16) >> 5);
                     output[r * w + i] = avg(v_val, h_val);
                 }
@@ -691,12 +799,20 @@ fn luma_mc_inner(
                 let src_h = row(r as isize + 1, -2, w + 5);
                 let rows_v = vrows(1, r as isize, w);
                 #[cfg(target_arch = "aarch64")]
-                { neon_row_avg_h_v(src_h, rows_v, &mut output[r * w..], w); }
+                {
+                    neon_row_avg_h_v(src_h, rows_v, &mut output[r * w..], w);
+                }
                 #[cfg(not(target_arch = "aarch64"))]
                 for i in 0..w {
-                    let v_val = clip_u8((rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
-                        + 20 * rows_v[2][i] as i32 + 20 * rows_v[3][i] as i32
-                        - 5 * rows_v[4][i] as i32 + rows_v[5][i] as i32 + 16) >> 5);
+                    let v_val = clip_u8(
+                        (rows_v[0][i] as i32 - 5 * rows_v[1][i] as i32
+                            + 20 * rows_v[2][i] as i32
+                            + 20 * rows_v[3][i] as i32
+                            - 5 * rows_v[4][i] as i32
+                            + rows_v[5][i] as i32
+                            + 16)
+                            >> 5,
+                    );
                     let h_val = clip_u8((fir6(src_h, i) + 16) >> 5);
                     output[r * w + i] = avg(v_val, h_val);
                 }
@@ -815,7 +931,9 @@ pub fn chroma_mc(
         {
             let mut src_off = y_int as usize * ref_width + x_int as usize;
             for row in 0..block_h {
-                if src_off + block_w > ref_plane.len() { return; }
+                if src_off + block_w > ref_plane.len() {
+                    return;
+                }
                 output[row * block_w..(row + 1) * block_w]
                     .copy_from_slice(&ref_plane[src_off..src_off + block_w]);
                 src_off += ref_width;
@@ -862,8 +980,9 @@ pub fn chroma_mc(
 
         #[cfg(target_arch = "aarch64")]
         {
-            neon_chroma_bilinear_block(ref_plane, top_off, ref_width,
-                                        block_w, block_h, output, c00, c01, c10, c11);
+            neon_chroma_bilinear_block(
+                ref_plane, top_off, ref_width, block_w, block_h, output, c00, c01, c10, c11,
+            );
         }
         #[cfg(not(target_arch = "aarch64"))]
         for row in 0..block_h {
@@ -1062,7 +1181,18 @@ mod tests {
         for frac_x in 0..4 {
             for frac_y in 0..4 {
                 let mut out = [0u8; 1];
-                luma_mc_stride(&pic, 4, 4, frac_x, frac_y, 1, 1, &mut out, pic.width as usize, 0);
+                luma_mc_stride(
+                    &pic,
+                    4,
+                    4,
+                    frac_x,
+                    frac_y,
+                    1,
+                    1,
+                    &mut out,
+                    pic.width as usize,
+                    0,
+                );
                 assert_eq!(
                     out[0], 100,
                     "frac ({},{}) should give 100 for uniform ref",

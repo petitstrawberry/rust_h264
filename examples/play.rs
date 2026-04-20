@@ -63,7 +63,10 @@ impl ReorderBuffer {
         if self.buf.is_empty() {
             return None;
         }
-        let min_idx = self.buf.iter().enumerate()
+        let min_idx = self
+            .buf
+            .iter()
+            .enumerate()
             .min_by_key(|(_, (idr, f))| (*idr, f.pic_order_cnt))
             .map(|(i, _)| i)
             .unwrap();
@@ -139,8 +142,11 @@ fn main() {
         }
         if let Some(display_frame) = reorder_buf.pop_if_ready() {
             first_frame_argb = Some(yuv_to_argb(
-                &display_frame.y, &display_frame.u, &display_frame.v,
-                width, height,
+                &display_frame.y,
+                &display_frame.u,
+                &display_frame.v,
+                width,
+                height,
             ));
             nal_idx += 1;
             break;
@@ -233,8 +239,8 @@ fn main() {
                 break;
             }
 
-            let is_idr = nal_idx < nals.len()
-                && nals[nal_idx].nal_unit_type == NalUnitType::SliceIdr;
+            let is_idr =
+                nal_idx < nals.len() && nals[nal_idx].nal_unit_type == NalUnitType::SliceIdr;
 
             let frame = if nal_idx < nals.len() {
                 match decoder.decode_nal(&nals[nal_idx]) {

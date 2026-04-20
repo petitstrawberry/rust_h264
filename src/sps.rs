@@ -464,7 +464,9 @@ mod tests {
         assert!(
             (fps - 30.0).abs() < 1e-6,
             "expected 30 fps, got {} ({}/{})",
-            fps, num, den
+            fps,
+            num,
+            den
         );
         assert_eq!(sps.frame_rate_f64(), Some(30.0));
     }

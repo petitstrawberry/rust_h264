@@ -33,21 +33,54 @@ pub(crate) fn predict_mv_sub(
     mctx: MbaffCtx,
 ) -> (i16, i16) {
     let a = get_mv_neighbor_left_mbaff(
-        mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py, px,
-        mb_slice_id, cur_slice_id, mctx.mbaff, mctx.mb_field_decoding,
+        mv_store_l0,
+        ref_idx_store_l0,
+        mb_idx,
+        mb_width,
+        py,
+        px,
+        mb_slice_id,
+        cur_slice_id,
+        mctx.mbaff,
+        mctx.mb_field_decoding,
     );
     let b = get_mv_neighbor_above_mbaff(
-        mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py, px,
-        mb_slice_id, cur_slice_id, mctx.mbaff, mctx.mb_field_decoding,
+        mv_store_l0,
+        ref_idx_store_l0,
+        mb_idx,
+        mb_width,
+        py,
+        px,
+        mb_slice_id,
+        cur_slice_id,
+        mctx.mbaff,
+        mctx.mb_field_decoding,
     );
     let c = get_mv_neighbor_above_right_mbaff(
-        mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py, px, spw,
-        mb_slice_id, cur_slice_id, mctx.mbaff, mctx.mb_field_decoding,
+        mv_store_l0,
+        ref_idx_store_l0,
+        mb_idx,
+        mb_width,
+        py,
+        px,
+        spw,
+        mb_slice_id,
+        cur_slice_id,
+        mctx.mbaff,
+        mctx.mb_field_decoding,
     )
     .or_else(|| {
         get_mv_neighbor_above_left_mbaff(
-            mv_store_l0, ref_idx_store_l0, mb_idx, mb_width, py, px,
-            mb_slice_id, cur_slice_id, mctx.mbaff, mctx.mb_field_decoding,
+            mv_store_l0,
+            ref_idx_store_l0,
+            mb_idx,
+            mb_width,
+            py,
+            px,
+            mb_slice_id,
+            cur_slice_id,
+            mctx.mbaff,
+            mctx.mb_field_decoding,
         )
     });
 
@@ -347,9 +380,16 @@ pub(crate) fn derive_spatial_direct_blk(
         )
         .or_else(|| {
             get_mv_neighbor_above_left_mbaff(
-                mv_s, ref_s, mb_idx, mb_width, 0, 0,
-                mb_slice_id, cur_slice_id,
-                mctx.mbaff, mctx.mb_field_decoding,
+                mv_s,
+                ref_s,
+                mb_idx,
+                mb_width,
+                0,
+                0,
+                mb_slice_id,
+                cur_slice_id,
+                mctx.mbaff,
+                mctx.mb_field_decoding,
             )
         });
 
@@ -633,9 +673,14 @@ pub(crate) fn predict_mv(
         get_mv_neighbor_above_left_mbaff(
             mv_store_l0,
             ref_idx_store_l0,
-            mb_idx, mb_width, py_off, px_off,
-            mb_slice_id, cur_slice_id,
-            mctx.mbaff, mctx.mb_field_decoding,
+            mb_idx,
+            mb_width,
+            py_off,
+            px_off,
+            mb_slice_id,
+            cur_slice_id,
+            mctx.mbaff,
+            mctx.mb_field_decoding,
         )
     });
 
@@ -836,7 +881,12 @@ fn mbaff_above_neighbor(
 /// - Current field, neighbor frame: MVy /= 2 (frame→field)
 /// - Same mode: no scaling
 #[inline]
-fn mbaff_scale_mv(mv: [i16; 2], cur_pair: usize, nbr_pair: usize, mb_field_decoding: &[bool]) -> [i16; 2] {
+fn mbaff_scale_mv(
+    mv: [i16; 2],
+    cur_pair: usize,
+    nbr_pair: usize,
+    mb_field_decoding: &[bool],
+) -> [i16; 2] {
     let cur_field = mb_field_decoding[cur_pair];
     let nbr_field = mb_field_decoding[nbr_pair];
     if cur_field == nbr_field {
@@ -890,17 +940,18 @@ pub(crate) fn get_mv_neighbor_left_mbaff(
         ))
     } else {
         // MBAFF: use pair-based left neighbor
-        let (left_mb, remap_py) =
-            mbaff_left_neighbor(mb_idx, mb_width, py_off, mb_field_decoding)?;
+        let (left_mb, remap_py) = mbaff_left_neighbor(mb_idx, mb_width, py_off, mb_field_decoding)?;
         if mb_slice_id[left_mb] != cur_slice_id {
             return None;
         }
         let blk = OFFSET_TO_BLOCK[remap_py / 4][3];
-        let mv = mbaff_scale_mv(mv_store_l0[left_mb * 16 + blk], mb_idx / 2, left_mb / 2, mb_field_decoding);
-        Some((
-            mv,
-            ref_idx_store_l0[left_mb * 16 + blk],
-        ))
+        let mv = mbaff_scale_mv(
+            mv_store_l0[left_mb * 16 + blk],
+            mb_idx / 2,
+            left_mb / 2,
+            mb_field_decoding,
+        );
+        Some((mv, ref_idx_store_l0[left_mb * 16 + blk]))
     }
 }
 
@@ -944,17 +995,18 @@ pub(crate) fn get_mv_neighbor_above_mbaff(
         ))
     } else {
         // MBAFF: use pair-based above neighbor
-        let (above_mb, remap_py) =
-            mbaff_above_neighbor(mb_idx, mb_width, mb_field_decoding)?;
+        let (above_mb, remap_py) = mbaff_above_neighbor(mb_idx, mb_width, mb_field_decoding)?;
         if mb_slice_id[above_mb] != cur_slice_id {
             return None;
         }
         let blk = OFFSET_TO_BLOCK[remap_py / 4][px_off / 4];
-        let mv = mbaff_scale_mv(mv_store_l0[above_mb * 16 + blk], mb_idx / 2, above_mb / 2, mb_field_decoding);
-        Some((
-            mv,
-            ref_idx_store_l0[above_mb * 16 + blk],
-        ))
+        let mv = mbaff_scale_mv(
+            mv_store_l0[above_mb * 16 + blk],
+            mb_idx / 2,
+            above_mb / 2,
+            mb_field_decoding,
+        );
+        Some((mv, ref_idx_store_l0[above_mb * 16 + blk]))
     }
 }
 
@@ -1038,11 +1090,13 @@ pub(crate) fn get_mv_neighbor_above_right_mbaff(
                 return None;
             }
             let blk = OFFSET_TO_BLOCK[remap_py / 4][right_col / 4];
-            let mv = mbaff_scale_mv(mv_store_l0[above_mb * 16 + blk], mb_idx / 2, above_mb / 2, mb_field_decoding);
-            Some((
-                mv,
-                ref_idx_store_l0[above_mb * 16 + blk],
-            ))
+            let mv = mbaff_scale_mv(
+                mv_store_l0[above_mb * 16 + blk],
+                mb_idx / 2,
+                above_mb / 2,
+                mb_field_decoding,
+            );
+            Some((mv, ref_idx_store_l0[above_mb * 16 + blk]))
         } else {
             // Above-right MB in MBAFF: pair to the right of the above pair.
             // For bottom MBs, the "above" is the top of the same pair.
@@ -1064,17 +1118,20 @@ pub(crate) fn get_mv_neighbor_above_right_mbaff(
             // Top MB: above is bottom of previous pair row → already decoded.
             // Use the same top/bottom position as the above MB.
             let above_mb_pos = mbaff_above_neighbor(mb_idx, mb_width, mb_field_decoding)
-                .map(|(m, _)| m % 2).unwrap_or(1);
+                .map(|(m, _)| m % 2)
+                .unwrap_or(1);
             let ar_mb = above_right_pair * 2 + above_mb_pos;
             if mb_slice_id.get(ar_mb).copied() != Some(cur_slice_id) {
                 return None;
             }
             let blk = OFFSET_TO_BLOCK[remap_py / 4][0];
-            let mv = mbaff_scale_mv(mv_store_l0[ar_mb * 16 + blk], mb_idx / 2, ar_mb / 2, mb_field_decoding);
-            Some((
-                mv,
-                ref_idx_store_l0[ar_mb * 16 + blk],
-            ))
+            let mv = mbaff_scale_mv(
+                mv_store_l0[ar_mb * 16 + blk],
+                mb_idx / 2,
+                ar_mb / 2,
+                mb_field_decoding,
+            );
+            Some((mv, ref_idx_store_l0[ar_mb * 16 + blk]))
         }
     } else {
         None
@@ -1110,7 +1167,9 @@ pub(crate) fn get_mv_neighbor_above_left_mbaff(
         // For MBAFF: above-left of top of pair = bottom-right block of above-left pair
         let (above_mb, above_py) = if !mbaff {
             let mb_row = mb_idx / mb_width;
-            if mb_row == 0 { return None; }
+            if mb_row == 0 {
+                return None;
+            }
             (mb_idx - mb_width, 15usize)
         } else {
             mbaff_above_neighbor(mb_idx, mb_width, mb_field_decoding)?
@@ -1118,7 +1177,9 @@ pub(crate) fn get_mv_neighbor_above_left_mbaff(
         // Now get the left of above
         let (al_mb, al_py) = if !mbaff {
             let mb_col = mb_idx % mb_width;
-            if mb_col == 0 { return None; }
+            if mb_col == 0 {
+                return None;
+            }
             (above_mb - 1, above_py)
         } else {
             mbaff_left_neighbor(above_mb, mb_width, above_py, mb_field_decoding)?
@@ -1128,19 +1189,23 @@ pub(crate) fn get_mv_neighbor_above_left_mbaff(
         }
         let blk = OFFSET_TO_BLOCK[al_py / 4][3];
         let mv = if mbaff {
-            mbaff_scale_mv(mv_store_l0[al_mb * 16 + blk], mb_idx / 2, al_mb / 2, mb_field_decoding)
+            mbaff_scale_mv(
+                mv_store_l0[al_mb * 16 + blk],
+                mb_idx / 2,
+                al_mb / 2,
+                mb_field_decoding,
+            )
         } else {
             mv_store_l0[al_mb * 16 + blk]
         };
-        Some((
-            mv,
-            ref_idx_store_l0[al_mb * 16 + blk],
-        ))
+        Some((mv, ref_idx_store_l0[al_mb * 16 + blk]))
     } else if py_off == 0 && px_off > 0 {
         // Above MB, column to the left of px_off
         let (above_mb, above_py) = if !mbaff {
             let mb_row = mb_idx / mb_width;
-            if mb_row == 0 { return None; }
+            if mb_row == 0 {
+                return None;
+            }
             (mb_idx - mb_width, 15usize)
         } else {
             mbaff_above_neighbor(mb_idx, mb_width, mb_field_decoding)?
@@ -1150,19 +1215,23 @@ pub(crate) fn get_mv_neighbor_above_left_mbaff(
         }
         let blk = OFFSET_TO_BLOCK[above_py / 4][(px_off - 4) / 4];
         let mv = if mbaff {
-            mbaff_scale_mv(mv_store_l0[above_mb * 16 + blk], mb_idx / 2, above_mb / 2, mb_field_decoding)
+            mbaff_scale_mv(
+                mv_store_l0[above_mb * 16 + blk],
+                mb_idx / 2,
+                above_mb / 2,
+                mb_field_decoding,
+            )
         } else {
             mv_store_l0[above_mb * 16 + blk]
         };
-        Some((
-            mv,
-            ref_idx_store_l0[above_mb * 16 + blk],
-        ))
+        Some((mv, ref_idx_store_l0[above_mb * 16 + blk]))
     } else if py_off > 0 && px_off == 0 {
         // Left MB, row above py_off
         let (left_mb, left_py) = if !mbaff {
             let mb_col = mb_idx % mb_width;
-            if mb_col == 0 { return None; }
+            if mb_col == 0 {
+                return None;
+            }
             (mb_idx - 1, py_off - 4)
         } else {
             mbaff_left_neighbor(mb_idx, mb_width, py_off - 4, mb_field_decoding)?
@@ -1172,14 +1241,16 @@ pub(crate) fn get_mv_neighbor_above_left_mbaff(
         }
         let blk = OFFSET_TO_BLOCK[left_py / 4][3];
         let mv = if mbaff {
-            mbaff_scale_mv(mv_store_l0[left_mb * 16 + blk], mb_idx / 2, left_mb / 2, mb_field_decoding)
+            mbaff_scale_mv(
+                mv_store_l0[left_mb * 16 + blk],
+                mb_idx / 2,
+                left_mb / 2,
+                mb_field_decoding,
+            )
         } else {
             mv_store_l0[left_mb * 16 + blk]
         };
-        Some((
-            mv,
-            ref_idx_store_l0[left_mb * 16 + blk],
-        ))
+        Some((mv, ref_idx_store_l0[left_mb * 16 + blk]))
     } else {
         None
     }

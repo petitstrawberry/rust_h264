@@ -29,7 +29,11 @@ pub(crate) fn cabac_amvd(
     } else {
         let pair_addr = mb_idx / 2;
         let has_left = pair_addr % mb_width != 0;
-        let left = if has_left { (pair_addr - 1) * 2 + (mb_idx % 2) } else { 0 };
+        let left = if has_left {
+            (pair_addr - 1) * 2 + (mb_idx % 2)
+        } else {
+            0
+        };
         let is_field = _mb_field_decoding[pair_addr];
         let has_above = if is_field {
             // Field-coded: above is same-field in above pair
@@ -114,7 +118,11 @@ pub(crate) fn cabac_neighbor_ref(
     } else {
         let pair_addr = mb_idx / 2;
         let has_left = pair_addr % mb_width != 0;
-        let left = if has_left { (pair_addr - 1) * 2 + (mb_idx % 2) } else { 0 };
+        let left = if has_left {
+            (pair_addr - 1) * 2 + (mb_idx % 2)
+        } else {
+            0
+        };
         let is_field = _mb_field_decoding[pair_addr];
         let has_above = if is_field {
             // Field-coded: above is same-field in above pair
@@ -227,7 +235,11 @@ pub(crate) fn cabac_neighbor_nz_luma(
             let has_above = if !mbaff {
                 mb_idx >= mb_width
             } else {
-                if _mb_field_decoding[mb_idx / 2] { (mb_idx / 2) >= mb_width } else { mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width }
+                if _mb_field_decoding[mb_idx / 2] {
+                    (mb_idx / 2) >= mb_width
+                } else {
+                    mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
+                }
             };
             if !has_above {
                 return is_intra;
@@ -305,7 +317,11 @@ pub(crate) fn cabac_neighbor_nz_chroma(
             let has_above = if !mbaff {
                 mb_idx >= mb_width
             } else {
-                if _mb_field_decoding[mb_idx / 2] { (mb_idx / 2) >= mb_width } else { mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width }
+                if _mb_field_decoding[mb_idx / 2] {
+                    (mb_idx / 2) >= mb_width
+                } else {
+                    mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
+                }
             };
             if !has_above {
                 return is_intra;
@@ -415,10 +431,7 @@ pub(crate) fn get_neighbor_i4x4_mode(
                 } else {
                     (mb_idx / 2 - 1) * 2 + (mb_idx % 2)
                 };
-                if has_left
-                    && mb_slice_id[left_mb] == cur_slice_id
-                    && intra_avail[left_mb]
-                {
+                if has_left && mb_slice_id[left_mb] == cur_slice_id && intra_avail[left_mb] {
                     let left_blk = match blk_idx {
                         0 => 5,
                         2 => 7,
@@ -446,7 +459,11 @@ pub(crate) fn get_neighbor_i4x4_mode(
                 let has_above = if !mbaff {
                     mb_idx >= mb_width
                 } else {
-                    if _mb_field_decoding[mb_idx / 2] { (mb_idx / 2) >= mb_width } else { mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width }
+                    if _mb_field_decoding[mb_idx / 2] {
+                        (mb_idx / 2) >= mb_width
+                    } else {
+                        mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
+                    }
                 };
                 let above_mb = if !has_above {
                     0 // dummy, not used
@@ -459,10 +476,7 @@ pub(crate) fn get_neighbor_i4x4_mode(
                 } else {
                     (mb_idx / 2 - mb_width) * 2 + 1
                 };
-                if has_above
-                    && mb_slice_id[above_mb] == cur_slice_id
-                    && intra_avail[above_mb]
-                {
+                if has_above && mb_slice_id[above_mb] == cur_slice_id && intra_avail[above_mb] {
                     let above_blk = match blk_idx {
                         0 => 10,
                         1 => 11,
@@ -584,7 +598,11 @@ pub(crate) fn compute_nc(
         let has_above = if !mbaff {
             mb_idx >= mb_width
         } else {
-            if _mb_field_decoding[mb_idx / 2] { (mb_idx / 2) >= mb_width } else { mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width }
+            if _mb_field_decoding[mb_idx / 2] {
+                (mb_idx / 2) >= mb_width
+            } else {
+                mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
+            }
         };
         if has_above {
             let above_nb = if !mbaff {
@@ -645,7 +663,8 @@ pub(crate) fn dequant_4x4_ac_raster(block: &mut [i32; 16], qp: i32, scale: &[u8;
                 if qp_per >= 4 {
                     block[idx] = block[idx].wrapping_mul(v).wrapping_shl((qp_per - 4) as u32);
                 } else {
-                    block[idx] = (block[idx].wrapping_mul(v).wrapping_add(1 << (3 - qp_per))) >> (4 - qp_per);
+                    block[idx] = (block[idx].wrapping_mul(v).wrapping_add(1 << (3 - qp_per)))
+                        >> (4 - qp_per);
                 }
             }
         }

@@ -106,7 +106,9 @@ pub fn filter_frame_params(
     chroma_qp_index_offset: i32,
 ) {
     filter_frame_inner(
-        frame, mb_info, mb_width,
+        frame,
+        mb_info,
+        mb_width,
         disable_deblocking_filter_idc,
         slice_alpha_c0_offset_div2,
         slice_beta_offset_div2,
@@ -128,7 +130,9 @@ pub fn filter_frame_mbaff(
     mbaff: bool,
 ) {
     filter_frame_inner(
-        frame, mb_info, mb_width,
+        frame,
+        mb_info,
+        mb_width,
         disable_deblocking_filter_idc,
         slice_alpha_c0_offset_div2,
         slice_beta_offset_div2,
@@ -172,8 +176,12 @@ fn filter_frame_inner(
             let pair_col = pair_addr % mb_width;
             let pair_row = pair_addr / mb_width;
             let is_bottom = mb_idx % 2 != 0;
-            (pair_col * 16, pair_row * 32 + if is_bottom { 16 } else { 0 },
-             pair_col, pair_row * 2 + if is_bottom { 1 } else { 0 })
+            (
+                pair_col * 16,
+                pair_row * 32 + if is_bottom { 16 } else { 0 },
+                pair_col,
+                pair_row * 2 + if is_bottom { 1 } else { 0 },
+            )
         } else {
             let col = mb_idx % mb_width;
             let row = mb_idx / mb_width;
@@ -207,7 +215,6 @@ fn filter_frame_inner(
                 mb_idx - 1
             };
             let mb_p = &mb_info[left_mb_idx];
-
 
             let qp_q = mb_q.qp_y;
             let qp_p = mb_p.qp_y;
