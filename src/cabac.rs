@@ -471,16 +471,6 @@ impl CabacReader<'_> {
     /// * `max_coeff`: maximum number of coefficients (16 for 4x4, 15 for AC, 4 for chroma DC, 64 for 8x8)
     ///
     /// Returns coefficients in scan order and the non-zero count.
-    pub fn decode_residual_cabac(
-        &mut self,
-        state: &mut [u8; 1024],
-        cat: usize,
-        max_coeff: usize,
-    ) -> (Vec<(usize, i32)>, u8) {
-        self.decode_residual_cabac_field(state, cat, max_coeff, false)
-    }
-
-    /// Decode residual coefficients with field-coded context support.
     /// For field-coded MBs, the significance and last_coeff contexts use
     /// different base offsets per spec Table 9-34.
     pub fn decode_residual_cabac_field(

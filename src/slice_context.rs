@@ -202,76 +202,6 @@ impl SliceContext<'_> {
         }
     }
 
-    /// Returns true if this MB is field-coded (MBAFF only).
-    #[allow(dead_code)]
-    #[inline]
-    pub(crate) fn is_field_mb(&self, mb_idx: usize) -> bool {
-        self.mbaff && self.mb_field_decoding[mb_idx / 2]
-    }
-
-    /// Compute the luma line stride for a given MB.
-    /// For field-coded MBs, the stride doubles (every other line).
-    #[allow(dead_code)]
-    #[inline]
-    pub(crate) fn luma_stride(&self, mb_idx: usize) -> usize {
-        if self.is_field_mb(mb_idx) {
-            self.stride * 2
-        } else {
-            self.stride
-        }
-    }
-
-    /// Compute the chroma line stride for a given MB.
-    #[allow(dead_code)]
-    #[inline]
-    pub(crate) fn chroma_stride(&self, mb_idx: usize) -> usize {
-        if self.is_field_mb(mb_idx) {
-            (self.width / 2) as usize * 2
-        } else {
-            (self.width / 2) as usize
-        }
-    }
-
-    /// Compute the luma base Y offset (byte offset of row 0) for a given MB.
-    /// For frame-coded: mb_y * width. For field MBs: accounts for interleaving.
-    #[allow(dead_code)]
-    #[inline]
-    pub(crate) fn luma_y_base(&self, mb_idx: usize, mb_y: usize) -> usize {
-        if !self.is_field_mb(mb_idx) {
-            mb_y * self.stride
-        } else {
-            let pair_addr = mb_idx / 2;
-            let pair_row = pair_addr / self.mb_width as usize;
-            let pair_y_pixel = pair_row * 32;
-            if mb_idx % 2 == 0 {
-                // Top field: even lines starting at pair_y_pixel
-                pair_y_pixel * self.stride
-            } else {
-                // Bottom field: odd lines starting at pair_y_pixel + 1
-                (pair_y_pixel + 1) * self.stride
-            }
-        }
-    }
-
-    /// Compute the chroma base Y offset for a given MB.
-    #[allow(dead_code)]
-    #[inline]
-    pub(crate) fn chroma_y_base(&self, mb_idx: usize, mb_y: usize) -> usize {
-        let cw = (self.width / 2) as usize;
-        if !self.is_field_mb(mb_idx) {
-            (mb_y / 2) * cw
-        } else {
-            let pair_addr = mb_idx / 2;
-            let pair_row = pair_addr / self.mb_width as usize;
-            let pair_cy = pair_row * 16; // chroma pair y (half of luma 32)
-            if mb_idx % 2 == 0 {
-                pair_cy * cw
-            } else {
-                (pair_cy + 1) * cw
-            }
-        }
-    }
-
     /// Get the left MB index for context lookups.
     /// Returns `None` if no left MB exists or it's in a different slice.
     #[inline]
@@ -361,28 +291,6 @@ impl SliceContext<'_> {
                 }
                 Some(above_mb)
             }
-        }
-    }
-
-    /// Check if left MB neighbor exists (for boundary checks, no slice ID check).
-    #[allow(dead_code)]
-    #[inline]
-    pub(crate) fn has_left_mb(&self, mb_idx: usize) -> bool {
-        if !self.mbaff {
-            mb_idx % self.mb_width as usize != 0
-        } else {
-            (mb_idx / 2) % self.mb_width as usize != 0
-        }
-    }
-
-    /// Check if above MB neighbor exists (for boundary checks, no slice ID check).
-    #[allow(dead_code)]
-    #[inline]
-    pub(crate) fn has_above_mb(&self, mb_idx: usize) -> bool {
-        if !self.mbaff {
-            mb_idx >= self.mb_width as usize
-        } else {
-            mb_idx % 2 != 0 || (mb_idx / 2) >= self.mb_width as usize
         }
     }
 

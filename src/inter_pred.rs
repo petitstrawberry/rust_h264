@@ -327,26 +327,6 @@ fn block_in_bounds(
         && y + h + margin_bottom <= pic_h
 }
 
-/// Perform luma motion compensation for a block.
-///
-/// `x`, `y`: block top-left in full-pel picture coordinates.
-/// `dx`, `dy`: motion vector in quarter-pel units.
-/// `block_w`, `block_h`: block dimensions (4, 8, or 16).
-/// `output`: predicted pixels, length = block_w * block_h.
-#[allow(clippy::too_many_arguments)]
-pub fn luma_mc(
-    ref_pic: &DecodedPicture,
-    x: i32,
-    y: i32,
-    dx: i32,
-    dy: i32,
-    block_w: usize,
-    block_h: usize,
-    output: &mut [u8],
-) {
-    luma_mc_stride(ref_pic, x, y, dx, dy, block_w, block_h, output, ref_pic.width as usize, 0);
-}
-
 /// Luma motion compensation with explicit reference stride and buffer offset.
 /// For field-coded MBAFF MBs, pass `ref_stride = ref_pic.width * 2`,
 /// `ref_y_offset = ref_pic.width` (for bottom field) or `0` (for top field),
@@ -1015,7 +995,7 @@ mod tests {
 
         // Integer-pel MC (dx=0, dy=0) should be a direct copy
         let mut out = vec![0u8; 16]; // 4x4 block at (2,1)
-        luma_mc(&pic, 1, 2, 0, 0, 4, 4, &mut out);
+        luma_mc_stride(&pic, 1, 2, 0, 0, 4, 4, &mut out, pic.width as usize, 0);
         for r in 0..4 {
             for c in 0..4 {
                 assert_eq!(out[r * 4 + c], y[(r + 2) * 8 + (c + 1)]);
@@ -1031,7 +1011,7 @@ mod tests {
 
         // MV = (4, 8) in quarter-pel = (1, 2) full-pel offset
         let mut out = vec![0u8; 16];
-        luma_mc(&pic, 0, 0, 4, 8, 4, 4, &mut out);
+        luma_mc_stride(&pic, 0, 0, 4, 8, 4, 4, &mut out, pic.width as usize, 0);
         // With uniform reference, all outputs should be 42
         assert!(out.iter().all(|&v| v == 42));
     }
@@ -1051,7 +1031,7 @@ mod tests {
 
         // Half-pel horizontal at x=7 (the edge): MV dx=2 (half-pel), dy=0
         let mut out = [0u8; 1];
-        luma_mc(&pic, 7, 0, 2, 0, 1, 1, &mut out);
+        luma_mc_stride(&pic, 7, 0, 2, 0, 1, 1, &mut out, pic.width as usize, 0);
         // 6-tap at x=7: samples at x=5..10 = [0, 0, 0, 255, 255, 255]
         // (0 - 0 + 0 + 20*255 - 5*255 + 255 + 16) >> 5 = (0 + 5100 - 1275 + 255 + 16) >> 5
         // = 4096 >> 5 = 128
@@ -1068,7 +1048,7 @@ mod tests {
         let pic = make_ref_pic(1, 16, y);
 
         let mut out = [0u8; 1];
-        luma_mc(&pic, 0, 7, 0, 2, 1, 1, &mut out);
+        luma_mc_stride(&pic, 0, 7, 0, 2, 1, 1, &mut out, pic.width as usize, 0);
         // Same as horizontal but vertical: should also give 128
         assert_eq!(out[0], 128);
     }
@@ -1082,7 +1062,7 @@ mod tests {
         for frac_x in 0..4 {
             for frac_y in 0..4 {
                 let mut out = [0u8; 1];
-                luma_mc(&pic, 4, 4, frac_x, frac_y, 1, 1, &mut out);
+                luma_mc_stride(&pic, 4, 4, frac_x, frac_y, 1, 1, &mut out, pic.width as usize, 0);
                 assert_eq!(
                     out[0], 100,
                     "frac ({},{}) should give 100 for uniform ref",
@@ -1120,7 +1100,7 @@ mod tests {
         // MC at (0,0) with MV=(-4, -4) in quarter-pel = (-1, -1) full-pel
         // Should clamp to (0,0) and read the top-left corner value
         let mut out = [0u8; 1];
-        luma_mc(&pic, 0, 0, -4, -4, 1, 1, &mut out);
+        luma_mc_stride(&pic, 0, 0, -4, -4, 1, 1, &mut out, pic.width as usize, 0);
         assert_eq!(out[0], 0); // clamped to (0,0)
     }
 
@@ -1132,7 +1112,7 @@ mod tests {
 
         // MV = (-1, -1) quarter-pel: frac should be (3, 3), int offset = (-1, -1)
         let mut out = [0u8; 1];
-        luma_mc(&pic, 8, 8, -1, -1, 1, 1, &mut out);
+        luma_mc_stride(&pic, 8, 8, -1, -1, 1, 1, &mut out, pic.width as usize, 0);
         // Uniform ref, so result should be 128 regardless
         assert_eq!(out[0], 128);
     }

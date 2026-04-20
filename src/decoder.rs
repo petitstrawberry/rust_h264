@@ -2524,4 +2524,16 @@ mod tests {
     fn test_mbaff_field_p() {
         decode_multiframe_and_compare("mbaff_field_p_test", 4, 64, 64);
     }
+
+    /// MBAFF field-coded CABAC (64x64, 4 frames, all-field-coded pairs, Main profile)
+    #[test]
+    fn test_mbaff_field_cabac() {
+        decode_multiframe_and_compare("mbaff_field_cabac_test", 4, 64, 64);
+    }
+
+    /// MBAFF field-coded High profile CAVLC with 8x8 DCT (64x64, 4 frames, all-field-coded)
+    #[test]
+    fn test_mbaff_field_high() {
+        decode_multiframe_and_compare("mbaff_field_high_test", 4, 64, 64);
+    }
 }
