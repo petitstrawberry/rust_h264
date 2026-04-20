@@ -112,7 +112,6 @@ pub fn parse_slice_header(
 
     let frame_num_bits = sps.log2_max_frame_num_minus4 + 4;
     let frame_num = r.read_bits(frame_num_bits as u8)?;
-
     // field_pic_flag / bottom_field_flag (spec 7.3.3)
     let mut field_pic_flag = false;
     let mut bottom_field_flag = false;
@@ -123,7 +122,6 @@ pub fn parse_slice_header(
         }
     }
     let mbaff_frame_flag = sps.mb_adaptive_frame_field_flag && !field_pic_flag;
-
     let mut idr_pic_id = None;
     if nal_unit_type == NalUnitType::SliceIdr {
         idr_pic_id = Some(r.read_ue()?);
@@ -148,7 +146,6 @@ pub fn parse_slice_header(
             delta_pic_order_cnt[1] = r.read_se()?;
         }
     }
-
     // direct_spatial_mv_pred_flag (B-slices only, spec 7.3.3)
     let mut direct_spatial_mv_pred_flag = false;
     if slice_type == SliceType::B {

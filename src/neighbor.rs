@@ -30,11 +30,20 @@ pub(crate) fn cabac_amvd(
         let pair_addr = mb_idx / 2;
         let has_left = pair_addr % mb_width != 0;
         let left = if has_left { (pair_addr - 1) * 2 + (mb_idx % 2) } else { 0 };
-        let has_above = mb_idx % 2 != 0 || pair_addr >= mb_width;
+        let is_field = _mb_field_decoding[pair_addr];
+        let has_above = if is_field {
+            // Field-coded: above is same-field in above pair
+            pair_addr >= mb_width
+        } else {
+            // Frame-coded: above is top of same pair (always available for bottom)
+            mb_idx % 2 != 0 || pair_addr >= mb_width
+        };
         let above = if !has_above {
             0
+        } else if mb_idx % 2 != 0 && !is_field {
+            mb_idx - 1 // Frame-coded: top of same pair
         } else if mb_idx % 2 != 0 {
-            mb_idx - 1
+            (pair_addr - mb_width) * 2 + 1 // Field-coded: bottom of above pair
         } else {
             (pair_addr - mb_width) * 2 + 1
         };
@@ -106,11 +115,20 @@ pub(crate) fn cabac_neighbor_ref(
         let pair_addr = mb_idx / 2;
         let has_left = pair_addr % mb_width != 0;
         let left = if has_left { (pair_addr - 1) * 2 + (mb_idx % 2) } else { 0 };
-        let has_above = mb_idx % 2 != 0 || pair_addr >= mb_width;
+        let is_field = _mb_field_decoding[pair_addr];
+        let has_above = if is_field {
+            // Field-coded: above is same-field in above pair
+            pair_addr >= mb_width
+        } else {
+            // Frame-coded: above is top of same pair (always available for bottom)
+            mb_idx % 2 != 0 || pair_addr >= mb_width
+        };
         let above = if !has_above {
             0
+        } else if mb_idx % 2 != 0 && !is_field {
+            mb_idx - 1 // Frame-coded: top of same pair
         } else if mb_idx % 2 != 0 {
-            mb_idx - 1
+            (pair_addr - mb_width) * 2 + 1 // Field-coded: bottom of above pair
         } else {
             (pair_addr - mb_width) * 2 + 1
         };
@@ -209,15 +227,17 @@ pub(crate) fn cabac_neighbor_nz_luma(
             let has_above = if !mbaff {
                 mb_idx >= mb_width
             } else {
-                mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
+                if _mb_field_decoding[mb_idx / 2] { (mb_idx / 2) >= mb_width } else { mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width }
             };
             if !has_above {
                 return is_intra;
             }
             if !mbaff {
                 mb_idx - mb_width
+            } else if mb_idx % 2 != 0 && !_mb_field_decoding[mb_idx / 2] {
+                mb_idx - 1 // Frame-coded: top of same pair
             } else if mb_idx % 2 != 0 {
-                mb_idx - 1
+                ((mb_idx / 2) - mb_width) * 2 + 1 // Field-coded: bottom of above pair
             } else {
                 ((mb_idx / 2) - mb_width) * 2 + 1
             }
@@ -285,15 +305,17 @@ pub(crate) fn cabac_neighbor_nz_chroma(
             let has_above = if !mbaff {
                 mb_idx >= mb_width
             } else {
-                mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
+                if _mb_field_decoding[mb_idx / 2] { (mb_idx / 2) >= mb_width } else { mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width }
             };
             if !has_above {
                 return is_intra;
             }
             if !mbaff {
                 mb_idx - mb_width
+            } else if mb_idx % 2 != 0 && !_mb_field_decoding[mb_idx / 2] {
+                mb_idx - 1 // Frame-coded: top of same pair
             } else if mb_idx % 2 != 0 {
-                mb_idx - 1
+                ((mb_idx / 2) - mb_width) * 2 + 1 // Field-coded: bottom of above pair
             } else {
                 ((mb_idx / 2) - mb_width) * 2 + 1
             }
@@ -424,14 +446,16 @@ pub(crate) fn get_neighbor_i4x4_mode(
                 let has_above = if !mbaff {
                     mb_idx >= mb_width
                 } else {
-                    mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
+                    if _mb_field_decoding[mb_idx / 2] { (mb_idx / 2) >= mb_width } else { mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width }
                 };
                 let above_mb = if !has_above {
                     0 // dummy, not used
                 } else if !mbaff {
                     mb_idx - mb_width
+                } else if mb_idx % 2 != 0 && !_mb_field_decoding[mb_idx / 2] {
+                    mb_idx - 1 // Frame-coded: top of same pair
                 } else if mb_idx % 2 != 0 {
-                    mb_idx - 1
+                    ((mb_idx / 2) - mb_width) * 2 + 1 // Field-coded: bottom of above pair
                 } else {
                     (mb_idx / 2 - mb_width) * 2 + 1
                 };
@@ -560,13 +584,15 @@ pub(crate) fn compute_nc(
         let has_above = if !mbaff {
             mb_idx >= mb_width
         } else {
-            mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width
+            if _mb_field_decoding[mb_idx / 2] { (mb_idx / 2) >= mb_width } else { mb_idx % 2 != 0 || (mb_idx / 2) >= mb_width }
         };
         if has_above {
             let above_nb = if !mbaff {
                 mb_idx - mb_width
+            } else if mb_idx % 2 != 0 && !_mb_field_decoding[mb_idx / 2] {
+                mb_idx - 1 // Frame-coded: top of same pair
             } else if mb_idx % 2 != 0 {
-                mb_idx - 1
+                ((mb_idx / 2) - mb_width) * 2 + 1 // Field-coded: bottom of above pair
             } else {
                 (mb_idx / 2 - mb_width) * 2 + 1
             };

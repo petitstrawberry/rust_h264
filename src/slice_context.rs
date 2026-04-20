@@ -186,6 +186,12 @@ impl SliceContext<'_> {
     }
 
     /// Returns the effective num_ref_idx_active for the current MB.
+    /// Returns true if the current MB is field-coded (for CABAC context selection).
+    #[inline]
+    pub(crate) fn is_field_coded(&self, mb_idx: usize) -> bool {
+        self.mbaff && self.mb_field_decoding[mb_idx / 2]
+    }
+
     /// Field-coded MBs double the count (each frame ref → 2 field refs).
     #[inline]
     pub(crate) fn effective_num_ref(&self, mb_idx: usize, num_ref: u32) -> u32 {
@@ -321,16 +327,29 @@ impl SliceContext<'_> {
             Some(above)
         } else {
             let is_top = mb_idx % 2 == 0;
-            if !is_top {
-                // Bottom MB: above is top MB of same pair
+            let pair_addr = mb_idx / 2;
+            let is_field = self.mb_field_decoding[pair_addr];
+            if !is_top && !is_field {
+                // Frame-coded bottom MB: above is top MB of same pair
                 let above = mb_idx - 1;
                 if self.mb_slice_id[above] != self.this_slice_id {
                     return None;
                 }
                 Some(above)
+            } else if !is_top && is_field {
+                // Field-coded bottom MB: above is bottom of above pair (same field)
+                let pair_row = pair_addr / self.mb_width as usize;
+                if pair_row == 0 {
+                    return None;
+                }
+                let above_pair = pair_addr - self.mb_width as usize;
+                let above_mb = above_pair * 2 + 1; // bottom of above pair (same field)
+                if self.mb_slice_id[above_mb] != self.this_slice_id {
+                    return None;
+                }
+                Some(above_mb)
             } else {
                 // Top MB: above is bottom of above pair
-                let pair_addr = mb_idx / 2;
                 let pair_row = pair_addr / self.mb_width as usize;
                 if pair_row == 0 {
                     return None;

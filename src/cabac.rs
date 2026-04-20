@@ -389,6 +389,17 @@ const SIGNIFICANT_COEFF_FLAG_OFFSET: [usize; 6] = [
     402,    // cat 5: luma 8x8
 ];
 
+/// Context base indices for significant_coeff_flag (field mode, spec Table 9-34).
+#[rustfmt::skip]
+const SIGNIFICANT_COEFF_FLAG_FIELD_OFFSET: [usize; 6] = [
+    277,    // cat 0: luma DC (I16x16)
+    277+15, // cat 1: luma AC (I16x16)
+    277+29, // cat 2: luma 4x4
+    277+44, // cat 3: chroma DC
+    277+47, // cat 4: chroma AC
+    436,    // cat 5: luma 8x8
+];
+
 /// Context base indices for last_significant_coeff_flag by block category (frame mode).
 #[rustfmt::skip]
 const LAST_COEFF_FLAG_OFFSET: [usize; 6] = [
@@ -398,6 +409,17 @@ const LAST_COEFF_FLAG_OFFSET: [usize; 6] = [
     166+44, // cat 3
     166+47, // cat 4
     417,    // cat 5: luma 8x8
+];
+
+/// Context base indices for last_significant_coeff_flag (field mode, spec Table 9-34).
+#[rustfmt::skip]
+const LAST_COEFF_FLAG_FIELD_OFFSET: [usize; 6] = [
+    338,    // cat 0
+    338+15, // cat 1
+    338+29, // cat 2
+    338+44, // cat 3
+    338+47, // cat 4
+    451,    // cat 5: luma 8x8
 ];
 
 /// Context base indices for coeff_abs_level_minus1 by block category.
@@ -455,8 +477,29 @@ impl CabacReader<'_> {
         cat: usize,
         max_coeff: usize,
     ) -> (Vec<(usize, i32)>, u8) {
-        let sig_base = SIGNIFICANT_COEFF_FLAG_OFFSET[cat];
-        let last_base = LAST_COEFF_FLAG_OFFSET[cat];
+        self.decode_residual_cabac_field(state, cat, max_coeff, false)
+    }
+
+    /// Decode residual coefficients with field-coded context support.
+    /// For field-coded MBs, the significance and last_coeff contexts use
+    /// different base offsets per spec Table 9-34.
+    pub fn decode_residual_cabac_field(
+        &mut self,
+        state: &mut [u8; 1024],
+        cat: usize,
+        max_coeff: usize,
+        field_coded: bool,
+    ) -> (Vec<(usize, i32)>, u8) {
+        let sig_base = if field_coded {
+            SIGNIFICANT_COEFF_FLAG_FIELD_OFFSET[cat]
+        } else {
+            SIGNIFICANT_COEFF_FLAG_OFFSET[cat]
+        };
+        let last_base = if field_coded {
+            LAST_COEFF_FLAG_FIELD_OFFSET[cat]
+        } else {
+            LAST_COEFF_FLAG_OFFSET[cat]
+        };
         let abs_base = COEFF_ABS_LEVEL_M1_OFFSET[cat];
         let is_8x8 = cat == 5;
 

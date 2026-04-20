@@ -822,8 +822,6 @@ impl Decoder {
                     prev_mb_qp = ctx.prev_mb_qp;
                     last_qp_delta_nonzero = ctx.last_qp_delta_nonzero;
                 }
-
-                // MBAFF CABAC: end-of-slice terminate after bottom MBs
                 if mbaff && mb_idx % 2 != 0 {
                     let term = cr.get_cabac_terminate();
                     if term != 0 {

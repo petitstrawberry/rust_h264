@@ -99,6 +99,7 @@ impl SliceContext<'_> {
         // For non-P/B, set layout now (field_flag already read).
         // For P/B, layout is set after skip/field_flag handling below.
         if !(sp.is_p_slice || sp.is_b_slice) {
+            
             self.set_mb_layout(mb_idx, mb_x, mb_y);
         }
 
@@ -326,7 +327,7 @@ impl SliceContext<'_> {
                         for i8x8 in 0..4 {
                             if cbp_luma & (1 << i8x8) != 0 {
                                 // cat=5: no coded_block_flag, CBP bit is sufficient
-                                let (coeffs, tc) = cr.decode_residual_cabac(st, 5, 64);
+                                let (coeffs, tc) = cr.decode_residual_cabac_field(st, 5, 64, self.is_field_coded(mb_idx));
                                 let tc_per = tc.div_ceil(4);
                                 for sub in 0..4 {
                                     self.nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = tc_per;
@@ -395,7 +396,7 @@ impl SliceContext<'_> {
                                 self.mb_field_decoding,
                                 );
                                 if cr.decode_coded_block_flag(st, 2, left_nz, top_nz) {
-                                    let (coeffs, tc) = cr.decode_residual_cabac(st, 2, 16);
+                                    let (coeffs, tc) = cr.decode_residual_cabac_field(st, 2, 16, self.is_field_coded(mb_idx));
                                     self.nc_luma[mb_idx * 16 + blk] = tc;
                                     for (pos, val) in &coeffs {
                                         let (r, c) = ZIGZAG_4X4[*pos];
@@ -454,7 +455,7 @@ impl SliceContext<'_> {
                             true
                         };
                         if cr.decode_coded_block_flag(st, 3, left_dc_nz, top_dc_nz) {
-                            let (coeffs, _) = cr.decode_residual_cabac(st, 3, 4);
+                            let (coeffs, _) = cr.decode_residual_cabac_field(st, 3, 4, self.is_field_coded(mb_idx));
                             for (p, v) in coeffs {
                                 chroma_dc_cb[p] = v;
                             }
@@ -472,7 +473,7 @@ impl SliceContext<'_> {
                             true
                         };
                         if cr.decode_coded_block_flag(st, 3, left_dc_nz_cr, top_dc_nz_cr) {
-                            let (coeffs, _) = cr.decode_residual_cabac(st, 3, 4);
+                            let (coeffs, _) = cr.decode_residual_cabac_field(st, 3, 4, self.is_field_coded(mb_idx));
                             for (p, v) in coeffs {
                                 chroma_dc_cr[p] = v;
                             }
@@ -512,7 +513,7 @@ impl SliceContext<'_> {
                             self.mb_field_decoding,
                             );
                             if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
-                                let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
+                                let (coeffs, tc) = cr.decode_residual_cabac_field(st, 4, 15, self.is_field_coded(mb_idx));
                                 self.nc_cb[mb_idx * 4 + blk] = tc;
                                 for (p, v) in coeffs {
                                     chroma_ac_cb[blk][p] = v;
@@ -547,7 +548,7 @@ impl SliceContext<'_> {
                             self.mb_field_decoding,
                             );
                             if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
-                                let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
+                                let (coeffs, tc) = cr.decode_residual_cabac_field(st, 4, 15, self.is_field_coded(mb_idx));
                                 self.nc_cr[mb_idx * 4 + blk] = tc;
                                 for (p, v) in coeffs {
                                     chroma_ac_cr[blk][p] = v;
@@ -625,7 +626,7 @@ impl SliceContext<'_> {
                         true
                     };
                     if cr.decode_coded_block_flag(st, 0, dc_left_nz, dc_top_nz) {
-                        let (coeffs, _) = cr.decode_residual_cabac(st, 0, 16);
+                        let (coeffs, _) = cr.decode_residual_cabac_field(st, 0, 16, self.is_field_coded(mb_idx));
                         for (p, v) in coeffs {
                             luma_dc[p] = v;
                         }
@@ -663,7 +664,7 @@ impl SliceContext<'_> {
                             self.mb_field_decoding,
                             );
                             if cr.decode_coded_block_flag(st, 1, left_nz, top_nz) {
-                                let (coeffs, tc) = cr.decode_residual_cabac(st, 1, 15);
+                                let (coeffs, tc) = cr.decode_residual_cabac_field(st, 1, 15, self.is_field_coded(mb_idx));
                                 self.nc_luma[mb_idx * 16 + blk] = tc;
                                 for (p, v) in coeffs {
                                     luma_ac[blk][p] = v;
@@ -746,7 +747,7 @@ impl SliceContext<'_> {
                             true
                         };
                         if cr.decode_coded_block_flag(st, 3, left_dc_nz, top_dc_nz) {
-                            let (coeffs, _) = cr.decode_residual_cabac(st, 3, 4);
+                            let (coeffs, _) = cr.decode_residual_cabac_field(st, 3, 4, self.is_field_coded(mb_idx));
                             for (p, v) in coeffs {
                                 chroma_dc_cb[p] = v;
                             }
@@ -763,7 +764,7 @@ impl SliceContext<'_> {
                             true
                         };
                         if cr.decode_coded_block_flag(st, 3, left_dc_nz_cr, top_dc_nz_cr) {
-                            let (coeffs, _) = cr.decode_residual_cabac(st, 3, 4);
+                            let (coeffs, _) = cr.decode_residual_cabac_field(st, 3, 4, self.is_field_coded(mb_idx));
                             for (p, v) in coeffs {
                                 chroma_dc_cr[p] = v;
                             }
@@ -803,7 +804,7 @@ impl SliceContext<'_> {
                             self.mb_field_decoding,
                             );
                             if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
-                                let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
+                                let (coeffs, tc) = cr.decode_residual_cabac_field(st, 4, 15, self.is_field_coded(mb_idx));
                                 self.nc_cb[mb_idx * 4 + blk] = tc;
                                 for (p, v) in coeffs {
                                     chroma_ac_cb[blk][p] = v;
@@ -838,7 +839,7 @@ impl SliceContext<'_> {
                             self.mb_field_decoding,
                             );
                             if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
-                                let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
+                                let (coeffs, tc) = cr.decode_residual_cabac_field(st, 4, 15, self.is_field_coded(mb_idx));
                                 self.nc_cr[mb_idx * 4 + blk] = tc;
                                 for (p, v) in coeffs {
                                     chroma_ac_cr[blk][p] = v;
@@ -1417,7 +1418,7 @@ impl SliceContext<'_> {
                             }
                             // Note: cat=5 (8x8 luma) does NOT use coded_block_flag.
                             // The CBP luma bit alone indicates coefficients are present.
-                            let (coeffs, tc) = cr.decode_residual_cabac(st, 5, 64);
+                            let (coeffs, tc) = cr.decode_residual_cabac_field(st, 5, 64, self.is_field_coded(mb_idx));
                             let tc_per = tc.div_ceil(4);
                             for sub in 0..4 {
                                 self.nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = tc_per;
@@ -1469,7 +1470,7 @@ impl SliceContext<'_> {
                                 );
                                 let cbf = cr.decode_coded_block_flag(st, 2, left_nz, top_nz);
                                 if cbf {
-                                    let (coeffs, tc) = cr.decode_residual_cabac(st, 2, 16);
+                                    let (coeffs, tc) = cr.decode_residual_cabac_field(st, 2, 16, self.is_field_coded(mb_idx));
                                     self.nc_luma[mb_idx * 16 + blk] = tc;
                                     let mut block_coeffs = [0i32; 16];
                                     for (pos, val) in &coeffs {
@@ -1520,7 +1521,7 @@ impl SliceContext<'_> {
                         false
                     };
                     if cr.decode_coded_block_flag(st, 3, left_dc_nz, top_dc_nz) {
-                        let (coeffs, _) = cr.decode_residual_cabac(st, 3, 4);
+                        let (coeffs, _) = cr.decode_residual_cabac_field(st, 3, 4, self.is_field_coded(mb_idx));
                         for (pos, val) in coeffs {
                             chroma_dc_cb[pos] = val;
                         }
@@ -1537,7 +1538,7 @@ impl SliceContext<'_> {
                         false
                     };
                     if cr.decode_coded_block_flag(st, 3, left_dc_cr, top_dc_cr) {
-                        let (coeffs, _) = cr.decode_residual_cabac(st, 3, 4);
+                        let (coeffs, _) = cr.decode_residual_cabac_field(st, 3, 4, self.is_field_coded(mb_idx));
                         for (pos, val) in coeffs {
                             chroma_dc_cr[pos] = val;
                         }
@@ -1547,6 +1548,7 @@ impl SliceContext<'_> {
                     let chroma_mb_x = mb_x / 2;
                     let lc_off = self.lc_offset;
                     let lc_str = self.lc_stride;
+                    let is_field_mb = self.is_field_coded(mb_idx);
                     for (plane_dc, frame_plane, scale_idx) in [
                         (&mut chroma_dc_cb, &mut self.frame.u, 4usize),
                         (&mut chroma_dc_cr, &mut self.frame.v, 5usize),
@@ -1593,7 +1595,7 @@ impl SliceContext<'_> {
                                 self.mb_field_decoding,
                                 );
                                 if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
-                                    let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
+                                    let (coeffs, tc) = cr.decode_residual_cabac_field(st, 4, 15, is_field_mb);
                                     if scale_idx == 4 {
                                         self.nc_cb[mb_idx * 4 + blk] = tc;
                                     } else {
@@ -2908,7 +2910,7 @@ impl SliceContext<'_> {
                                 continue;
                             }
                             // cat=5: no coded_block_flag, CBP bit is sufficient
-                            let (coeffs, tc) = cr.decode_residual_cabac(st, 5, 64);
+                            let (coeffs, tc) = cr.decode_residual_cabac_field(st, 5, 64, self.is_field_coded(mb_idx));
                             let tc_per = tc.div_ceil(4);
                             for sub in 0..4 {
                                 self.nc_luma[mb_idx * 16 + i8x8 * 4 + sub] = tc_per;
@@ -2958,7 +2960,7 @@ impl SliceContext<'_> {
                                 self.mb_field_decoding,
                                 );
                                 if cr.decode_coded_block_flag(st, 2, left_nz, top_nz) {
-                                    let (coeffs, tc) = cr.decode_residual_cabac(st, 2, 16);
+                                    let (coeffs, tc) = cr.decode_residual_cabac_field(st, 2, 16, self.is_field_coded(mb_idx));
                                     self.nc_luma[mb_idx * 16 + blk] = tc;
                                     let mut block_coeffs = [0i32; 16];
                                     for (pos, val) in &coeffs {
@@ -3008,7 +3010,7 @@ impl SliceContext<'_> {
                         false
                     };
                     if cr.decode_coded_block_flag(st, 3, left_dc_nz, top_dc_nz) {
-                        let (coeffs, _) = cr.decode_residual_cabac(st, 3, 4);
+                        let (coeffs, _) = cr.decode_residual_cabac_field(st, 3, 4, self.is_field_coded(mb_idx));
                         for (pos, val) in coeffs {
                             chroma_dc_cb[pos] = val;
                         }
@@ -3025,7 +3027,7 @@ impl SliceContext<'_> {
                         false
                     };
                     if cr.decode_coded_block_flag(st, 3, left_dc_cr, top_dc_cr) {
-                        let (coeffs, _) = cr.decode_residual_cabac(st, 3, 4);
+                        let (coeffs, _) = cr.decode_residual_cabac_field(st, 3, 4, self.is_field_coded(mb_idx));
                         for (pos, val) in coeffs {
                             chroma_dc_cr[pos] = val;
                         }
@@ -3035,6 +3037,7 @@ impl SliceContext<'_> {
                     let chroma_mb_x = mb_x / 2;
                     let lc_off = self.lc_offset;
                     let lc_str = self.lc_stride;
+                    let is_field_mb = self.is_field_coded(mb_idx);
                     for (plane_dc, frame_plane, scale_idx) in [
                         (&mut chroma_dc_cb, &mut self.frame.u, 4usize),
                         (&mut chroma_dc_cr, &mut self.frame.v, 5usize),
@@ -3081,7 +3084,7 @@ impl SliceContext<'_> {
                                 self.mb_field_decoding,
                                 );
                                 if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
-                                    let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
+                                    let (coeffs, tc) = cr.decode_residual_cabac_field(st, 4, 15, is_field_mb);
                                     if scale_idx == 4 {
                                         self.nc_cb[mb_idx * 4 + blk] = tc;
                                     } else {
@@ -3321,7 +3324,7 @@ impl SliceContext<'_> {
                         continue;
                     }
                     // cat=5: no coded_block_flag, CBP bit is sufficient
-                    let (coeffs, tc) = cr.decode_residual_cabac(st, 5, 64);
+                    let (coeffs, tc) = cr.decode_residual_cabac_field(st, 5, 64, self.is_field_coded(mb_idx));
                     // Distribute nC across sub-blocks
                     let tc_per = tc.div_ceil(4);
                     for sub in 0..4 {
@@ -3393,7 +3396,7 @@ impl SliceContext<'_> {
 
                         let cbf = cr.decode_coded_block_flag(st, 2, left_nz_blk, top_nz_blk);
                         if cbf {
-                            let (coeffs, tc) = cr.decode_residual_cabac(st, 2, 16);
+                            let (coeffs, tc) = cr.decode_residual_cabac_field(st, 2, 16, self.is_field_coded(mb_idx));
                             self.nc_luma[mb_idx * 16 + blk] = tc;
                             for (pos, val) in &coeffs {
                                 let (r, c) = ZIGZAG_4X4[*pos];
@@ -3452,7 +3455,7 @@ impl SliceContext<'_> {
                     true
                 };
                 if cr.decode_coded_block_flag(st, 3, left_dc_nz, top_dc_nz) {
-                    let (coeffs, _tc) = cr.decode_residual_cabac(st, 3, 4);
+                    let (coeffs, _tc) = cr.decode_residual_cabac_field(st, 3, 4, self.is_field_coded(mb_idx));
                     for (pos, val) in coeffs {
                         chroma_dc_cb[pos] = val;
                     }
@@ -3469,7 +3472,7 @@ impl SliceContext<'_> {
                     true
                 };
                 if cr.decode_coded_block_flag(st, 3, left_dc_nz_cr, top_dc_nz_cr) {
-                    let (coeffs, _tc) = cr.decode_residual_cabac(st, 3, 4);
+                    let (coeffs, _tc) = cr.decode_residual_cabac_field(st, 3, 4, self.is_field_coded(mb_idx));
                     for (pos, val) in coeffs {
                         chroma_dc_cr[pos] = val;
                     }
@@ -3508,7 +3511,7 @@ impl SliceContext<'_> {
                     self.mb_field_decoding,
                     );
                     if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
-                        let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
+                        let (coeffs, tc) = cr.decode_residual_cabac_field(st, 4, 15, self.is_field_coded(mb_idx));
                         self.nc_cb[mb_idx * 4 + blk] = tc;
                         for (pos, val) in coeffs {
                             chroma_ac_cb[blk][pos] = val;
@@ -3543,7 +3546,7 @@ impl SliceContext<'_> {
                     self.mb_field_decoding,
                     );
                     if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
-                        let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
+                        let (coeffs, tc) = cr.decode_residual_cabac_field(st, 4, 15, self.is_field_coded(mb_idx));
                         self.nc_cr[mb_idx * 4 + blk] = tc;
                         for (pos, val) in coeffs {
                             chroma_ac_cr[blk][pos] = val;
@@ -3604,13 +3607,11 @@ impl SliceContext<'_> {
             };
             let intra_chroma_pred_mode = cr.decode_chroma_pred_mode(st, left_cm, top_cm);
             self.mb_chroma_pred[mb_idx] = intra_chroma_pred_mode;
-
             let delta = cr.decode_mb_qp_delta(st, self.last_qp_delta_nonzero);
             self.last_qp_delta_nonzero = delta != 0;
             let qp_y = ((self.prev_mb_qp + delta + 52) % 52 + 52) % 52;
             self.prev_mb_qp = qp_y;
             let qp_c = chroma_qp(qp_y, sp.chroma_qp_index_offset);
-
             // Luma DC: cat=0, 16 coefficients
             // CBF context uses bit 8 of neighbor cbp_table (luma DC coded flag)
             let mut luma_dc = [0i32; 16];
@@ -3625,7 +3626,7 @@ impl SliceContext<'_> {
                 true
             };
             if cr.decode_coded_block_flag(st, 0, dc_left_nz, dc_top_nz) {
-                let (coeffs, _tc) = cr.decode_residual_cabac(st, 0, 16);
+                let (coeffs, _tc) = cr.decode_residual_cabac_field(st, 0, 16, self.is_field_coded(mb_idx));
                 for (pos, val) in coeffs {
                     luma_dc[pos] = val;
                 }
@@ -3663,7 +3664,7 @@ impl SliceContext<'_> {
                     self.mb_field_decoding,
                     );
                     if cr.decode_coded_block_flag(st, 1, left_nz, top_nz) {
-                        let (coeffs, tc) = cr.decode_residual_cabac(st, 1, 15);
+                        let (coeffs, tc) = cr.decode_residual_cabac_field(st, 1, 15, self.is_field_coded(mb_idx));
                         self.nc_luma[mb_idx * 16 + blk] = tc;
                         for (pos, val) in coeffs {
                             luma_ac_scan[blk][pos] = val;
@@ -3747,7 +3748,7 @@ impl SliceContext<'_> {
                     true
                 };
                 if cr.decode_coded_block_flag(st, 3, left_dc_nz, top_dc_nz) {
-                    let (coeffs, _tc) = cr.decode_residual_cabac(st, 3, 4);
+                    let (coeffs, _tc) = cr.decode_residual_cabac_field(st, 3, 4, self.is_field_coded(mb_idx));
                     for (pos, val) in coeffs {
                         chroma_dc_cb[pos] = val;
                     }
@@ -3764,7 +3765,7 @@ impl SliceContext<'_> {
                     true
                 };
                 if cr.decode_coded_block_flag(st, 3, left_dc_nz_cr, top_dc_nz_cr) {
-                    let (coeffs, _tc) = cr.decode_residual_cabac(st, 3, 4);
+                    let (coeffs, _tc) = cr.decode_residual_cabac_field(st, 3, 4, self.is_field_coded(mb_idx));
                     for (pos, val) in coeffs {
                         chroma_dc_cr[pos] = val;
                     }
@@ -3802,7 +3803,7 @@ impl SliceContext<'_> {
                     self.mb_field_decoding,
                     );
                     if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
-                        let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
+                        let (coeffs, tc) = cr.decode_residual_cabac_field(st, 4, 15, self.is_field_coded(mb_idx));
                         self.nc_cb[mb_idx * 4 + blk] = tc;
                         for (pos, val) in coeffs {
                             chroma_ac_cb[blk][pos] = val;
@@ -3837,7 +3838,7 @@ impl SliceContext<'_> {
                     self.mb_field_decoding,
                     );
                     if cr.decode_coded_block_flag(st, 4, left_nz, top_nz) {
-                        let (coeffs, tc) = cr.decode_residual_cabac(st, 4, 15);
+                        let (coeffs, tc) = cr.decode_residual_cabac_field(st, 4, 15, self.is_field_coded(mb_idx));
                         self.nc_cr[mb_idx * 4 + blk] = tc;
                         for (pos, val) in coeffs {
                             chroma_ac_cr[blk][pos] = val;

@@ -56,7 +56,6 @@ pub fn parse_pps(rbsp: &[u8], sps: Option<&Sps>) -> Result<Pps, &'static str> {
     let deblocking_filter_control_present_flag = r.read_bit()? != 0;
     let constrained_intra_pred_flag = r.read_bit()? != 0;
     let redundant_pic_cnt_present_flag = r.read_bit()? != 0;
-
     // Extended fields for High profile
     let mut transform_8x8_mode_flag = false;
     let mut pic_scaling_matrix_present_flag = false;
