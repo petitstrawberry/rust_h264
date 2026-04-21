@@ -464,6 +464,7 @@ pub fn luma_mc_stride(
             ref_idx_l1: vec![],
             mb_width: 0,
             is_intra: false,
+            structure: crate::dpb::PictureStructure::Frame,
         };
         for row in 0..block_h {
             for col in 0..block_w {
@@ -1098,6 +1099,7 @@ mod tests {
             ref_idx_l1: vec![],
             mb_width: width / 16,
             is_intra: false,
+            structure: crate::dpb::PictureStructure::Frame,
         })
     }
 

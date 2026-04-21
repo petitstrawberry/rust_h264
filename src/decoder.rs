@@ -95,6 +95,12 @@ struct PictureState {
     mb_field_decoding: Vec<bool>,
     /// True if this picture uses MBAFF (mb_adaptive_frame_field_flag && !field_pic_flag).
     mbaff_frame_flag: bool,
+    /// True if this picture is a field picture (field_pic_flag=1).
+    field_pic_flag: bool,
+    /// True if this is the bottom field (only valid when field_pic_flag=true).
+    bottom_field_flag: bool,
+    /// Full frame height (needed for field picture output combining).
+    frame_height: u32,
 }
 
 /// Streaming H.264 decoder.
@@ -132,6 +138,8 @@ pub struct Decoder {
     dpb: Dpb,
     /// In-progress picture being assembled from one or more slices.
     pending: Option<PictureState>,
+    /// First field of a field-picture pair awaiting its complement for output.
+    pending_field: Option<Frame>,
 }
 
 impl Default for Decoder {
@@ -148,6 +156,7 @@ impl Decoder {
             pps_table: HashMap::new(),
             dpb: Dpb::new(0),
             pending: None,
+            pending_field: None,
         }
     }
 
@@ -340,6 +349,15 @@ impl Decoder {
             ref_idx_l1: ps.ref_idx_store_l1,
             mb_width: ps.mb_width,
             is_intra: ps.is_intra_slice,
+            structure: if ps.field_pic_flag {
+                if ps.bottom_field_flag {
+                    crate::dpb::PictureStructure::BottomField
+                } else {
+                    crate::dpb::PictureStructure::TopField
+                }
+            } else {
+                crate::dpb::PictureStructure::Frame
+            },
         });
 
         self.dpb.insert(pic, reference);
@@ -394,6 +412,62 @@ impl Decoder {
             ps.frame.v = v;
         }
 
+        // For field pictures, combine two fields into one frame for output
+        if ps.field_pic_flag {
+            let field_frame = ps.frame;
+            if let Some(first_field) = self.pending_field.take() {
+                // Second field arrived — combine into a full frame
+                let w = field_frame.width as usize;
+                let full_h = ps.frame_height as usize;
+                let field_h = full_h / 2;
+                let mut y = vec![0u8; w * full_h];
+                let mut u = vec![0u8; (w / 2) * (full_h / 2)];
+                let mut v = vec![0u8; (w / 2) * (full_h / 2)];
+                let cw = w / 2;
+
+                // Determine which is top and which is bottom
+                let (top, bot) = if ps.bottom_field_flag {
+                    (&first_field, &field_frame)
+                } else {
+                    (&field_frame, &first_field)
+                };
+
+                // Interleave luma lines: top→even, bottom→odd
+                for r in 0..field_h {
+                    let src_off = r * w;
+                    y[r * 2 * w..r * 2 * w + w].copy_from_slice(&top.y[src_off..src_off + w]);
+                    y[(r * 2 + 1) * w..(r * 2 + 1) * w + w]
+                        .copy_from_slice(&bot.y[src_off..src_off + w]);
+                }
+                // Interleave chroma lines
+                let ch = full_h / 4;
+                for r in 0..ch {
+                    let src_off = r * cw;
+                    u[r * 2 * cw..r * 2 * cw + cw]
+                        .copy_from_slice(&top.u[src_off..src_off + cw]);
+                    u[(r * 2 + 1) * cw..(r * 2 + 1) * cw + cw]
+                        .copy_from_slice(&bot.u[src_off..src_off + cw]);
+                    v[r * 2 * cw..r * 2 * cw + cw]
+                        .copy_from_slice(&top.v[src_off..src_off + cw]);
+                    v[(r * 2 + 1) * cw..(r * 2 + 1) * cw + cw]
+                        .copy_from_slice(&bot.v[src_off..src_off + cw]);
+                }
+
+                return Some(Frame {
+                    y,
+                    u,
+                    v,
+                    width: w as u32,
+                    height: full_h as u32,
+                    pic_order_cnt: field_frame.pic_order_cnt.min(first_field.pic_order_cnt),
+                });
+            } else {
+                // First field — hold it, return None
+                self.pending_field = Some(field_frame);
+                return None;
+            }
+        }
+
         Some(ps.frame)
     }
 
@@ -417,9 +491,7 @@ impl Decoder {
         {
             return Err(DecodeError::from("unsupported slice type"));
         }
-        if header.field_pic_flag {
-            return Err(DecodeError::Unsupported("field pictures not yet supported"));
-        }
+        let is_field_pic = header.field_pic_flag;
         let is_p_slice = header.slice_type == SliceType::P;
         let is_b_slice = header.slice_type == SliceType::B;
 
@@ -543,12 +615,14 @@ impl Decoder {
         };
 
         let width = sps.width();
-        let height = sps.height();
+        let frame_height = sps.height();
         // Reject absurd dimensions that would cause allocation overflow.
         // H.264 Level 6.2 max is 8192x4320; allow up to 16384x16384 for headroom.
-        if width == 0 || height == 0 || width > 16384 || height > 16384 {
+        if width == 0 || frame_height == 0 || width > 16384 || frame_height > 16384 {
             return Err(DecodeError::InvalidSyntax("SPS dimensions out of range"));
         }
+        // For field pictures, each field has half the frame height
+        let height = if is_field_pic { frame_height / 2 } else { frame_height };
         let mb_width = width.div_ceil(16);
         let mb_height = height.div_ceil(16);
         let coded_width = mb_width * 16;
@@ -614,6 +688,9 @@ impl Decoder {
                 mb_height,
                 mb_field_decoding: vec![false; total_mbs.div_ceil(2)],
                 mbaff_frame_flag: header.mbaff_frame_flag,
+                field_pic_flag: header.field_pic_flag,
+                bottom_field_flag: header.bottom_field_flag,
+                frame_height,
             }
         };
 
@@ -658,6 +735,9 @@ impl Decoder {
             mb_height: _ps_mb_height,
             mb_field_decoding: mut _mb_field_decoding,
             mbaff_frame_flag: _ps_mbaff,
+            field_pic_flag: _ps_field,
+            bottom_field_flag: _ps_bottom,
+            frame_height: _ps_frame_height,
         } = ps;
 
         // Increment slice ID for continuation slices so boundary checks work
@@ -956,6 +1036,9 @@ impl Decoder {
             mb_height,
             mb_field_decoding: _mb_field_decoding,
             mbaff_frame_flag: header.mbaff_frame_flag,
+                field_pic_flag: header.field_pic_flag,
+                bottom_field_flag: header.bottom_field_flag,
+                frame_height,
         });
 
         Ok(())

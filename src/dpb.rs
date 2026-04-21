@@ -20,6 +20,14 @@ pub enum ReferenceStatus {
     LongTerm(u32),
 }
 
+/// Whether a picture is a frame or a field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PictureStructure {
+    Frame,
+    TopField,
+    BottomField,
+}
+
 /// Immutable decoded picture data shared via Rc.
 #[derive(Debug)]
 pub struct DecodedPicture {
@@ -44,6 +52,8 @@ pub struct DecodedPicture {
     pub mb_width: u32,
     /// Whether this picture is intra-only (all MBs are intra).
     pub is_intra: bool,
+    /// Whether this decoded picture is a frame, top field, or bottom field.
+    pub structure: PictureStructure,
 }
 
 /// A DPB entry wrapping an Rc<DecodedPicture> with mutable status.
@@ -343,11 +353,19 @@ impl Dpb {
         };
 
         let top_field_order_cnt = poc_msb.wrapping_add(poc_lsb as i32);
-        // For frames: PicOrderCnt = min(TopFieldOrderCnt, BottomFieldOrderCnt)
-        // BottomFieldOrderCnt = TopFieldOrderCnt + delta_pic_order_cnt_bottom
-        let bottom_field_order_cnt =
-            top_field_order_cnt.wrapping_add(header.delta_pic_order_cnt_bottom);
-        let poc = top_field_order_cnt.min(bottom_field_order_cnt);
+        let poc = if header.field_pic_flag {
+            // Field picture: POC is just this field's order count
+            if header.bottom_field_flag {
+                top_field_order_cnt.wrapping_add(header.delta_pic_order_cnt_bottom)
+            } else {
+                top_field_order_cnt
+            }
+        } else {
+            // Frame: PicOrderCnt = min(TopFieldOrderCnt, BottomFieldOrderCnt)
+            let bottom_field_order_cnt =
+                top_field_order_cnt.wrapping_add(header.delta_pic_order_cnt_bottom);
+            top_field_order_cnt.min(bottom_field_order_cnt)
+        };
 
         if nal_ref_idc > 0 {
             self.prev_poc_msb = poc_msb;
@@ -404,12 +422,22 @@ impl Dpb {
         };
 
         let top_field_order_cnt = expected_poc + header.delta_pic_order_cnt[0];
-        // For frames: PicOrderCnt = min(TopFieldOrderCnt, BottomFieldOrderCnt)
-        // BottomFieldOrderCnt = TopFieldOrderCnt + offset_for_top_to_bottom_field + delta[1]
-        let bottom_field_order_cnt = top_field_order_cnt
-            .wrapping_add(sps.offset_for_top_to_bottom_field)
-            .wrapping_add(header.delta_pic_order_cnt[1]);
-        top_field_order_cnt.min(bottom_field_order_cnt)
+        if header.field_pic_flag {
+            // Field picture: POC is just this field's order count
+            if header.bottom_field_flag {
+                top_field_order_cnt
+                    .wrapping_add(sps.offset_for_top_to_bottom_field)
+                    .wrapping_add(header.delta_pic_order_cnt[1])
+            } else {
+                top_field_order_cnt
+            }
+        } else {
+            // Frame: PicOrderCnt = min(TopFieldOrderCnt, BottomFieldOrderCnt)
+            let bottom_field_order_cnt = top_field_order_cnt
+                .wrapping_add(sps.offset_for_top_to_bottom_field)
+                .wrapping_add(header.delta_pic_order_cnt[1]);
+            top_field_order_cnt.min(bottom_field_order_cnt)
+        }
     }
 
     /// POC type 2 (spec 8.2.1.3) — derived directly from frame_num.
@@ -590,6 +618,7 @@ mod tests {
             ref_idx_l1: vec![],
             mb_width: 1,
             is_intra: false,
+            structure: crate::dpb::PictureStructure::Frame,
         })
     }
 
