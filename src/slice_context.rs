@@ -36,7 +36,7 @@ pub(crate) struct SliceParams<'a> {
     pub is_i_slice: bool,
     pub cabac_init_idc: u32,
 }
-use crate::dpb::DecodedPicture;
+use crate::dpb::{DecodedPicture, PictureStructure};
 use crate::inter_pred;
 use crate::intra_pred::{
     predict_chroma_8x8, predict_intra_16x16, predict_intra_4x4, predict_intra_8x8,
@@ -120,6 +120,28 @@ pub(crate) struct SliceContext<'a> {
     /// True if this is a field picture (field_pic_flag=1). Used to select
     /// field coefficient scan order (spec Table 8-13).
     pub field_pic_flag: bool,
+    /// True if this is the bottom field (only meaningful when field_pic_flag=true).
+    /// Used for chroma MV offset when referencing opposite-parity fields.
+    pub bottom_field_flag: bool,
+}
+
+/// Standalone chroma field MV offset computation (avoids borrow issues).
+pub(crate) fn chroma_field_mv_offset_impl(
+    field_pic_flag: bool,
+    bottom_field_flag: bool,
+    ref_pic: &DecodedPicture,
+) -> i32 {
+    if !field_pic_flag {
+        return 0;
+    }
+    let ref_is_bottom = ref_pic.structure == PictureStructure::BottomField;
+    if bottom_field_flag == ref_is_bottom {
+        0 // same parity
+    } else if bottom_field_flag {
+        2 // bottom referencing top: +2
+    } else {
+        -2 // top referencing bottom: -2
+    }
 }
 
 use crate::deblock::MbType;
@@ -129,6 +151,15 @@ impl SliceContext<'_> {
     /// True for field pictures and for field-coded MBs in MBAFF.
     pub(crate) fn is_field_scan(&self, mb_idx: usize) -> bool {
         self.field_pic_flag || (self.mbaff && self.mb_field_decoding[mb_idx / 2])
+    }
+
+    /// Compute the chroma MV vertical offset for field pictures.
+    /// When a field references a field of opposite parity, the chroma MV needs
+    /// a ±2 eighth-pel offset to compensate for the interlaced chroma sampling
+    /// grid difference (spec 8.4.2.2, FFmpeg h264_mb.c lines 289-293).
+    /// Returns the offset in eighth-pel units (added to the luma MV for chroma MC).
+    pub(crate) fn chroma_field_mv_offset(&self, ref_pic: &DecodedPicture) -> i32 {
+        chroma_field_mv_offset_impl(self.field_pic_flag, self.bottom_field_flag, ref_pic)
     }
 
     /// Set per-MB pixel layout (stride and y-offset) based on field/frame coding.
@@ -392,6 +423,9 @@ impl SliceContext<'_> {
             let cy = mc_cy;
             let cstride = self.lc_stride;
             let cbase = self.lc_offset;
+            // Field picture chroma MV offset for opposite-parity reference
+            let chroma_mv_y_offset = self.chroma_field_mv_offset(ref_pic);
+            let cmv_y = mvp_y as i32 + chroma_mv_y_offset;
             let mut cb_pred = [0u8; 64];
             let mut cr_pred = [0u8; 64];
             inter_pred::chroma_mc(
@@ -401,7 +435,7 @@ impl SliceContext<'_> {
                 cx as i32,
                 cy as i32,
                 mvp_x as i32,
-                mvp_y as i32,
+                cmv_y,
                 8,
                 8,
                 &mut cb_pred,
@@ -413,7 +447,7 @@ impl SliceContext<'_> {
                 cx as i32,
                 cy as i32,
                 mvp_x as i32,
-                mvp_y as i32,
+                cmv_y,
                 8,
                 8,
                 &mut cr_pred,

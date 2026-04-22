@@ -828,6 +828,7 @@ impl Decoder {
                     lc_stride: mb_lc_stride,
                     lc_offset: mb_lc_offset,
                     field_pic_flag: is_field_pic,
+                    bottom_field_flag: header.bottom_field_flag,
                 }
             };
         }
@@ -2050,6 +2051,24 @@ mod tests {
         // Tests field coefficient scan order (spec Table 8-13) and
         // field picture deblocking.
         decode_multiframe_and_compare("jm_field_grad_test", 1, 64, 64);
+    }
+
+    #[test]
+    fn test_jm_field_i() {
+        // 64x64 (combined), 1 frame: JM encoder, Main profile, CAVLC,
+        // field pictures (top=IDR I-slice, bottom=P-slice). QP=10, testsrc2 content.
+        // Tests field P-slice MC referencing top field, including chroma field
+        // MV offset for opposite-parity reference (spec 8.4.2.2).
+        decode_multiframe_and_compare("jm_field_i_test", 1, 64, 64);
+    }
+
+    #[test]
+    fn test_jm_field_chroma() {
+        // 64x64 (combined), 1 frame: JM encoder, Main profile, CAVLC,
+        // field pictures with non-trivial chroma content (U vertical gradient).
+        // QP=10. Tests chroma MC with field parity offset — bottom field
+        // chroma prediction from top field requires +2 eighth-pel vertical shift.
+        decode_multiframe_and_compare("jm_field_chroma_test", 1, 64, 64);
     }
 
     /// Decode a multi-frame stream and compare output YUV SHA-256 hash.
