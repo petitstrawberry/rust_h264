@@ -309,11 +309,18 @@ impl Decoder {
             ReferenceStatus::Unused
         };
 
+        // For MMCO, use CurrPicNum (= 2*frame_num+1 for field pictures)
+        let mmco_curr_pic_num = if ps.field_pic_flag {
+            (ps.frame_num * 2 + 1) as i32
+        } else {
+            ps.frame_num as i32
+        };
         let mut has_mmco5 = false;
         for &(op, param) in &ps.mmco_ops {
             match op {
                 1 => {
-                    let pic_num_to_remove = ps.frame_num as i32 - ((param & 0xFFFF) as i32 + 1);
+                    let pic_num_to_remove =
+                        mmco_curr_pic_num - ((param & 0xFFFF) as i32 + 1);
                     self.dpb.mark_short_term_unused(pic_num_to_remove as u32);
                 }
                 2 => {
@@ -322,7 +329,7 @@ impl Decoder {
                 3 => {
                     let abs_diff_minus1 = param & 0xFFFF;
                     let long_term_frame_idx = param >> 16;
-                    let pic_num = ps.frame_num as i32 - (abs_diff_minus1 as i32 + 1);
+                    let pic_num = mmco_curr_pic_num - (abs_diff_minus1 as i32 + 1);
                     self.dpb
                         .assign_long_term(pic_num as u32, long_term_frame_idx);
                 }
@@ -535,7 +542,9 @@ impl Decoder {
             vec![]
         };
         let mut _ref_pic_list_l0 = if is_b_slice {
-            let mut refs = self.dpb.ref_list_l0_b(current_poc);
+            let mut refs = self
+                .dpb
+                .ref_list_l0_b(current_poc, is_field_pic, header.bottom_field_flag);
             if !refs.is_empty() {
                 while refs.len() < header.num_ref_idx_l0_active as usize {
                     refs.push(refs.last().unwrap().clone());
@@ -546,7 +555,9 @@ impl Decoder {
             vec![]
         };
         let mut _ref_pic_list_l1 = if is_b_slice {
-            let mut refs = self.dpb.ref_list_l1_b(current_poc);
+            let mut refs = self
+                .dpb
+                .ref_list_l1_b(current_poc, is_field_pic, header.bottom_field_flag);
             if !refs.is_empty() {
                 while refs.len() < header.num_ref_idx_l1_active as usize {
                     refs.push(refs.last().unwrap().clone());
@@ -914,13 +925,9 @@ impl Decoder {
                 let cr = cabac_reader.as_mut().unwrap();
                 let st = &mut cabac_state;
 
-                // MBAFF: end_of_slice_flag handled inside decode_cabac_mb
-                // (with MBAFF-adjusted first_mb comparison)
-
-                // MBAFF CABAC: mb_field_decoding_flag
-                // TODO: x264 all-frame MBAFF CABAC streams need investigation.
-                // Disabled for now — infer all pairs as frame-coded.
-
+                // MBAFF: end_of_slice_flag and mb_field_decoding_flag are both
+                // handled inside decode_cabac_mb (contexts 70-72 for field flag,
+                // with MBAFF-adjusted first_mb comparison for terminate).
                 {
                     let mut ctx = make_ctx!();
                     match ctx.decode_cabac_mb(cr, st, &nal.rbsp, mb_idx, mb_x, mb_y, &params)? {

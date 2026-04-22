@@ -161,10 +161,16 @@ impl Dpb {
         refs
     }
 
-    /// Build ref_pic_list_0 for B slices (spec 8.2.4.2.3).
+    /// Build ref_pic_list_0 for B slices (spec 8.2.4.2.3 / 8.2.4.2.5).
     /// Short-term refs with POC < current sorted by descending POC,
     /// then refs with POC > current sorted by ascending POC.
-    pub fn ref_list_l0_b(&self, current_poc: i32) -> Vec<Rc<DecodedPicture>> {
+    /// For field pictures, additionally group by frame_num with same-parity first.
+    pub fn ref_list_l0_b(
+        &self,
+        current_poc: i32,
+        is_field_pic: bool,
+        bottom_field_flag: bool,
+    ) -> Vec<Rc<DecodedPicture>> {
         let short_term: Vec<_> = self
             .entries
             .iter()
@@ -187,16 +193,27 @@ impl Dpb {
         after.sort_by(|a, b| a.pic_order_cnt.cmp(&b.pic_order_cnt)); // ascending
 
         before.extend(after);
+
+        // For field pictures: within each frame_num group, same-parity first
+        if is_field_pic {
+            Self::field_parity_interleave(&mut before, bottom_field_flag);
+        }
+
         // Append long-term refs (spec 8.2.4.2.3)
         before.extend(self.long_term_ref_list());
         before
     }
 
-    /// Build ref_pic_list_1 for B slices (spec 8.2.4.2.4).
+    /// Build ref_pic_list_1 for B slices (spec 8.2.4.2.4 / 8.2.4.2.5).
     /// Short-term refs with POC > current sorted by ascending POC,
     /// then refs with POC <= current sorted by descending POC.
     /// If L1 == L0 and has more than one entry, swap the first two.
-    pub fn ref_list_l1_b(&self, current_poc: i32) -> Vec<Rc<DecodedPicture>> {
+    pub fn ref_list_l1_b(
+        &self,
+        current_poc: i32,
+        is_field_pic: bool,
+        bottom_field_flag: bool,
+    ) -> Vec<Rc<DecodedPicture>> {
         let short_term: Vec<_> = self
             .entries
             .iter()
@@ -219,11 +236,17 @@ impl Dpb {
         before.sort_by(|a, b| b.pic_order_cnt.cmp(&a.pic_order_cnt)); // descending
 
         after.extend(before);
+
+        // For field pictures: within each frame_num group, same-parity first
+        if is_field_pic {
+            Self::field_parity_interleave(&mut after, bottom_field_flag);
+        }
+
         // Append long-term refs (spec 8.2.4.2.4)
         after.extend(self.long_term_ref_list());
 
         // Spec 8.2.4.2.4: if L1 == L0 and has more than one entry, swap first two
-        let l0 = self.ref_list_l0_b(current_poc);
+        let l0 = self.ref_list_l0_b(current_poc, is_field_pic, bottom_field_flag);
         if after.len() > 1
             && after.len() == l0.len()
             && after
@@ -235,6 +258,30 @@ impl Dpb {
         }
 
         after
+    }
+
+    /// For field pictures: within runs of entries sharing the same frame_num,
+    /// put same-parity fields before opposite-parity (spec 8.2.4.2.5).
+    fn field_parity_interleave(list: &mut [Rc<DecodedPicture>], bottom_field_flag: bool) {
+        let mut i = 0;
+        while i < list.len() {
+            let fn_val = list[i].frame_num;
+            let mut j = i + 1;
+            while j < list.len() && list[j].frame_num == fn_val {
+                j += 1;
+            }
+            // [i..j) is a run with the same frame_num
+            if j - i == 2 {
+                let a_same =
+                    (list[i].structure == PictureStructure::BottomField) == bottom_field_flag;
+                let b_same =
+                    (list[i + 1].structure == PictureStructure::BottomField) == bottom_field_flag;
+                if !a_same && b_same {
+                    list.swap(i, i + 1);
+                }
+            }
+            i = j;
+        }
     }
 
     /// Apply ref_pic_list_modification to reorder a reference list (spec 8.2.4.3).
@@ -750,7 +797,7 @@ mod tests {
         dpb.insert(make_pic(3, 6), ReferenceStatus::ShortTerm);
         dpb.insert(make_pic(4, 8), ReferenceStatus::ShortTerm);
 
-        let l0 = dpb.ref_list_l0_b(5);
+        let l0 = dpb.ref_list_l0_b(5, false, false);
         // Before (POC <= 5): 4, 2, 0 (descending POC)
         // After (POC > 5): 6, 8 (ascending POC)
         assert_eq!(l0.len(), 5);
@@ -770,7 +817,7 @@ mod tests {
         dpb.insert(make_pic(3, 6), ReferenceStatus::ShortTerm);
         dpb.insert(make_pic(4, 8), ReferenceStatus::ShortTerm);
 
-        let l1 = dpb.ref_list_l1_b(5);
+        let l1 = dpb.ref_list_l1_b(5, false, false);
         // After (POC > 5): 6, 8 (ascending POC)
         // Before (POC <= 5): 4, 2, 0 (descending POC)
         assert_eq!(l1.len(), 5);

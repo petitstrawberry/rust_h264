@@ -822,6 +822,8 @@ impl SliceContext<'_> {
                     } else {
                         &rl1.v[c_ref_off_l1..]
                     };
+                    let cmv_y0 = mv0[1] as i32 + self.chroma_field_mv_offset(rl0);
+                    let cmv_y1 = mv1[1] as i32 + self.chroma_field_mv_offset(rl1);
                     inter_pred::chroma_mc(
                         cr0,
                         c_ref_stride_l0,
@@ -829,7 +831,7 @@ impl SliceContext<'_> {
                         (cx + cblk_col) as i32,
                         (mc_cy_l0 + cblk_row) as i32,
                         mv0[0] as i32,
-                        mv0[1] as i32,
+                        cmv_y0,
                         4,
                         4,
                         &mut c0,
@@ -841,7 +843,7 @@ impl SliceContext<'_> {
                         (cx + cblk_col) as i32,
                         (mc_cy_l1 + cblk_row) as i32,
                         mv1[0] as i32,
-                        mv1[1] as i32,
+                        cmv_y1,
                         4,
                         4,
                         &mut c1,
@@ -866,6 +868,7 @@ impl SliceContext<'_> {
                     } else {
                         &ref_pic.v[c_ref_off..]
                     };
+                    let cmv_y = mv0[1] as i32 + self.chroma_field_mv_offset(ref_pic);
                     inter_pred::chroma_mc(
                         cr,
                         c_ref_stride,
@@ -873,7 +876,7 @@ impl SliceContext<'_> {
                         (cx + cblk_col) as i32,
                         (mc_cy + cblk_row) as i32,
                         mv0[0] as i32,
-                        mv0[1] as i32,
+                        cmv_y,
                         4,
                         4,
                         &mut cblk_pred,
@@ -892,6 +895,7 @@ impl SliceContext<'_> {
                     } else {
                         &ref_pic.v[c_ref_off..]
                     };
+                    let cmv_y = mv1[1] as i32 + self.chroma_field_mv_offset(ref_pic);
                     inter_pred::chroma_mc(
                         cr,
                         c_ref_stride,
@@ -899,7 +903,7 @@ impl SliceContext<'_> {
                         (cx + cblk_col) as i32,
                         (mc_cy + cblk_row) as i32,
                         mv1[0] as i32,
-                        mv1[1] as i32,
+                        cmv_y,
                         4,
                         4,
                         &mut cblk_pred,
