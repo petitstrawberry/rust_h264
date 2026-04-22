@@ -12,7 +12,7 @@ use crate::residual::{
     chroma_qp, dequant_4x4_full, dequant_8x8, dequant_chroma_dc, dequant_luma_dc_i16x16,
     inverse_dct_4x4, inverse_dct_8x8, inverse_hadamard_2x2, inverse_hadamard_4x4,
     BLOCK_INDEX_TO_OFFSET, CBP_INTER_TABLE, CBP_INTRA_TABLE, OFFSET_TO_BLOCK, ZIGZAG_4X4,
-    ZIGZAG_8X8_CAVLC,
+    ZIGZAG_4X4_FIELD, ZIGZAG_8X8_CAVLC, ZIGZAG_8X8_CAVLC_FIELD,
 };
 use crate::slice_context::{SliceContext, SliceParams};
 
@@ -28,6 +28,15 @@ impl SliceContext<'_> {
         mb_y: usize,
         sp: &SliceParams,
     ) -> Result<(), DecodeError> {
+        // Select field or frame coefficient scan tables
+        let field_scan = self.is_field_scan(mb_idx);
+        let zigzag_4x4 = if field_scan { &ZIGZAG_4X4_FIELD } else { &ZIGZAG_4X4 };
+        let zigzag_8x8_cavlc = if field_scan {
+            &ZIGZAG_8X8_CAVLC_FIELD
+        } else {
+            &ZIGZAG_8X8_CAVLC
+        };
+
         let raw_mb_type = reader.read_ue()?;
         // For P slices, mb_type >= 5 means intra (subtract 5)
         // For B slices, mb_type >= 23 means intra (subtract 23)
@@ -808,7 +817,7 @@ impl SliceContext<'_> {
                         let scan_base = i4x4 * 16;
                         for k in 0..16 {
                             if quad_coeffs[k] != 0 {
-                                block_8x8[ZIGZAG_8X8_CAVLC[scan_base + k]] = quad_coeffs[k];
+                                block_8x8[zigzag_8x8_cavlc[scan_base + k]] = quad_coeffs[k];
                             }
                         }
                     }
@@ -842,7 +851,7 @@ impl SliceContext<'_> {
 
                         let mut raster = [0i32; 16];
                         for i in 0..16 {
-                            let (r, c) = ZIGZAG_4X4[i];
+                            let (r, c) = zigzag_4x4[i];
                             raster[r * 4 + c] = block_coeffs[i];
                         }
                         // Use inter scaling list (index 3) for luma
@@ -1102,7 +1111,7 @@ impl SliceContext<'_> {
                     block_raster[0] = plane_dc[blk];
                     if cbp_chroma >= 2 {
                         for scan_idx in 0..15 {
-                            let (r, c) = ZIGZAG_4X4[scan_idx + 1];
+                            let (r, c) = zigzag_4x4[scan_idx + 1];
                             block_raster[r * 4 + c] = plane_ac[blk][scan_idx];
                         }
                         dequant_4x4_ac_raster(&mut block_raster, qp_c, chroma_scale);
@@ -1489,7 +1498,7 @@ impl SliceContext<'_> {
                         let scan_base = i4x4 * 16;
                         for k in 0..16 {
                             if quad_coeffs[k] != 0 {
-                                block_8x8[ZIGZAG_8X8_CAVLC[scan_base + k]] = quad_coeffs[k];
+                                block_8x8[zigzag_8x8_cavlc[scan_base + k]] = quad_coeffs[k];
                             }
                         }
                     }
@@ -1525,7 +1534,7 @@ impl SliceContext<'_> {
 
                         let mut raster = [0i32; 16];
                         for i in 0..16 {
-                            let (r, c) = ZIGZAG_4X4[i];
+                            let (r, c) = zigzag_4x4[i];
                             raster[r * 4 + c] = block_coeffs[i];
                         }
                         dequant_4x4_full(&mut raster, qp_y, &sp.scaling_list_4x4[3]);
@@ -1678,7 +1687,7 @@ impl SliceContext<'_> {
                         block_raster[0] = plane_dc[blk];
                         if cbp_chroma >= 2 {
                             for scan_idx in 0..15 {
-                                let (r, c) = ZIGZAG_4X4[scan_idx + 1];
+                                let (r, c) = zigzag_4x4[scan_idx + 1];
                                 block_raster[r * 4 + c] = plane_ac[blk][scan_idx];
                             }
                             dequant_4x4_ac_raster(&mut block_raster, qp_c, chroma_scale);
@@ -1914,7 +1923,7 @@ impl SliceContext<'_> {
                         let scan_base = i4x4 * 16;
                         for k in 0..16 {
                             if quad_coeffs[k] != 0 {
-                                block_8x8[ZIGZAG_8X8_CAVLC[scan_base + k]] = quad_coeffs[k];
+                                block_8x8[zigzag_8x8_cavlc[scan_base + k]] = quad_coeffs[k];
                             }
                         }
                     }
@@ -1969,7 +1978,7 @@ impl SliceContext<'_> {
                         // Unzigzag: convert from zigzag scan order to raster order
                         let mut raster = [0i32; 16];
                         for i in 0..16 {
-                            let (r, c) = ZIGZAG_4X4[i];
+                            let (r, c) = zigzag_4x4[i];
                             raster[r * 4 + c] = block_coeffs[i];
                         }
                         block_coeffs = raster;
@@ -2045,7 +2054,7 @@ impl SliceContext<'_> {
             // Unzigzag DC, Hadamard, dequant
             let mut luma_dc_raster = [0i32; 16];
             for i in 0..16 {
-                let (r, c) = ZIGZAG_4X4[i];
+                let (r, c) = zigzag_4x4[i];
                 luma_dc_raster[r * 4 + c] = luma_dc[i];
             }
             inverse_hadamard_4x4(&mut luma_dc_raster);
@@ -2063,7 +2072,7 @@ impl SliceContext<'_> {
 
                 if cbp_luma != 0 {
                     for scan_idx in 0..15 {
-                        let (r, c) = ZIGZAG_4X4[scan_idx + 1];
+                        let (r, c) = zigzag_4x4[scan_idx + 1];
                         block_raster[r * 4 + c] = luma_ac_scan[blk][scan_idx];
                     }
                     dequant_4x4_ac_raster(&mut block_raster, qp_y, &sp.scaling_list_4x4[0]);
@@ -2221,7 +2230,7 @@ impl SliceContext<'_> {
 
                 if cbp_chroma >= 2 {
                     for scan_idx in 0..15 {
-                        let (r, c) = ZIGZAG_4X4[scan_idx + 1];
+                        let (r, c) = zigzag_4x4[scan_idx + 1];
                         block_raster[r * 4 + c] = plane_ac_scan[blk][scan_idx];
                     }
                     dequant_4x4_ac_raster(&mut block_raster, qp_c, chroma_scale);

@@ -47,7 +47,9 @@ use crate::mv_pred::{
 };
 use crate::neighbor::dequant_4x4_ac_raster;
 use crate::residual::BLOCK_INDEX_TO_OFFSET;
-use crate::residual::{dequant_chroma_dc, inverse_dct_4x4, inverse_hadamard_2x2, ZIGZAG_4X4};
+use crate::residual::{
+    dequant_chroma_dc, inverse_dct_4x4, inverse_hadamard_2x2, ZIGZAG_4X4, ZIGZAG_4X4_FIELD,
+};
 
 /// Mutable per-slice state passed to MB decode routines.
 ///
@@ -114,11 +116,21 @@ pub(crate) struct SliceContext<'a> {
     pub ly_offset: usize,
     pub lc_stride: usize,
     pub lc_offset: usize,
+
+    /// True if this is a field picture (field_pic_flag=1). Used to select
+    /// field coefficient scan order (spec Table 8-13).
+    pub field_pic_flag: bool,
 }
 
 use crate::deblock::MbType;
 
 impl SliceContext<'_> {
+    /// Returns true if the current MB uses field coefficient scan order.
+    /// True for field pictures and for field-coded MBs in MBAFF.
+    pub(crate) fn is_field_scan(&self, mb_idx: usize) -> bool {
+        self.field_pic_flag || (self.mbaff && self.mb_field_decoding[mb_idx / 2])
+    }
+
     /// Set per-MB pixel layout (stride and y-offset) based on field/frame coding.
     /// Must be called at the start of each MB decode.
     pub(crate) fn set_mb_layout(&mut self, mb_idx: usize, mb_x: usize, mb_y: usize) {
@@ -924,6 +936,7 @@ impl SliceContext<'_> {
         qp_c: i32,
         chroma_scale: &[u8; 16],
         mb_x: usize,
+        mb_idx: usize,
     ) {
         let chroma_mb_x = mb_x / 2;
 
@@ -938,8 +951,13 @@ impl SliceContext<'_> {
             let mut block_raster = [0i32; 16];
             block_raster[0] = plane_dc[blk];
             if cbp_chroma >= 2 {
+                let zigzag = if self.is_field_scan(mb_idx) {
+                    &ZIGZAG_4X4_FIELD
+                } else {
+                    &ZIGZAG_4X4
+                };
                 for scan_idx in 0..15 {
-                    let (r, c) = ZIGZAG_4X4[scan_idx + 1];
+                    let (r, c) = zigzag[scan_idx + 1];
                     block_raster[r * 4 + c] = plane_ac[blk][scan_idx];
                 }
                 dequant_4x4_ac_raster(&mut block_raster, qp_c, chroma_scale);

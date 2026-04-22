@@ -13,7 +13,8 @@ use crate::neighbor::{
 use crate::residual::{
     chroma_qp, dequant_4x4_full, dequant_8x8, dequant_chroma_dc, dequant_luma_dc_i16x16,
     inverse_dct_4x4, inverse_dct_8x8, inverse_hadamard_2x2, inverse_hadamard_4x4,
-    BLOCK_INDEX_TO_OFFSET, OFFSET_TO_BLOCK, ZIGZAG_4X4, ZIGZAG_8X8_CABAC,
+    BLOCK_INDEX_TO_OFFSET, OFFSET_TO_BLOCK, ZIGZAG_4X4, ZIGZAG_4X4_FIELD, ZIGZAG_8X8_CABAC,
+    ZIGZAG_8X8_CABAC_FIELD,
 };
 use crate::slice_context::{SliceContext, SliceParams};
 
@@ -83,6 +84,15 @@ impl SliceContext<'_> {
         if should_check_terminate && cr.get_cabac_terminate() != 0 {
             return Ok(CabacMbResult::EndOfSlice);
         }
+
+        // Select field or frame coefficient scan tables
+        let field_scan = self.is_field_scan(mb_idx);
+        let zigzag_4x4 = if field_scan { &ZIGZAG_4X4_FIELD } else { &ZIGZAG_4X4 };
+        let zigzag_8x8_cabac = if field_scan {
+            &ZIGZAG_8X8_CABAC_FIELD
+        } else {
+            &ZIGZAG_8X8_CABAC
+        };
 
         // MBAFF: decode mb_field_decoding_flag (spec 7.3.4, contexts 70-72)
         // For I-slices: decoded for all top MBs.
@@ -335,7 +345,7 @@ impl SliceContext<'_> {
                                 }
                                 let mut block_8x8 = [0i32; 64];
                                 for (pos, val) in &coeffs {
-                                    block_8x8[ZIGZAG_8X8_CABAC[*pos]] = *val;
+                                    block_8x8[zigzag_8x8_cabac[*pos]] = *val;
                                 }
                                 dequant_8x8(&mut block_8x8, qp_y, &sp.scaling_list_8x8[0]);
                                 inverse_dct_8x8(&mut block_8x8);
@@ -402,7 +412,7 @@ impl SliceContext<'_> {
                                     );
                                     self.nc_luma[mb_idx * 16 + blk] = tc;
                                     for (pos, val) in &coeffs {
-                                        let (r, c) = ZIGZAG_4X4[*pos];
+                                        let (r, c) = zigzag_4x4[*pos];
                                         block_coeffs[r * 4 + c] = *val;
                                     }
                                     dequant_4x4_full(
@@ -586,6 +596,7 @@ impl SliceContext<'_> {
                             _qp_c,
                             &sp.scaling_list_4x4[1],
                             mb_x,
+                            mb_idx,
                         );
                         self.reconstruct_chroma_plane(
                             &mut chroma_dc_cr,
@@ -596,6 +607,7 @@ impl SliceContext<'_> {
                             _qp_c,
                             &sp.scaling_list_4x4[2],
                             mb_x,
+                            mb_idx,
                         );
                     }
                     self.mb_info[mb_idx] = MbInfo {
@@ -696,7 +708,7 @@ impl SliceContext<'_> {
                     // Reconstruct luma: unzigzag DC, Hadamard, dequant
                     let mut luma_dc_raster = [0i32; 16];
                     for i in 0..16 {
-                        let (r, c) = ZIGZAG_4X4[i];
+                        let (r, c) = zigzag_4x4[i];
                         luma_dc_raster[r * 4 + c] = luma_dc[i];
                     }
                     inverse_hadamard_4x4(&mut luma_dc_raster);
@@ -713,7 +725,7 @@ impl SliceContext<'_> {
 
                         if cbp_luma != 0 {
                             for scan_idx in 0..15 {
-                                let (r, c) = ZIGZAG_4X4[scan_idx + 1];
+                                let (r, c) = zigzag_4x4[scan_idx + 1];
                                 block_raster[r * 4 + c] = luma_ac[blk][scan_idx];
                             }
                             dequant_4x4_ac_raster(&mut block_raster, qp_y, &sp.scaling_list_4x4[0]);
@@ -894,6 +906,7 @@ impl SliceContext<'_> {
                             qp_c,
                             &sp.scaling_list_4x4[1],
                             mb_x,
+                            mb_idx,
                         );
                         self.reconstruct_chroma_plane(
                             &mut chroma_dc_cr,
@@ -904,6 +917,7 @@ impl SliceContext<'_> {
                             qp_c,
                             &sp.scaling_list_4x4[2],
                             mb_x,
+                            mb_idx,
                         );
                     }
 
@@ -1477,7 +1491,7 @@ impl SliceContext<'_> {
                             }
                             let mut block_8x8 = [0i32; 64];
                             for (pos, val) in &coeffs {
-                                block_8x8[ZIGZAG_8X8_CABAC[*pos]] = *val;
+                                block_8x8[zigzag_8x8_cabac[*pos]] = *val;
                             }
                             dequant_8x8(&mut block_8x8, qp_y, scale_8x8);
                             inverse_dct_8x8(&mut block_8x8);
@@ -1529,7 +1543,7 @@ impl SliceContext<'_> {
                                     self.nc_luma[mb_idx * 16 + blk] = tc;
                                     let mut block_coeffs = [0i32; 16];
                                     for (pos, val) in &coeffs {
-                                        let (r, c) = ZIGZAG_4X4[*pos];
+                                        let (r, c) = zigzag_4x4[*pos];
                                         block_coeffs[r * 4 + c] = *val;
                                     }
                                     dequant_4x4_full(
@@ -1659,7 +1673,7 @@ impl SliceContext<'_> {
                                         self.nc_cr[mb_idx * 4 + blk] = tc;
                                     }
                                     for (pos, val) in coeffs {
-                                        let (r, c) = ZIGZAG_4X4[pos + 1];
+                                        let (r, c) = zigzag_4x4[pos + 1];
                                         block_raster[r * 4 + c] = val;
                                     }
                                     dequant_4x4_ac_raster(&mut block_raster, qp_c, chroma_scale);
@@ -3059,7 +3073,7 @@ impl SliceContext<'_> {
                             }
                             let mut block_8x8 = [0i32; 64];
                             for (pos, val) in &coeffs {
-                                block_8x8[ZIGZAG_8X8_CABAC[*pos]] = *val;
+                                block_8x8[zigzag_8x8_cabac[*pos]] = *val;
                             }
                             dequant_8x8(&mut block_8x8, qp_y, scale_8x8);
                             inverse_dct_8x8(&mut block_8x8);
@@ -3109,7 +3123,7 @@ impl SliceContext<'_> {
                                     self.nc_luma[mb_idx * 16 + blk] = tc;
                                     let mut block_coeffs = [0i32; 16];
                                     for (pos, val) in &coeffs {
-                                        let (r, c) = ZIGZAG_4X4[*pos];
+                                        let (r, c) = zigzag_4x4[*pos];
                                         block_coeffs[r * 4 + c] = *val;
                                     }
                                     dequant_4x4_full(
@@ -3238,7 +3252,7 @@ impl SliceContext<'_> {
                                         self.nc_cr[mb_idx * 4 + blk] = tc;
                                     }
                                     for (pos, val) in coeffs {
-                                        let (r, c) = ZIGZAG_4X4[pos + 1];
+                                        let (r, c) = zigzag_4x4[pos + 1];
                                         block_raster[r * 4 + c] = val;
                                     }
                                     dequant_4x4_ac_raster(&mut block_raster, qp_c, chroma_scale);
@@ -3477,7 +3491,7 @@ impl SliceContext<'_> {
                     }
                     let mut block_8x8 = [0i32; 64];
                     for (pos, val) in &coeffs {
-                        block_8x8[ZIGZAG_8X8_CABAC[*pos]] = *val;
+                        block_8x8[zigzag_8x8_cabac[*pos]] = *val;
                     }
                     dequant_8x8(&mut block_8x8, qp_y, &sp.scaling_list_8x8[0]);
                     inverse_dct_8x8(&mut block_8x8);
@@ -3546,7 +3560,7 @@ impl SliceContext<'_> {
                             );
                             self.nc_luma[mb_idx * 16 + blk] = tc;
                             for (pos, val) in &coeffs {
-                                let (r, c) = ZIGZAG_4X4[*pos];
+                                let (r, c) = zigzag_4x4[*pos];
                                 block_coeffs[r * 4 + c] = *val;
                             }
                             dequant_4x4_full(&mut block_coeffs, qp_y, &sp.scaling_list_4x4[0]);
@@ -3712,6 +3726,7 @@ impl SliceContext<'_> {
                     _qp_c,
                     &sp.scaling_list_4x4[1],
                     mb_x,
+                    mb_idx,
                 );
                 self.reconstruct_chroma_plane(
                     &mut chroma_dc_cr,
@@ -3722,6 +3737,7 @@ impl SliceContext<'_> {
                     _qp_c,
                     &sp.scaling_list_4x4[2],
                     mb_x,
+                    mb_idx,
                 );
             }
 
@@ -3820,7 +3836,7 @@ impl SliceContext<'_> {
             // Unzigzag DC, Hadamard, dequant
             let mut luma_dc_raster = [0i32; 16];
             for i in 0..16 {
-                let (r, c) = ZIGZAG_4X4[i];
+                let (r, c) = zigzag_4x4[i];
                 luma_dc_raster[r * 4 + c] = luma_dc[i];
             }
             inverse_hadamard_4x4(&mut luma_dc_raster);
@@ -3838,7 +3854,7 @@ impl SliceContext<'_> {
 
                 if cbp_luma != 0 {
                     for scan_idx in 0..15 {
-                        let (r, c) = ZIGZAG_4X4[scan_idx + 1];
+                        let (r, c) = zigzag_4x4[scan_idx + 1];
                         block_raster[r * 4 + c] = luma_ac_scan[blk][scan_idx];
                     }
                     dequant_4x4_ac_raster(&mut block_raster, qp_y, &sp.scaling_list_4x4[0]);
@@ -3999,6 +4015,7 @@ impl SliceContext<'_> {
                     qp_c,
                     &sp.scaling_list_4x4[1],
                     mb_x,
+                    mb_idx,
                 );
                 self.reconstruct_chroma_plane(
                     &mut chroma_dc_cr,
@@ -4009,6 +4026,7 @@ impl SliceContext<'_> {
                     qp_c,
                     &sp.scaling_list_4x4[2],
                     mb_x,
+                    mb_idx,
                 );
             }
 

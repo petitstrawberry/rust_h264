@@ -249,7 +249,13 @@ impl Decoder {
     /// final frame, which is otherwise held internally awaiting a new picture
     /// to trigger its release.
     pub fn flush(&mut self) -> Option<Frame> {
-        self.finalize_pending()
+        let frame = self.finalize_pending();
+        if frame.is_some() {
+            return frame;
+        }
+        // If a single field is pending (complement never arrived), output it
+        // as a half-height frame rather than losing it.
+        self.pending_field.take()
     }
 
     /// Frame rate from the most recently parsed SPS's VUI timing info, as
@@ -821,6 +827,7 @@ impl Decoder {
                     ly_offset: mb_ly_offset,
                     lc_stride: mb_lc_stride,
                     lc_offset: mb_lc_offset,
+                    field_pic_flag: is_field_pic,
                 }
             };
         }
@@ -2026,6 +2033,23 @@ mod tests {
         // 64x64, 6 frames: JM encoder, Baseline profile, CAVLC,
         // pic_order_cnt_type=2 (frame_num-derived POC). Tests POC type 2 computation.
         decode_multiframe_and_compare("jm_poc_type2_test", 6, 64, 64);
+    }
+
+    #[test]
+    fn test_jm_field_flat() {
+        // 64x64 (combined), 1 frame: JM encoder, Main profile, CAVLC,
+        // field pictures (field_pic_flag=1) with flat gray content (128).
+        // Tests basic field picture decode, field combining, and deblocking.
+        decode_multiframe_and_compare("jm_field_flat_test", 1, 64, 64);
+    }
+
+    #[test]
+    fn test_jm_field_grad() {
+        // 64x64 (combined), 1 frame: JM encoder, Main profile, CAVLC,
+        // field pictures with vertical gradient content. QP=26.
+        // Tests field coefficient scan order (spec Table 8-13) and
+        // field picture deblocking.
+        decode_multiframe_and_compare("jm_field_grad_test", 1, 64, 64);
     }
 
     /// Decode a multi-frame stream and compare output YUV SHA-256 hash.
