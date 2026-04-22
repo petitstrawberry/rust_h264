@@ -98,25 +98,64 @@ impl Dpb {
     pub fn insert(&mut self, pic: Rc<DecodedPicture>, reference: ReferenceStatus) {
         // Sliding window only applies to short-term references (spec 8.2.5.3)
         if reference == ReferenceStatus::ShortTerm {
-            self.sliding_window_mark();
+            // Don't evict the complementary field of the picture being inserted.
+            // Two fields with the same frame_num form a pair and count as one
+            // reference frame (spec 7.4.3.1). Skip eviction if the new field
+            // completes an existing pair.
+            let completes_pair = pic.structure != PictureStructure::Frame
+                && self.entries.iter().any(|e| {
+                    e.reference == ReferenceStatus::ShortTerm
+                        && e.pic.frame_num == pic.frame_num
+                        && e.pic.structure != pic.structure
+                        && e.pic.structure != PictureStructure::Frame
+                });
+            if !completes_pair {
+                self.sliding_window_mark();
+            }
         }
         self.entries.push(DpbEntry { pic, reference });
         self.remove_unused();
     }
 
     /// Get the list of short-term reference pictures, sorted by descending PicNum.
-    /// Used to build ref_pic_list_0 for P slices (spec 8.2.4.2.1).
-    /// PicNum = FrameNumWrap = frame_num when frame_num hasn't wrapped, but after
-    /// wraparound we sort by POC (descending) which correctly orders by recency.
-    pub fn short_term_ref_list(&self) -> Vec<Rc<DecodedPicture>> {
+    /// Used to build ref_pic_list_0 for P slices (spec 8.2.4.2.1 / 8.2.4.2.5).
+    ///
+    /// For frame pictures (`is_field_pic=false`): standard frame ordering by descending POC.
+    /// For field pictures (`is_field_pic=true`): field ordering per spec 8.2.4.2.5 —
+    /// group fields by frame_num, sort groups by descending FrameNumWrap (POC proxy),
+    /// within each group emit same-parity field before opposite-parity field.
+    pub fn short_term_ref_list(
+        &self,
+        is_field_pic: bool,
+        bottom_field_flag: bool,
+    ) -> Vec<Rc<DecodedPicture>> {
         let mut refs: Vec<_> = self
             .entries
             .iter()
             .filter(|e| e.reference == ReferenceStatus::ShortTerm)
             .map(|e| e.pic.clone())
             .collect();
-        // Sort by descending POC as a proxy for recency (handles frame_num wraparound).
-        refs.sort_by(|a, b| b.pic_order_cnt.cmp(&a.pic_order_cnt));
+
+        if is_field_pic {
+            // Spec 8.2.4.2.5: field picture P-slice reference list initialization.
+            // Group by frame_num, sort groups by descending POC (proxy for FrameNumWrap),
+            // within each group same-parity field first.
+            refs.sort_by(|a, b| {
+                // Primary: descending by FrameNumWrap (use POC as proxy)
+                let poc_cmp = b.pic_order_cnt.cmp(&a.pic_order_cnt);
+                if a.frame_num != b.frame_num {
+                    return poc_cmp;
+                }
+                // Same frame_num: same-parity field first
+                let a_same = (a.structure == PictureStructure::BottomField) == bottom_field_flag;
+                let b_same = (b.structure == PictureStructure::BottomField) == bottom_field_flag;
+                // true (same parity) should come first → sort descending
+                b_same.cmp(&a_same)
+            });
+        } else {
+            // Sort by descending POC as a proxy for recency (handles frame_num wraparound).
+            refs.sort_by(|a, b| b.pic_order_cnt.cmp(&a.pic_order_cnt));
+        }
         // Append long-term refs sorted by ascending long_term_frame_idx (spec 8.2.4.2.1)
         refs.extend(self.long_term_ref_list());
         refs
@@ -200,19 +239,23 @@ impl Dpb {
 
     /// Apply ref_pic_list_modification to reorder a reference list (spec 8.2.4.3).
     /// `ops`: list of (modification_of_pic_nums_idc, abs_diff_pic_num_minus1)
-    /// `frame_num`: current picture's frame_num
-    /// `max_pic_num`: 1 << (log2_max_frame_num_minus4 + 4)
+    /// `curr_pic_num`: CurrPicNum (= frame_num for frames, 2*frame_num+1 for fields)
+    /// `max_pic_num`: MaxPicNum (= MaxFrameNum for frames, 2*MaxFrameNum for fields)
+    /// `is_field_pic`: true for field pictures (PicNum = 2*frame_num + parity_bit)
+    /// `bottom_field_flag`: current field parity (only meaningful when is_field_pic)
     pub fn apply_ref_list_modification(
         ref_list: &mut Vec<Rc<DecodedPicture>>,
         ops: &[(u32, u32)],
-        frame_num: u32,
+        curr_pic_num: u32,
         max_pic_num: u32,
+        is_field_pic: bool,
+        bottom_field_flag: bool,
     ) {
         if ops.is_empty() || ref_list.is_empty() {
             return;
         }
         let num_active = ref_list.len();
-        let mut pred_pic_num = frame_num;
+        let mut pred_pic_num = curr_pic_num;
         let mut ref_idx_lx = 0usize;
 
         for &(idc, val) in ops {
@@ -280,7 +323,18 @@ impl Dpb {
 
             // Spec 8.2.4.3.1: find the picture, shift entries right to make room,
             // insert at ref_idx_lx, then remove duplicates after ref_idx_lx.
-            if let Some(found_pos) = ref_list.iter().position(|p| p.frame_num == pic_num) {
+            // For field pictures, PicNum = 2*frame_num + parity_bit (spec 8.2.4.1).
+            let pic_num_match = |p: &DecodedPicture| -> bool {
+                if is_field_pic {
+                    let p_is_bottom = p.structure == PictureStructure::BottomField;
+                    let same_parity = p_is_bottom == bottom_field_flag;
+                    let p_pic_num = p.frame_num * 2 + if same_parity { 1 } else { 0 };
+                    p_pic_num == pic_num
+                } else {
+                    p.frame_num == pic_num
+                }
+            };
+            if let Some(found_pos) = ref_list.iter().position(|p| pic_num_match(p)) {
                 let pic = ref_list[found_pos].clone();
 
                 // Shift right: make room at ref_idx_lx
@@ -293,10 +347,10 @@ impl Dpb {
                 ref_list[ref_idx_lx] = pic.clone();
 
                 // Remove duplicate: compact entries after ref_idx_lx that
-                // have the same pic_num as the inserted picture
+                // match the same PicNum as the inserted picture
                 let mut n = ref_idx_lx + 1;
                 for c in (ref_idx_lx + 1)..ref_list.len() {
-                    if ref_list[c].frame_num != pic_num {
+                    if !pic_num_match(&ref_list[c]) {
                         ref_list[n] = ref_list[c].clone();
                         n += 1;
                     }
@@ -456,12 +510,16 @@ impl Dpb {
     fn sliding_window_mark(&mut self) {
         let max = self.max_ref_frames.max(1);
         while self.max_ref_frames > 0 {
-            // Total ref count includes both short-term and long-term (spec 8.2.5.3)
-            let total_ref_count = self
-                .entries
-                .iter()
-                .filter(|e| e.reference != ReferenceStatus::Unused)
-                .count();
+            // Total ref count includes both short-term and long-term (spec 8.2.5.3).
+            // For field pictures, two fields from the same frame_num count as ONE
+            // toward the limit. Count distinct frame_nums among reference entries.
+            let mut seen_frame_nums = std::collections::HashSet::new();
+            for e in &self.entries {
+                if e.reference != ReferenceStatus::Unused {
+                    seen_frame_nums.insert(e.pic.frame_num);
+                }
+            }
+            let total_ref_count = seen_frame_nums.len();
             if total_ref_count < max {
                 break;
             }
@@ -473,7 +531,13 @@ impl Dpb {
                 .iter()
                 .position(|e| e.reference == ReferenceStatus::ShortTerm)
             {
-                self.entries[idx].reference = ReferenceStatus::Unused;
+                // Evict both fields of this frame_num (if any)
+                let evict_fn = self.entries[idx].pic.frame_num;
+                for e in &mut self.entries {
+                    if e.reference == ReferenceStatus::ShortTerm && e.pic.frame_num == evict_fn {
+                        e.reference = ReferenceStatus::Unused;
+                    }
+                }
             } else {
                 break;
             }
@@ -627,9 +691,9 @@ mod tests {
         let mut dpb = Dpb::new(4);
         dpb.insert(make_pic(0, 0), ReferenceStatus::ShortTerm);
         dpb.insert(make_pic(1, 2), ReferenceStatus::ShortTerm);
-        assert_eq!(dpb.short_term_ref_list().len(), 2);
+        assert_eq!(dpb.short_term_ref_list(false, false).len(), 2);
         dpb.clear();
-        assert_eq!(dpb.short_term_ref_list().len(), 0);
+        assert_eq!(dpb.short_term_ref_list(false, false).len(), 0);
     }
 
     #[test]
@@ -637,11 +701,11 @@ mod tests {
         let mut dpb = Dpb::new(2);
         dpb.insert(make_pic(0, 0), ReferenceStatus::ShortTerm);
         dpb.insert(make_pic(1, 2), ReferenceStatus::ShortTerm);
-        assert_eq!(dpb.short_term_ref_list().len(), 2);
+        assert_eq!(dpb.short_term_ref_list(false, false).len(), 2);
 
         // Third insert triggers sliding window — oldest (frame_num=0) gets evicted
         dpb.insert(make_pic(2, 4), ReferenceStatus::ShortTerm);
-        let refs = dpb.short_term_ref_list();
+        let refs = dpb.short_term_ref_list(false, false);
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].frame_num, 2); // newest first (descending)
         assert_eq!(refs[1].frame_num, 1);
@@ -662,7 +726,7 @@ mod tests {
         dpb.insert(make_pic(1, 2), ReferenceStatus::ShortTerm);
         dpb.insert(make_pic(5, 10), ReferenceStatus::ShortTerm);
 
-        let refs = dpb.short_term_ref_list();
+        let refs = dpb.short_term_ref_list(false, false);
         assert_eq!(refs[0].frame_num, 5);
         assert_eq!(refs[1].frame_num, 3);
         assert_eq!(refs[2].frame_num, 1);
@@ -673,7 +737,7 @@ mod tests {
         let mut dpb = Dpb::new(4);
         dpb.insert(make_pic(0, 0), ReferenceStatus::ShortTerm);
         dpb.insert(make_pic(1, 2), ReferenceStatus::Unused); // non-reference
-        assert_eq!(dpb.short_term_ref_list().len(), 1);
+        assert_eq!(dpb.short_term_ref_list(false, false).len(), 1);
     }
 
     #[test]
@@ -734,6 +798,6 @@ mod tests {
         // With val=0 → abs_diff=1 → pic_num = pred - 1
         let ops: Vec<(u32, u32)> = (0..10).map(|_| (0u32, 0u32)).collect();
         // This must not panic
-        Dpb::apply_ref_list_modification(&mut ref_list, &ops, 5, 16);
+        Dpb::apply_ref_list_modification(&mut ref_list, &ops, 5, 16, false, false);
     }
 }

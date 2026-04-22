@@ -507,9 +507,22 @@ impl Decoder {
             .compute_poc(sps, &header, nal.nal_unit_type, nal.nal_ref_idc);
 
         // Build reference picture lists
-        let max_pic_num = 1u32 << (sps.log2_max_frame_num_minus4 + 4).min(31);
+        // For field pictures: MaxPicNum = 2*MaxFrameNum, CurrPicNum = 2*frame_num+1
+        let max_frame_num = 1u32 << (sps.log2_max_frame_num_minus4 + 4).min(31);
+        let max_pic_num = if is_field_pic {
+            max_frame_num.saturating_mul(2)
+        } else {
+            max_frame_num
+        };
+        let curr_pic_num = if is_field_pic {
+            header.frame_num.saturating_mul(2).saturating_add(1)
+        } else {
+            header.frame_num
+        };
         let mut ref_pic_list = if is_p_slice {
-            let mut refs = self.dpb.short_term_ref_list();
+            let mut refs = self
+                .dpb
+                .short_term_ref_list(is_field_pic, header.bottom_field_flag);
             // Pad ref list if shorter than num_ref_idx_l0_active (spec 8.2.4.2.1:
             // if the list is shorter, duplicate the last entry to fill)
             if !refs.is_empty() {
@@ -549,24 +562,30 @@ impl Decoder {
             Dpb::apply_ref_list_modification(
                 &mut ref_pic_list,
                 &header.ref_list_mod_l0,
-                header.frame_num,
+                curr_pic_num,
                 max_pic_num,
+                is_field_pic,
+                header.bottom_field_flag,
             );
         }
         if is_b_slice && !header.ref_list_mod_l0.is_empty() {
             Dpb::apply_ref_list_modification(
                 &mut _ref_pic_list_l0,
                 &header.ref_list_mod_l0,
-                header.frame_num,
+                curr_pic_num,
                 max_pic_num,
+                is_field_pic,
+                header.bottom_field_flag,
             );
         }
         if is_b_slice && !header.ref_list_mod_l1.is_empty() {
             Dpb::apply_ref_list_modification(
                 &mut _ref_pic_list_l1,
                 &header.ref_list_mod_l1,
-                header.frame_num,
+                curr_pic_num,
                 max_pic_num,
+                is_field_pic,
+                header.bottom_field_flag,
             );
         }
 
@@ -2069,6 +2088,16 @@ mod tests {
         // QP=10. Tests chroma MC with field parity offset — bottom field
         // chroma prediction from top field requires +2 eighth-pel vertical shift.
         decode_multiframe_and_compare("jm_field_chroma_test", 1, 64, 64);
+    }
+
+    #[test]
+    fn test_jm_field_p() {
+        // 64x64, 4 frames: JM encoder, Main profile, CAVLC,
+        // multi-frame field pictures (all P-slices after IDR). QP=10.
+        // Tests field-aware DPB reference list construction (spec 8.2.4.2.5),
+        // sliding window for complementary field pairs, chroma field MV offset,
+        // and field coefficient scan order across multiple frames.
+        decode_multiframe_and_compare("jm_field_p_test", 4, 64, 64);
     }
 
     /// Decode a multi-frame stream and compare output YUV SHA-256 hash.

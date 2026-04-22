@@ -1177,6 +1177,8 @@ impl SliceContext<'_> {
                             }
                             let mut cb_pred = [0u8; 64]; // stack: max 8x8
                             let mut cr_pred_buf = [0u8; 64]; // stack: max 8x8
+                            let cmv_y = mv[1] as i32 + crate::slice_context::chroma_field_mv_offset_impl(
+                                self.field_pic_flag, self.bottom_field_flag, ref_pic);
                             inter_pred::chroma_mc(
                                 &ref_pic.u[c_ref_off..],
                                 c_ref_stride,
@@ -1184,7 +1186,7 @@ impl SliceContext<'_> {
                                 (cx + ccx) as i32,
                                 (mc_cy + ccy) as i32,
                                 mv[0] as i32,
-                                mv[1] as i32,
+                                cmv_y,
                                 ccw,
                                 cch,
                                 &mut cb_pred,
@@ -1196,7 +1198,7 @@ impl SliceContext<'_> {
                                 (cx + ccx) as i32,
                                 (mc_cy + ccy) as i32,
                                 mv[0] as i32,
-                                mv[1] as i32,
+                                cmv_y,
                                 ccw,
                                 cch,
                                 &mut cr_pred_buf,
@@ -1376,6 +1378,8 @@ impl SliceContext<'_> {
                         let chh = part_h.max(2) / 2;
                         let mut cb_pred = [0u8; 64]; // stack: max 8x8
                         let mut cr_pred_buf = [0u8; 64]; // stack: max 8x8
+                        let cmv_y = mv[1] as i32 + crate::slice_context::chroma_field_mv_offset_impl(
+                            self.field_pic_flag, self.bottom_field_flag, ref_pic);
                         inter_pred::chroma_mc(
                             &ref_pic.u[c_ref_off..],
                             c_ref_stride,
@@ -1383,7 +1387,7 @@ impl SliceContext<'_> {
                             (chroma_mb_x + cx_off) as i32,
                             (mc_cy + cy_off) as i32,
                             mv[0] as i32,
-                            mv[1] as i32,
+                            cmv_y,
                             chw,
                             chh,
                             &mut cb_pred,
@@ -1395,7 +1399,7 @@ impl SliceContext<'_> {
                             (chroma_mb_x + cx_off) as i32,
                             (mc_cy + cy_off) as i32,
                             mv[0] as i32,
-                            mv[1] as i32,
+                            cmv_y,
                             chw,
                             chh,
                             &mut cr_pred_buf,
@@ -2888,6 +2892,10 @@ impl SliceContext<'_> {
                             let mut c0 = vec![0u8; chw * chh];
                             let mut c1 = vec![0u8; chw * chh];
                             let cy_off = sub_part.y / 2;
+                            let cmv_y_l0 = sub_part.mv_l0[1] as i32 + crate::slice_context::chroma_field_mv_offset_impl(
+                                self.field_pic_flag, self.bottom_field_flag, ref_l0);
+                            let cmv_y_l1 = sub_part.mv_l1[1] as i32 + crate::slice_context::chroma_field_mv_offset_impl(
+                                self.field_pic_flag, self.bottom_field_flag, ref_l1);
                             inter_pred::chroma_mc(
                                 cr0,
                                 c_ref_stride_l0,
@@ -2895,7 +2903,7 @@ impl SliceContext<'_> {
                                 cx as i32,
                                 (mc_cy_l0 + cy_off) as i32,
                                 sub_part.mv_l0[0] as i32,
-                                sub_part.mv_l0[1] as i32,
+                                cmv_y_l0,
                                 chw,
                                 chh,
                                 &mut c0,
@@ -2907,7 +2915,7 @@ impl SliceContext<'_> {
                                 cx as i32,
                                 (mc_cy_l1 + cy_off) as i32,
                                 sub_part.mv_l1[0] as i32,
-                                sub_part.mv_l1[1] as i32,
+                                cmv_y_l1,
                                 chw,
                                 chh,
                                 &mut c1,
@@ -2940,6 +2948,8 @@ impl SliceContext<'_> {
                                 &ref_pic.v[c_ref_off..]
                             };
                             let cy_off = sub_part.y / 2;
+                            let cmv_y = sub_part.mv_l0[1] as i32 + crate::slice_context::chroma_field_mv_offset_impl(
+                                self.field_pic_flag, self.bottom_field_flag, ref_pic);
                             inter_pred::chroma_mc(
                                 plane,
                                 c_ref_stride,
@@ -2947,7 +2957,7 @@ impl SliceContext<'_> {
                                 cx as i32,
                                 (mc_cy + cy_off) as i32,
                                 sub_part.mv_l0[0] as i32,
-                                sub_part.mv_l0[1] as i32,
+                                cmv_y,
                                 chw,
                                 chh,
                                 &mut chroma_pred,
@@ -2980,6 +2990,8 @@ impl SliceContext<'_> {
                                 &ref_pic.v[c_ref_off..]
                             };
                             let cy_off = sub_part.y / 2;
+                            let cmv_y = sub_part.mv_l1[1] as i32 + crate::slice_context::chroma_field_mv_offset_impl(
+                                self.field_pic_flag, self.bottom_field_flag, ref_pic);
                             inter_pred::chroma_mc(
                                 plane,
                                 c_ref_stride,
@@ -2987,7 +2999,7 @@ impl SliceContext<'_> {
                                 cx as i32,
                                 (mc_cy + cy_off) as i32,
                                 sub_part.mv_l1[0] as i32,
-                                sub_part.mv_l1[1] as i32,
+                                cmv_y,
                                 chw,
                                 chh,
                                 &mut chroma_pred,
