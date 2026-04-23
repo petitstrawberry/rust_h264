@@ -235,11 +235,11 @@ impl SliceContext<'_> {
         }
     }
 
-    /// Returns the effective num_ref_idx_active for the current MB.
     /// Returns true if the current MB is field-coded (for CABAC context selection).
+    /// True for field pictures and for field-coded MBs in MBAFF.
     #[inline]
     pub(crate) fn is_field_coded(&self, mb_idx: usize) -> bool {
-        self.mbaff && self.mb_field_decoding[mb_idx / 2]
+        self.field_pic_flag || (self.mbaff && self.mb_field_decoding[mb_idx / 2])
     }
 
     /// Field-coded MBs double the count (each frame ref → 2 field refs).

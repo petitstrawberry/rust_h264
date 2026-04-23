@@ -2107,6 +2107,15 @@ mod tests {
         decode_multiframe_and_compare("jm_field_p_test", 4, 64, 64);
     }
 
+    #[test]
+    fn test_jm_field_cabac() {
+        // 64x64 (combined), 1 frame: JM encoder, Main profile, CABAC,
+        // field pictures (top=IDR I-slice, bottom=P-slice). QP=10.
+        // Tests CABAC field-coded significance/last coefficient contexts
+        // (ctxIdx 277+/338+) for field pictures via is_field_coded().
+        decode_multiframe_and_compare("jm_field_cabac_test", 1, 64, 64);
+    }
+
     /// Decode a multi-frame stream and compare output YUV SHA-256 hash.
     /// Used for large-resolution tests where storing the full reference YUV
     /// would be too expensive.
