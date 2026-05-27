@@ -1303,6 +1303,7 @@ impl SliceContext<'_> {
             // Collect all sub-partition info: (x_off, y_off, self.width, self.height, ref_idx)
             // For non-P_8x8: 1-2 partitions as before
             // For P_8x8: up to 16 sub-partitions across 4 sub-MBs
+            #[derive(Clone, Copy, Default)]
             struct SubPart {
                 x: usize,
                 y: usize,
@@ -1311,7 +1312,8 @@ impl SliceContext<'_> {
                 ref_idx: i8,
                 mv: [i16; 2],
             }
-            let mut sub_parts: Vec<SubPart> = Vec::new();
+            let mut sub_parts = [SubPart::default(); 16];
+            let mut sub_part_count = 0usize;
 
             if is_p8x8 {
                 // 8x8 sub-MB origins within the macroblock
@@ -1336,17 +1338,21 @@ impl SliceContext<'_> {
                     let (sy, sx) = sub_mb_origins[smb];
                     let ref_idx = sub_ref[smb];
 
-                    // Sub-partition layout within this 8x8
-                    let sub_parts_layout: Vec<(usize, usize, usize, usize)> =
-                        match sub_mb_types[smb] {
-                            0 => vec![(0, 0, 8, 8)],                                           // 8x8
-                            1 => vec![(0, 0, 8, 4), (0, 4, 8, 4)], // 8x4
-                            2 => vec![(0, 0, 4, 8), (4, 0, 4, 8)], // 4x8
-                            3 => vec![(0, 0, 4, 4), (4, 0, 4, 4), (0, 4, 4, 4), (4, 4, 4, 4)], // 4x4
-                            _ => return Err(DecodeError::from("invalid sub_mb_type")),
-                        };
+                    let sub_parts_layout = match sub_mb_types[smb] {
+                        0 => [(0, 0, 8, 8), (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0)],
+                        1 => [(0, 0, 8, 4), (0, 4, 8, 4), (0, 0, 0, 0), (0, 0, 0, 0)],
+                        2 => [(0, 0, 4, 8), (4, 0, 4, 8), (0, 0, 0, 0), (0, 0, 0, 0)],
+                        3 => [(0, 0, 4, 4), (4, 0, 4, 4), (0, 4, 4, 4), (4, 4, 4, 4)],
+                        _ => return Err(DecodeError::from("invalid sub_mb_type")),
+                    };
+                    let layout_count = match sub_mb_types[smb] {
+                        0 => 1,
+                        1 | 2 => 2,
+                        3 => 4,
+                        _ => unreachable!(),
+                    };
 
-                    for &(dx, dy, spw, sph) in &sub_parts_layout {
+                    for &(dx, dy, spw, sph) in sub_parts_layout.iter().take(layout_count) {
                         let px = sx + dx;
                         let py = sy + dy;
                         let mvd_x = reader.read_se()? as i16;
@@ -1380,14 +1386,15 @@ impl SliceContext<'_> {
                             }
                         }
 
-                        sub_parts.push(SubPart {
+                        sub_parts[sub_part_count] = SubPart {
                             x: px,
                             y: py,
                             w: spw,
                             h: sph,
                             ref_idx,
                             mv,
-                        });
+                        };
+                        sub_part_count += 1;
                     }
                 }
             } else {
@@ -1445,14 +1452,15 @@ impl SliceContext<'_> {
                         }
                     }
 
-                    sub_parts.push(SubPart {
+                    sub_parts[sub_part_count] = SubPart {
                         x: px_off,
                         y: py_off,
                         w: part_w,
                         h: part_h,
                         ref_idx: part_ref[p],
                         mv,
-                    });
+                    };
+                    sub_part_count += 1;
                 }
             }
 
@@ -1572,7 +1580,7 @@ impl SliceContext<'_> {
             } // close if use_8x8_dct else
 
             // Motion compensate and add residual for each sub-partition
-            for sub_part in &sub_parts {
+            for sub_part in sub_parts.iter().take(sub_part_count) {
                 let fri = self.frame_ref_idx(mb_idx, sub_part.ref_idx);
                 let ref_pic = sp
                     .ref_pic_list
@@ -1662,20 +1670,18 @@ impl SliceContext<'_> {
 
             // Precompute mc_params per sub_part before entering the plane loop
             // (avoids borrow conflict with &mut self.frame inside the loop).
-            let p_sub_mc: Vec<(i32, usize, usize, usize, usize, usize)> = sub_parts
-                .iter()
-                .map(|sp_part| {
-                    let fri = self.frame_ref_idx(mb_idx, sp_part.ref_idx);
-                    let ref_pic = sp
-                        .ref_pic_list
-                        .get(fri as usize)
-                        .or_else(|| sp.ref_pic_list.last());
-                    let w = ref_pic
-                        .map(|r| r.width as usize)
-                        .unwrap_or(self.width as usize);
-                    self.mc_params(mb_idx, mb_y, w, sp_part.ref_idx)
-                })
-                .collect();
+            let mut p_sub_mc = [(0i32, 0usize, 0usize, 0usize, 0usize, 0usize); 16];
+            for (sp_i, sp_part) in sub_parts.iter().take(sub_part_count).enumerate() {
+                let fri = self.frame_ref_idx(mb_idx, sp_part.ref_idx);
+                let ref_pic = sp
+                    .ref_pic_list
+                    .get(fri as usize)
+                    .or_else(|| sp.ref_pic_list.last());
+                let w = ref_pic
+                    .map(|r| r.width as usize)
+                    .unwrap_or(self.width as usize);
+                p_sub_mc[sp_i] = self.mc_params(mb_idx, mb_y, w, sp_part.ref_idx);
+            }
 
             // Chroma MC + residual for each chroma plane
             // Each partition gets its own chroma MC with its own MV
@@ -1724,7 +1730,7 @@ impl SliceContext<'_> {
 
                     // MC each sub-partition's chroma region
                     let mut chroma_pred = [0u8; 64];
-                    for (sp_i, sub_part) in sub_parts.iter().enumerate() {
+                    for (sp_i, sub_part) in sub_parts.iter().take(sub_part_count).enumerate() {
                         // Chroma coordinates are half of luma
                         let cx_off = sub_part.x / 2;
                         let cy_off = sub_part.y / 2;

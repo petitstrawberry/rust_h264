@@ -400,28 +400,35 @@ impl Decoder {
             if display_w > coded_w || display_h > coded_h || coded_w * coded_h > ps.frame.y.len() {
                 return None;
             }
-            // Luma: copy display_w pixels per row from coded_w-stride buffer
-            let mut y = vec![0u8; display_w * display_h];
-            for r in 0..display_h {
-                y[r * display_w..(r + 1) * display_w]
-                    .copy_from_slice(&ps.frame.y[r * coded_w..r * coded_w + display_w]);
-            }
             let chroma_coded_w = coded_w / 2;
             let chroma_w = display_w / 2;
             let chroma_h = display_h / 2;
-            let mut u = vec![0u8; chroma_w * chroma_h];
-            let mut v = vec![0u8; chroma_w * chroma_h];
-            for r in 0..chroma_h {
-                u[r * chroma_w..(r + 1) * chroma_w].copy_from_slice(
-                    &ps.frame.u[r * chroma_coded_w..r * chroma_coded_w + chroma_w],
-                );
-                v[r * chroma_w..(r + 1) * chroma_w].copy_from_slice(
-                    &ps.frame.v[r * chroma_coded_w..r * chroma_coded_w + chroma_w],
-                );
+
+            if coded_w == display_w {
+                ps.frame.y.truncate(display_w * display_h);
+                ps.frame.u.truncate(chroma_w * chroma_h);
+                ps.frame.v.truncate(chroma_w * chroma_h);
+            } else {
+                // Luma: copy display_w pixels per row from coded_w-stride buffer
+                let mut y = vec![0u8; display_w * display_h];
+                for r in 0..display_h {
+                    y[r * display_w..(r + 1) * display_w]
+                        .copy_from_slice(&ps.frame.y[r * coded_w..r * coded_w + display_w]);
+                }
+                let mut u = vec![0u8; chroma_w * chroma_h];
+                let mut v = vec![0u8; chroma_w * chroma_h];
+                for r in 0..chroma_h {
+                    u[r * chroma_w..(r + 1) * chroma_w].copy_from_slice(
+                        &ps.frame.u[r * chroma_coded_w..r * chroma_coded_w + chroma_w],
+                    );
+                    v[r * chroma_w..(r + 1) * chroma_w].copy_from_slice(
+                        &ps.frame.v[r * chroma_coded_w..r * chroma_coded_w + chroma_w],
+                    );
+                }
+                ps.frame.y = y;
+                ps.frame.u = u;
+                ps.frame.v = v;
             }
-            ps.frame.y = y;
-            ps.frame.u = u;
-            ps.frame.v = v;
         }
 
         // For field pictures, combine two fields into one frame for output
