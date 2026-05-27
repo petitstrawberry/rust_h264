@@ -4,7 +4,8 @@
 //! every MB decoder (CABAC/CAVLC, I/P/B) reads and writes. Extracting it
 //! from `decode_slice` enables splitting MB decode logic into methods.
 
-use std::rc::Rc;
+use alloc::rc::Rc;
+use alloc::vec::Vec;
 
 use crate::decoder::Frame;
 

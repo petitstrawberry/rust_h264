@@ -3,7 +3,8 @@
 //! Contains MV prediction (median, directional), spatial/temporal direct mode,
 //! MV neighbor lookups, skip MV derivation, and weighted prediction context.
 
-use std::rc::Rc;
+use alloc::rc::Rc;
+use alloc::vec::Vec;
 
 use crate::dpb::DecodedPicture;
 use crate::inter_pred;

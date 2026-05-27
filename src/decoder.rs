@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-
-use std::rc::Rc;
+use alloc::collections::BTreeMap;
+use alloc::rc::Rc;
+use alloc::vec::Vec;
 
 use crate::bitstream::BitstreamReader;
 use crate::deblock::{self, MbInfo, MbType};
@@ -133,8 +133,8 @@ struct PictureState {
 /// }
 /// ```
 pub struct Decoder {
-    sps_table: HashMap<u32, Sps>,
-    pps_table: HashMap<u32, Pps>,
+    sps_table: BTreeMap<u32, Sps>,
+    pps_table: BTreeMap<u32, Pps>,
     dpb: Dpb,
     /// In-progress picture being assembled from one or more slices.
     pending: Option<PictureState>,
@@ -152,8 +152,8 @@ impl Decoder {
     /// Create a new decoder with empty parameter set tables and DPB.
     pub fn new() -> Self {
         Self {
-            sps_table: HashMap::new(),
-            pps_table: HashMap::new(),
+            sps_table: BTreeMap::new(),
+            pps_table: BTreeMap::new(),
             dpb: Dpb::new(0),
             pending: None,
             pending_field: None,
@@ -319,8 +319,7 @@ impl Decoder {
         for &(op, param) in &ps.mmco_ops {
             match op {
                 1 => {
-                    let pic_num_to_remove =
-                        mmco_curr_pic_num - ((param & 0xFFFF) as i32 + 1);
+                    let pic_num_to_remove = mmco_curr_pic_num - ((param & 0xFFFF) as i32 + 1);
                     self.dpb.mark_short_term_unused(pic_num_to_remove as u32);
                 }
                 2 => {
@@ -456,12 +455,10 @@ impl Decoder {
                 let ch = full_h / 4;
                 for r in 0..ch {
                     let src_off = r * cw;
-                    u[r * 2 * cw..r * 2 * cw + cw]
-                        .copy_from_slice(&top.u[src_off..src_off + cw]);
+                    u[r * 2 * cw..r * 2 * cw + cw].copy_from_slice(&top.u[src_off..src_off + cw]);
                     u[(r * 2 + 1) * cw..(r * 2 + 1) * cw + cw]
                         .copy_from_slice(&bot.u[src_off..src_off + cw]);
-                    v[r * 2 * cw..r * 2 * cw + cw]
-                        .copy_from_slice(&top.v[src_off..src_off + cw]);
+                    v[r * 2 * cw..r * 2 * cw + cw].copy_from_slice(&top.v[src_off..src_off + cw]);
                     v[(r * 2 + 1) * cw..(r * 2 + 1) * cw + cw]
                         .copy_from_slice(&bot.v[src_off..src_off + cw]);
                 }
@@ -542,9 +539,9 @@ impl Decoder {
             vec![]
         };
         let mut _ref_pic_list_l0 = if is_b_slice {
-            let mut refs = self
-                .dpb
-                .ref_list_l0_b(current_poc, is_field_pic, header.bottom_field_flag);
+            let mut refs =
+                self.dpb
+                    .ref_list_l0_b(current_poc, is_field_pic, header.bottom_field_flag);
             if !refs.is_empty() {
                 while refs.len() < header.num_ref_idx_l0_active as usize {
                     refs.push(refs.last().unwrap().clone());
@@ -555,9 +552,9 @@ impl Decoder {
             vec![]
         };
         let mut _ref_pic_list_l1 = if is_b_slice {
-            let mut refs = self
-                .dpb
-                .ref_list_l1_b(current_poc, is_field_pic, header.bottom_field_flag);
+            let mut refs =
+                self.dpb
+                    .ref_list_l1_b(current_poc, is_field_pic, header.bottom_field_flag);
             if !refs.is_empty() {
                 while refs.len() < header.num_ref_idx_l1_active as usize {
                     refs.push(refs.last().unwrap().clone());
@@ -658,7 +655,11 @@ impl Decoder {
             return Err(DecodeError::InvalidSyntax("SPS dimensions out of range"));
         }
         // For field pictures, each field has half the frame height
-        let height = if is_field_pic { frame_height / 2 } else { frame_height };
+        let height = if is_field_pic {
+            frame_height / 2
+        } else {
+            frame_height
+        };
         let mb_width = width.div_ceil(16);
         let mb_height = height.div_ceil(16);
         let coded_width = mb_width * 16;
@@ -1070,9 +1071,9 @@ impl Decoder {
             mb_height,
             mb_field_decoding: _mb_field_decoding,
             mbaff_frame_flag: header.mbaff_frame_flag,
-                field_pic_flag: header.field_pic_flag,
-                bottom_field_flag: header.bottom_field_flag,
-                frame_height,
+            field_pic_flag: header.field_pic_flag,
+            bottom_field_flag: header.bottom_field_flag,
+            frame_height,
         });
 
         Ok(())

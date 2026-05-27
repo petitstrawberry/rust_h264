@@ -3,7 +3,9 @@
 //! Stores decoded reference frames for use by P/B slice motion compensation.
 //! Manages short-term reference marking via sliding window (spec 8.2.5.3).
 
-use std::rc::Rc;
+use alloc::collections::BTreeSet;
+use alloc::rc::Rc;
+use alloc::vec::Vec;
 
 use crate::nal::NalUnitType;
 use crate::slice::SliceHeader;
@@ -560,7 +562,7 @@ impl Dpb {
             // Total ref count includes both short-term and long-term (spec 8.2.5.3).
             // For field pictures, two fields from the same frame_num count as ONE
             // toward the limit. Count distinct frame_nums among reference entries.
-            let mut seen_frame_nums = std::collections::HashSet::new();
+            let mut seen_frame_nums = BTreeSet::new();
             for e in &self.entries {
                 if e.reference != ReferenceStatus::Unused {
                     seen_frame_nums.insert(e.pic.frame_num);

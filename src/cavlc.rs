@@ -1,6 +1,7 @@
-use std::sync::OnceLock;
+use alloc::vec::Vec;
 
 use crate::bitstream::BitstreamReader;
+use crate::once::OnceLock;
 
 /// Parse a CAVLC residual block.
 /// Returns total_coeff (needed for nC tracking of neighboring blocks).
@@ -295,14 +296,9 @@ static LUT_COEFF_NC2: OnceLock<Vec<CoeffEntry>> = OnceLock::new(); // 14 bits �
 static LUT_COEFF_NC4: OnceLock<Vec<CoeffEntry>> = OnceLock::new(); // 10 bits →  1 KiB
 static LUT_COEFF_CHROMA_DC: OnceLock<Vec<CoeffEntry>> = OnceLock::new(); //  8 bits → 256 B
 
-#[allow(clippy::declare_interior_mutable_const)]
-const INIT_U8_LOCK: OnceLock<Vec<U8Entry>> = OnceLock::new();
-#[allow(clippy::borrow_interior_mutable_const)]
-static LUT_TOTAL_ZEROS: [OnceLock<Vec<U8Entry>>; 15] = [INIT_U8_LOCK; 15];
-#[allow(clippy::borrow_interior_mutable_const)]
-static LUT_TOTAL_ZEROS_CHROMA: [OnceLock<Vec<U8Entry>>; 3] = [INIT_U8_LOCK; 3];
-#[allow(clippy::borrow_interior_mutable_const)]
-static LUT_RUN_BEFORE: [OnceLock<Vec<U8Entry>>; 7] = [INIT_U8_LOCK; 7];
+static LUT_TOTAL_ZEROS: [OnceLock<Vec<U8Entry>>; 15] = [const { OnceLock::new() }; 15];
+static LUT_TOTAL_ZEROS_CHROMA: [OnceLock<Vec<U8Entry>>; 3] = [const { OnceLock::new() }; 3];
+static LUT_RUN_BEFORE: [OnceLock<Vec<U8Entry>>; 7] = [const { OnceLock::new() }; 7];
 
 // ============================================================
 // coeff_token VLC tables from H.264 Table 9-5

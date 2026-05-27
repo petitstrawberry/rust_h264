@@ -65,7 +65,7 @@ pub fn inverse_hadamard_2x2(dc: &mut [i32; 4]) {
 /// Horizontal pass (rows) first, then vertical pass (columns), per spec 8.5.12.1.
 pub fn inverse_dct_4x4(block: &mut [i32; 16]) {
     // Use wrapping arithmetic — malformed coefficients can cause overflow
-    use std::num::Wrapping as W;
+    use core::num::Wrapping as W;
 
     block[0] = block[0].wrapping_add(32);
 
@@ -308,7 +308,7 @@ pub fn dequant_8x8(block: &mut [i32; 64], qp: i32, scale: &[u8; 64]) {
 /// Row pass first (within each row), then column pass with >> 6 normalization.
 pub fn inverse_dct_8x8(block: &mut [i32; 64]) {
     // Use wrapping arithmetic throughout — malformed coefficients can cause overflow
-    use std::num::Wrapping as W;
+    use core::num::Wrapping as W;
 
     block[0] = block[0].wrapping_add(32);
 
@@ -371,7 +371,7 @@ fn idct8_butterfly(
     x6: i32,
     x7: i32,
 ) -> (i32, i32, i32, i32, i32, i32, i32, i32) {
-    use std::num::Wrapping as W;
+    use core::num::Wrapping as W;
     let a0 = (W(x0) + W(x4)).0;
     let a2 = (W(x0) - W(x4)).0;
     let a4 = (W(x2 >> 1) - W(x6)).0;

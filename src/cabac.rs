@@ -4,6 +4,8 @@
 //! per H.264 spec 9.3. Used as an alternative to CAVLC for entropy decoding
 //! in Main and High profiles.
 
+use alloc::vec::Vec;
+
 /// Number of bits used for buffer operations (16-bit double-byte mode).
 const CABAC_BITS: u32 = 16;
 /// Mask for buffer alignment checks.

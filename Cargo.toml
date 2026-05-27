@@ -10,6 +10,8 @@ categories = ["multimedia::video"]
 exclude = ["testdata/", "examples/", "fuzz/", "BENCHMARK.md"]
 
 [features]
+default = ["std"]
+std = []
 # Expose internal modules (sps, pps, slice) for debug/diagnostic examples.
 dev-internals = []
 

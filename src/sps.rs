@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::bitstream::BitstreamReader;
 
 /// H.264 Table 7-2: Default 4x4 scaling list for Intra (in scan order).

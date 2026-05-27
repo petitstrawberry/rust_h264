@@ -55,6 +55,11 @@
 //! - SP/SI slice types
 //! - Slice groups / FMO
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[macro_use]
+extern crate alloc;
+
 #[allow(dead_code)]
 mod bitstream;
 mod cabac;
@@ -73,6 +78,7 @@ mod intra_pred;
 mod mv_pred;
 pub mod nal;
 mod neighbor;
+mod once;
 #[cfg(feature = "dev-internals")]
 #[allow(dead_code)]
 pub mod pps;

@@ -1,5 +1,7 @@
 //! CAVLC macroblock decode for non-skip MBs.
 
+use alloc::vec::Vec;
+
 use crate::bitstream::BitstreamReader;
 use crate::cavlc::parse_residual_block_cavlc;
 use crate::deblock::{MbInfo, MbType};
@@ -30,7 +32,11 @@ impl SliceContext<'_> {
     ) -> Result<(), DecodeError> {
         // Select field or frame coefficient scan tables
         let field_scan = self.is_field_scan(mb_idx);
-        let zigzag_4x4 = if field_scan { &ZIGZAG_4X4_FIELD } else { &ZIGZAG_4X4 };
+        let zigzag_4x4 = if field_scan {
+            &ZIGZAG_4X4_FIELD
+        } else {
+            &ZIGZAG_4X4
+        };
         let zigzag_8x8_cavlc = if field_scan {
             &ZIGZAG_8X8_CAVLC_FIELD
         } else {
@@ -1172,8 +1178,16 @@ impl SliceContext<'_> {
                         };
                         let mut c_l0 = vec![0u8; cw * ch];
                         let mut c_l1 = vec![0u8; cw * ch];
-                        let cmv_y_off_l0 = crate::slice_context::chroma_field_mv_offset_impl(self.field_pic_flag, self.bottom_field_flag, ref_l0);
-                        let cmv_y_off_l1 = crate::slice_context::chroma_field_mv_offset_impl(self.field_pic_flag, self.bottom_field_flag, ref_l1);
+                        let cmv_y_off_l0 = crate::slice_context::chroma_field_mv_offset_impl(
+                            self.field_pic_flag,
+                            self.bottom_field_flag,
+                            ref_l0,
+                        );
+                        let cmv_y_off_l1 = crate::slice_context::chroma_field_mv_offset_impl(
+                            self.field_pic_flag,
+                            self.bottom_field_flag,
+                            ref_l1,
+                        );
                         inter_pred::chroma_mc(
                             cr_l0,
                             c_ref_stride_l0,
@@ -1222,7 +1236,11 @@ impl SliceContext<'_> {
                         } else {
                             &ref_pic.v[c_ref_off..]
                         };
-                        let cmv_y_off = crate::slice_context::chroma_field_mv_offset_impl(self.field_pic_flag, self.bottom_field_flag, ref_pic);
+                        let cmv_y_off = crate::slice_context::chroma_field_mv_offset_impl(
+                            self.field_pic_flag,
+                            self.bottom_field_flag,
+                            ref_pic,
+                        );
                         inter_pred::chroma_mc(
                             cr,
                             c_ref_stride,
@@ -1737,7 +1755,11 @@ impl SliceContext<'_> {
                             &part_ref_pic.v[c_ref_off..]
                         };
                         let mut part_pred = [0u8; 64];
-                        let cmv_y_off = crate::slice_context::chroma_field_mv_offset_impl(self.field_pic_flag, self.bottom_field_flag, part_ref_pic);
+                        let cmv_y_off = crate::slice_context::chroma_field_mv_offset_impl(
+                            self.field_pic_flag,
+                            self.bottom_field_flag,
+                            part_ref_pic,
+                        );
                         inter_pred::chroma_mc(
                             chroma_ref,
                             c_ref_stride,

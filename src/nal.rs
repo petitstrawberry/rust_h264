@@ -10,7 +10,8 @@
 //! Both produce [`NalUnit`] values that can be fed directly to
 //! [`Decoder::decode_nal`](crate::decoder::Decoder::decode_nal).
 
-use std::borrow::Cow;
+use alloc::borrow::Cow;
+use alloc::vec::Vec;
 
 /// H.264 NAL unit type identifier (spec Table 7-1).
 ///

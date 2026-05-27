@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 /// SEI message (H.264 spec section 7.3.2.3).
 #[derive(Debug)]
 pub struct SeiMessage {

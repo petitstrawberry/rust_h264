@@ -6,7 +6,7 @@
 use crate::dpb::DecodedPicture;
 
 #[cfg(target_arch = "aarch64")]
-use std::arch::aarch64::*;
+use core::arch::aarch64::*;
 
 /// Fetch a luma sample from the reference picture with boundary clipping.
 /// Out-of-bounds coordinates are clamped to the picture edge (spec 8.4.2.2.1).
