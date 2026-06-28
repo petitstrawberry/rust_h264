@@ -483,6 +483,11 @@ impl CabacReader<'_> {
     /// Returns coefficients in scan order and the non-zero count.
     /// For field-coded MBs, the significance and last_coeff contexts use
     /// different base offsets per spec Table 9-34.
+    ///
+    /// TODO(perf): this is the single hottest decode function (~18% self-time
+    /// on 1080p CABAC B-frame). See the module-level perf note in
+    /// `decode_cabac.rs` for candidate micro-optimizations; the arithmetic
+    /// renormalization in `get_cabac` itself is an inherent floor.
     pub fn decode_residual_cabac_field(
         &mut self,
         state: &mut [u8; 1024],
