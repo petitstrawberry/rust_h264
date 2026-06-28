@@ -43,8 +43,8 @@ use crate::intra_pred::{
     predict_chroma_8x8, predict_intra_16x16, predict_intra_4x4, predict_intra_8x8,
 };
 use crate::mv_pred::{
-    derive_spatial_direct_blk, derive_temporal_direct_blk, predict_mv_skip, ref_pic_safe, MbaffCtx,
-    WeightContext,
+    apply_spatial_direct_col_zero, derive_spatial_direct_base, derive_spatial_direct_blk,
+    derive_temporal_direct_blk, predict_mv_skip, ref_pic_safe, MbaffCtx, WeightContext,
 };
 use crate::neighbor::dequant_4x4_ac_raster;
 use crate::residual::BLOCK_INDEX_TO_OFFSET;
@@ -519,26 +519,32 @@ impl SliceContext<'_> {
                     self.ref_idx_store_l1[base + blk] = ri_l1;
                 }
             } else if direct_8x8_inference_flag && blk_count == 16 {
-                // Full MB: derive once per 8x8 group (4 calls instead of 16)
+                // Full MB: the spatial neighbor-derived result is MB-invariant;
+                // only the co-located zero-MV refinement varies by 8x8 representative.
                 let base = mb_idx * 16;
+                let spatial_base = derive_spatial_direct_base(
+                    [
+                        (self.mv_store_l0, self.ref_idx_store_l0),
+                        (self.mv_store_l1, self.ref_idx_store_l1),
+                    ],
+                    mb_idx,
+                    self.mb_width as usize,
+                    self.mb_slice_id,
+                    self.this_slice_id,
+                    MbaffCtx {
+                        mbaff: self.mbaff,
+                        mb_field_decoding: self.mb_field_decoding,
+                    },
+                );
+                let col_pic = ref_pic_list_l1.first().map(|p| p.as_ref());
                 for group in 0..4 {
                     let first_blk = group * 4;
-                    let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) = derive_spatial_direct_blk(
-                        self.mv_store_l0,
-                        self.ref_idx_store_l0,
-                        self.mv_store_l1,
-                        self.ref_idx_store_l1,
+                    let (mv_l0, mv_l1, ri_l0, ri_l1, _, _) = apply_spatial_direct_col_zero(
+                        spatial_base,
+                        col_pic,
                         mb_idx,
-                        self.mb_width as usize,
-                        ref_pic_list_l1.first().map(|p| p.as_ref()),
                         first_blk,
-                        self.mb_slice_id,
-                        self.this_slice_id,
                         direct_8x8_inference_flag,
-                        MbaffCtx {
-                            mbaff: self.mbaff,
-                            mb_field_decoding: self.mb_field_decoding,
-                        },
                     );
                     for blk in first_blk..first_blk + 4 {
                         self.mv_store_l0[base + blk] = mv_l0;
@@ -647,6 +653,264 @@ impl SliceContext<'_> {
         }
     }
 
+    /// Fast path for B-skip macroblocks whose direct-derived MV/ref state is uniform.
+    ///
+    /// This is bit-identical to the per-4x4 path because luma/chroma MC and
+    /// weighted prediction are pure per-pixel functions of absolute block
+    /// coordinates once the MV/ref tuple is identical for every 4x4 block.
+    fn try_decode_uniform_b_skip_mb(
+        &mut self,
+        mb_idx: usize,
+        mb_x: usize,
+        mb_y: usize,
+        sp: &SliceParams,
+    ) -> bool {
+        let base = mb_idx * 16;
+        let mv0 = self.mv_store_l0[base];
+        let mv1 = self.mv_store_l1[base];
+        let r0 = self.ref_idx_store_l0[base];
+        let r1 = self.ref_idx_store_l1[base];
+        let uniform = (1..16).all(|blk| {
+            self.mv_store_l0[base + blk] == mv0
+                && self.mv_store_l1[base + blk] == mv1
+                && self.ref_idx_store_l0[base + blk] == r0
+                && self.ref_idx_store_l1[base + blk] == r1
+        });
+        if !uniform {
+            return false;
+        }
+
+        let bp0 = r0 >= 0;
+        let bp1 = r1 >= 0;
+        let ref_l0 = if bp0 {
+            match ref_pic_safe(sp.ref_pic_list_l0, r0) {
+                Some(pic) => Some(pic),
+                None => return true,
+            }
+        } else {
+            None
+        };
+        let ref_l1 = if bp1 {
+            match ref_pic_safe(sp.ref_pic_list_l1, r1) {
+                Some(pic) => Some(pic),
+                None => return true,
+            }
+        } else {
+            None
+        };
+
+        let mut luma_pred = [0u8; 256];
+        match (ref_l0, ref_l1) {
+            (Some(ref0), Some(ref1)) => {
+                let mut p0 = [0u8; 256];
+                let mut p1 = [0u8; 256];
+                let (mc_y_l0, ref_stride_l0, ref_y_off_l0, _, _, _) =
+                    self.mc_params(mb_idx, mb_y, ref0.width as usize, r0);
+                let (mc_y_l1, ref_stride_l1, ref_y_off_l1, _, _, _) =
+                    self.mc_params(mb_idx, mb_y, ref1.width as usize, r1);
+                inter_pred::luma_mc_stride(
+                    ref0,
+                    mb_x as i32,
+                    mc_y_l0,
+                    mv0[0] as i32,
+                    mv0[1] as i32,
+                    16,
+                    16,
+                    &mut p0,
+                    ref_stride_l0,
+                    ref_y_off_l0,
+                );
+                inter_pred::luma_mc_stride(
+                    ref1,
+                    mb_x as i32,
+                    mc_y_l1,
+                    mv1[0] as i32,
+                    mv1[1] as i32,
+                    16,
+                    16,
+                    &mut p1,
+                    ref_stride_l1,
+                    ref_y_off_l1,
+                );
+                sp.wctx
+                    .apply_bi(&p0, &p1, &mut luma_pred, r0 as usize, r1 as usize, false, 0);
+            }
+            (Some(ref0), None) => {
+                let (mc_y, ref_stride, ref_y_off, _, _, _) =
+                    self.mc_params(mb_idx, mb_y, ref0.width as usize, r0);
+                inter_pred::luma_mc_stride(
+                    ref0,
+                    mb_x as i32,
+                    mc_y,
+                    mv0[0] as i32,
+                    mv0[1] as i32,
+                    16,
+                    16,
+                    &mut luma_pred,
+                    ref_stride,
+                    ref_y_off,
+                );
+                if sp.use_weight == 1 {
+                    sp.wctx.apply_uni(&mut luma_pred, 0, r0 as usize, false, 0);
+                }
+            }
+            (None, Some(ref1)) => {
+                let (mc_y, ref_stride, ref_y_off, _, _, _) =
+                    self.mc_params(mb_idx, mb_y, ref1.width as usize, r1);
+                inter_pred::luma_mc_stride(
+                    ref1,
+                    mb_x as i32,
+                    mc_y,
+                    mv1[0] as i32,
+                    mv1[1] as i32,
+                    16,
+                    16,
+                    &mut luma_pred,
+                    ref_stride,
+                    ref_y_off,
+                );
+                if sp.use_weight == 1 {
+                    sp.wctx.apply_uni(&mut luma_pred, 1, r1 as usize, false, 0);
+                }
+            }
+            (None, None) => {}
+        }
+        for r in 0..16 {
+            for c in 0..16 {
+                self.frame.y[self.ly_offset + r * self.ly_stride + mb_x + c] =
+                    luma_pred[r * 16 + c];
+            }
+        }
+
+        let cx = mb_x / 2;
+        let cstride = self.lc_stride;
+        let cbase = self.lc_offset;
+        let chroma_h = (self.height / 2) as usize;
+        for plane_idx in 0..2 {
+            let mut chroma_pred = [0u8; 64];
+            match (ref_l0, ref_l1) {
+                (Some(ref0), Some(ref1)) => {
+                    let mut c0 = [0u8; 64];
+                    let mut c1 = [0u8; 64];
+                    let (_, _, _, mc_cy_l0, c_ref_stride_l0, c_ref_off_l0) =
+                        self.mc_params(mb_idx, mb_y, ref0.width as usize, r0);
+                    let (_, _, _, mc_cy_l1, c_ref_stride_l1, c_ref_off_l1) =
+                        self.mc_params(mb_idx, mb_y, ref1.width as usize, r1);
+                    let cr0 = if plane_idx == 0 {
+                        &ref0.u[c_ref_off_l0..]
+                    } else {
+                        &ref0.v[c_ref_off_l0..]
+                    };
+                    let cr1 = if plane_idx == 0 {
+                        &ref1.u[c_ref_off_l1..]
+                    } else {
+                        &ref1.v[c_ref_off_l1..]
+                    };
+                    let cmv_y0 = mv0[1] as i32 + self.chroma_field_mv_offset(ref0);
+                    let cmv_y1 = mv1[1] as i32 + self.chroma_field_mv_offset(ref1);
+                    inter_pred::chroma_mc(
+                        cr0,
+                        c_ref_stride_l0,
+                        chroma_h,
+                        cx as i32,
+                        mc_cy_l0 as i32,
+                        mv0[0] as i32,
+                        cmv_y0,
+                        8,
+                        8,
+                        &mut c0,
+                    );
+                    inter_pred::chroma_mc(
+                        cr1,
+                        c_ref_stride_l1,
+                        chroma_h,
+                        cx as i32,
+                        mc_cy_l1 as i32,
+                        mv1[0] as i32,
+                        cmv_y1,
+                        8,
+                        8,
+                        &mut c1,
+                    );
+                    sp.wctx.apply_bi(
+                        &c0,
+                        &c1,
+                        &mut chroma_pred,
+                        r0 as usize,
+                        r1 as usize,
+                        true,
+                        plane_idx,
+                    );
+                }
+                (Some(ref0), None) => {
+                    let (_, _, _, mc_cy, c_ref_stride, c_ref_off) =
+                        self.mc_params(mb_idx, mb_y, ref0.width as usize, r0);
+                    let cr = if plane_idx == 0 {
+                        &ref0.u[c_ref_off..]
+                    } else {
+                        &ref0.v[c_ref_off..]
+                    };
+                    let cmv_y = mv0[1] as i32 + self.chroma_field_mv_offset(ref0);
+                    inter_pred::chroma_mc(
+                        cr,
+                        c_ref_stride,
+                        chroma_h,
+                        cx as i32,
+                        mc_cy as i32,
+                        mv0[0] as i32,
+                        cmv_y,
+                        8,
+                        8,
+                        &mut chroma_pred,
+                    );
+                    if sp.use_weight == 1 {
+                        sp.wctx
+                            .apply_uni(&mut chroma_pred, 0, r0 as usize, true, plane_idx);
+                    }
+                }
+                (None, Some(ref1)) => {
+                    let (_, _, _, mc_cy, c_ref_stride, c_ref_off) =
+                        self.mc_params(mb_idx, mb_y, ref1.width as usize, r1);
+                    let cr = if plane_idx == 0 {
+                        &ref1.u[c_ref_off..]
+                    } else {
+                        &ref1.v[c_ref_off..]
+                    };
+                    let cmv_y = mv1[1] as i32 + self.chroma_field_mv_offset(ref1);
+                    inter_pred::chroma_mc(
+                        cr,
+                        c_ref_stride,
+                        chroma_h,
+                        cx as i32,
+                        mc_cy as i32,
+                        mv1[0] as i32,
+                        cmv_y,
+                        8,
+                        8,
+                        &mut chroma_pred,
+                    );
+                    if sp.use_weight == 1 {
+                        sp.wctx
+                            .apply_uni(&mut chroma_pred, 1, r1 as usize, true, plane_idx);
+                    }
+                }
+                (None, None) => {}
+            }
+            let fp = if plane_idx == 0 {
+                &mut self.frame.u
+            } else {
+                &mut self.frame.v
+            };
+            for r in 0..8 {
+                for c in 0..8 {
+                    fp[cbase + r * cstride + cx + c] = chroma_pred[r * 8 + c];
+                }
+            }
+        }
+
+        true
+    }
+
     /// Decode a B-slice skip macroblock: spatial/temporal direct MV derivation,
     /// per-4x4-block MC (luma + chroma), no residual.
     /// Decode a B-slice skip macroblock: spatial/temporal direct MV derivation,
@@ -664,6 +928,14 @@ impl SliceContext<'_> {
         let use_weight = sp.use_weight;
         // Derive MVs per 4x4 block via spatial or temporal direct mode
         self.derive_direct_mvs(mb_idx, 0, 16, sp);
+
+        if self.try_decode_uniform_b_skip_mb(mb_idx, mb_x, mb_y, sp) {
+            self.mb_is_direct[mb_idx] = true;
+            for blk in 0..16 {
+                self.blk_is_direct[mb_idx * 16 + blk] = true;
+            }
+            return;
+        }
 
         // Luma MC: per-4x4-block
         let mut luma_pred = [0u8; 256];
