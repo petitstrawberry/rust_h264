@@ -3,7 +3,8 @@
 //! A standalone, portable software H.264 decoder. Supports Baseline, Main,
 //! and High profile (8-bit 4:2:0 progressive), with both CAVLC and CABAC
 //! entropy coding, B-frames, multi-reference, weighted prediction, long-term
-//! references, and multi-slice frames. NEON SIMD acceleration on aarch64.
+//! references, and multi-slice frames. Portable SIMD acceleration
+//! (`core::simd`, enabled via the `portable-simd` feature).
 //!
 //! # Quick start
 //!
@@ -55,6 +56,7 @@
 //! - SP/SI slice types
 //! - Slice groups / FMO
 
+#![cfg_attr(feature = "portable-simd", feature(portable_simd))]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 #[macro_use]
@@ -85,11 +87,13 @@ pub mod pps;
 #[cfg(not(feature = "dev-internals"))]
 #[allow(dead_code)]
 mod pps;
+pub mod sha256;
 
 #[allow(dead_code)]
 mod residual;
 #[allow(dead_code)]
 mod sei;
+mod simd;
 
 #[cfg(feature = "dev-internals")]
 #[allow(dead_code)]
