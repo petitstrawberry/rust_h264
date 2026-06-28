@@ -141,6 +141,9 @@ pub fn luma_mc_stride(
     ref_stride: usize,
     ref_y_offset: usize,
 ) {
+    #[cfg(feature = "profile")]
+    let _profile_timer = crate::profile::PhaseTimer::start(crate::profile::Phase::MotionComp);
+
     // Guard against malformed block sizes that would overrun the output buffer
     if block_w == 0 || block_h == 0 || block_w * block_h > output.len() {
         return;
@@ -524,6 +527,9 @@ pub fn chroma_mc(
     block_h: usize,
     output: &mut [u8],
 ) {
+    #[cfg(feature = "profile")]
+    let _profile_timer = crate::profile::PhaseTimer::start(crate::profile::Phase::MotionComp);
+
     // Guard against malformed block sizes that would overrun the output buffer
     if block_w == 0 || block_h == 0 || block_w * block_h > output.len() {
         return;

@@ -284,107 +284,117 @@ impl Decoder {
         let mut ps = self.pending.take()?;
 
         // Apply deblocking filter
-        deblock::filter_frame_mbaff(
-            &mut ps.frame,
-            &ps.mb_info,
-            ps.mb_width as usize,
-            ps.disable_deblocking_filter_idc,
-            ps.slice_alpha_c0_offset_div2,
-            ps.slice_beta_offset_div2,
-            ps.chroma_qp_index_offset,
-            ps.mbaff_frame_flag,
-        );
-
-        if ps.nal_unit_type == NalUnitType::SliceIdr {
-            self.dpb.clear();
+        {
+            #[cfg(feature = "profile")]
+            let _profile_timer = crate::profile::PhaseTimer::start(crate::profile::Phase::Deblock);
+            deblock::filter_frame_mbaff(
+                &mut ps.frame,
+                &ps.mb_info,
+                ps.mb_width as usize,
+                ps.disable_deblocking_filter_idc,
+                ps.slice_alpha_c0_offset_div2,
+                ps.slice_beta_offset_div2,
+                ps.chroma_qp_index_offset,
+                ps.mbaff_frame_flag,
+            );
         }
 
-        let reference = if ps.nal_ref_idc > 0 {
-            if ps.nal_unit_type == NalUnitType::SliceIdr && ps.long_term_reference_flag {
-                ReferenceStatus::LongTerm(0) // IDR with long_term_reference_flag → LT idx 0
-            } else {
-                ReferenceStatus::ShortTerm
-            }
-        } else {
-            ReferenceStatus::Unused
-        };
+        {
+            #[cfg(feature = "profile")]
+            let _profile_timer =
+                crate::profile::PhaseTimer::start(crate::profile::Phase::DpbFinalize);
 
-        // For MMCO, use CurrPicNum (= 2*frame_num+1 for field pictures)
-        let mmco_curr_pic_num = if ps.field_pic_flag {
-            (ps.frame_num * 2 + 1) as i32
-        } else {
-            ps.frame_num as i32
-        };
-        let mut has_mmco5 = false;
-        for &(op, param) in &ps.mmco_ops {
-            match op {
-                1 => {
-                    let pic_num_to_remove = mmco_curr_pic_num - ((param & 0xFFFF) as i32 + 1);
-                    self.dpb.mark_short_term_unused(pic_num_to_remove as u32);
-                }
-                2 => {
-                    self.dpb.mark_long_term_unused(param);
-                }
-                3 => {
-                    let abs_diff_minus1 = param & 0xFFFF;
-                    let long_term_frame_idx = param >> 16;
-                    let pic_num = mmco_curr_pic_num - (abs_diff_minus1 as i32 + 1);
-                    self.dpb
-                        .assign_long_term(pic_num as u32, long_term_frame_idx);
-                }
-                4 => {
-                    self.dpb.set_max_long_term_frame_idx(param);
-                }
-                5 => {
-                    self.dpb.clear_all_refs();
-                    has_mmco5 = true;
-                }
-                6 => {
-                    // Will be applied after insert (current pic must be in DPB first)
-                }
-                _ => {}
+            if ps.nal_unit_type == NalUnitType::SliceIdr {
+                self.dpb.clear();
             }
-        }
 
-        let pic = Rc::new(DecodedPicture {
-            y: ps.frame.y.clone(),
-            u: ps.frame.u.clone(),
-            v: ps.frame.v.clone(),
-            width: ps.mb_width * 16,
-            height: (ps.frame.height.div_ceil(16)) * 16,
-            frame_num: ps.frame_num,
-            pic_order_cnt: ps.poc,
-            mv_l0: ps.mv_store_l0,
-            ref_idx_l0: ps.ref_idx_store_l0,
-            ref_poc_l0: ps.ref_poc_store_l0,
-            mv_l1: ps.mv_store_l1,
-            ref_idx_l1: ps.ref_idx_store_l1,
-            mb_width: ps.mb_width,
-            is_intra: ps.is_intra_slice,
-            structure: if ps.field_pic_flag {
-                if ps.bottom_field_flag {
-                    crate::dpb::PictureStructure::BottomField
+            let reference = if ps.nal_ref_idc > 0 {
+                if ps.nal_unit_type == NalUnitType::SliceIdr && ps.long_term_reference_flag {
+                    ReferenceStatus::LongTerm(0) // IDR with long_term_reference_flag → LT idx 0
                 } else {
-                    crate::dpb::PictureStructure::TopField
+                    ReferenceStatus::ShortTerm
                 }
             } else {
-                crate::dpb::PictureStructure::Frame
-            },
-        });
+                ReferenceStatus::Unused
+            };
 
-        self.dpb.insert(pic, reference);
-
-        // MMCO op=6: mark current picture as long-term (after insert)
-        for &(op, param) in &ps.mmco_ops {
-            if op == 6 {
-                self.dpb.mark_current_as_long_term(param, ps.frame_num);
+            // For MMCO, use CurrPicNum (= 2*frame_num+1 for field pictures)
+            let mmco_curr_pic_num = if ps.field_pic_flag {
+                (ps.frame_num * 2 + 1) as i32
+            } else {
+                ps.frame_num as i32
+            };
+            let mut has_mmco5 = false;
+            for &(op, param) in &ps.mmco_ops {
+                match op {
+                    1 => {
+                        let pic_num_to_remove = mmco_curr_pic_num - ((param & 0xFFFF) as i32 + 1);
+                        self.dpb.mark_short_term_unused(pic_num_to_remove as u32);
+                    }
+                    2 => {
+                        self.dpb.mark_long_term_unused(param);
+                    }
+                    3 => {
+                        let abs_diff_minus1 = param & 0xFFFF;
+                        let long_term_frame_idx = param >> 16;
+                        let pic_num = mmco_curr_pic_num - (abs_diff_minus1 as i32 + 1);
+                        self.dpb
+                            .assign_long_term(pic_num as u32, long_term_frame_idx);
+                    }
+                    4 => {
+                        self.dpb.set_max_long_term_frame_idx(param);
+                    }
+                    5 => {
+                        self.dpb.clear_all_refs();
+                        has_mmco5 = true;
+                    }
+                    6 => {
+                        // Will be applied after insert (current pic must be in DPB first)
+                    }
+                    _ => {}
+                }
             }
-        }
 
-        // MMCO op=5: reset frame_num to 0 after clearing (spec 7.4.3.3)
-        if has_mmco5 {
-            // After op=5, the current picture should have frame_num = 0
-            // This is handled by the encoder; we just need the DPB cleared.
+            let pic = Rc::new(DecodedPicture {
+                y: ps.frame.y.clone(),
+                u: ps.frame.u.clone(),
+                v: ps.frame.v.clone(),
+                width: ps.mb_width * 16,
+                height: (ps.frame.height.div_ceil(16)) * 16,
+                frame_num: ps.frame_num,
+                pic_order_cnt: ps.poc,
+                mv_l0: ps.mv_store_l0,
+                ref_idx_l0: ps.ref_idx_store_l0,
+                ref_poc_l0: ps.ref_poc_store_l0,
+                mv_l1: ps.mv_store_l1,
+                ref_idx_l1: ps.ref_idx_store_l1,
+                mb_width: ps.mb_width,
+                is_intra: ps.is_intra_slice,
+                structure: if ps.field_pic_flag {
+                    if ps.bottom_field_flag {
+                        crate::dpb::PictureStructure::BottomField
+                    } else {
+                        crate::dpb::PictureStructure::TopField
+                    }
+                } else {
+                    crate::dpb::PictureStructure::Frame
+                },
+            });
+
+            self.dpb.insert(pic, reference);
+
+            // MMCO op=6: mark current picture as long-term (after insert)
+            for &(op, param) in &ps.mmco_ops {
+                if op == 6 {
+                    self.dpb.mark_current_as_long_term(param, ps.frame_num);
+                }
+            }
+
+            // MMCO op=5: reset frame_num to 0 after clearing (spec 7.4.3.3)
+            if has_mmco5 {
+                // After op=5, the current picture should have frame_num = 0
+                // This is handled by the encoder; we just need the DPB cleared.
+            }
         }
 
         // Crop frame from coded dimensions (MB-aligned) to display dimensions
@@ -937,6 +947,9 @@ impl Decoder {
                 // handled inside decode_cabac_mb (contexts 70-72 for field flag,
                 // with MBAFF-adjusted first_mb comparison for terminate).
                 {
+                    #[cfg(feature = "profile")]
+                    let _profile_timer =
+                        crate::profile::PhaseTimer::start(crate::profile::Phase::MbDecode);
                     let mut ctx = make_ctx!();
                     match ctx.decode_cabac_mb(cr, st, &nal.rbsp, mb_idx, mb_x, mb_y, &params)? {
                         CabacMbResult::EndOfSlice => break,
@@ -976,9 +989,15 @@ impl Decoder {
                     }
                     if is_p_slice {
                         // P_Skip: MV = median predictor, ref_idx = 0, no residual
+                        #[cfg(feature = "profile")]
+                        let _profile_timer =
+                            crate::profile::PhaseTimer::start(crate::profile::Phase::MbDecode);
                         make_ctx!().decode_p_skip_mb(mb_idx, mb_x, mb_y, &params);
                     } else {
                         // B_Skip: spatial/temporal direct MV + MC, no residual
+                        #[cfg(feature = "profile")]
+                        let _profile_timer =
+                            crate::profile::PhaseTimer::start(crate::profile::Phase::MbDecode);
                         make_ctx!().decode_b_skip_mb(mb_idx, mb_x, mb_y, &params);
                     }
                     mb_info[mb_idx] = MbInfo {
@@ -1012,6 +1031,9 @@ impl Decoder {
             }
 
             {
+                #[cfg(feature = "profile")]
+                let _profile_timer =
+                    crate::profile::PhaseTimer::start(crate::profile::Phase::MbDecode);
                 let mut ctx = make_ctx!();
                 ctx.set_mb_layout(mb_idx, mb_x, mb_y);
                 ctx.decode_cavlc_mb(&mut reader, mb_idx, mb_x, mb_y, &params)?;
@@ -1034,7 +1056,12 @@ impl Decoder {
         } else {
             header.first_mb_in_slice as usize
         };
-        make_ctx!().finalize_mb_info(first_mb, mb_idx.min(total_mbs), &params);
+        {
+            #[cfg(feature = "profile")]
+            let _profile_timer =
+                crate::profile::PhaseTimer::start(crate::profile::Phase::FinalizeMbInfo);
+            make_ctx!().finalize_mb_info(first_mb, mb_idx.min(total_mbs), &params);
+        }
 
         // Store state back into pending PictureState.
         // Deblocking and DPB insertion happen in finalize_pending().

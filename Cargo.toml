@@ -14,6 +14,7 @@ default = ["std"]
 std = []
 portable-simd = []
 minifb = ["dep:minifb"]
+profile = ["dep:pprof"]
 # Expose internal modules (sps, pps, slice) for debug/diagnostic examples.
 dev-internals = []
 
@@ -35,3 +36,4 @@ required-features = ["dev-internals"]
 
 [dependencies]
 minifb = { version = "0.28", optional = true }
+pprof = { version = "0.14", features = ["flamegraph"], optional = true }

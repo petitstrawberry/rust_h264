@@ -1,10 +1,13 @@
 use rust_h264::decoder::{Decoder, Frame};
-use rust_h264::nal::parse_annex_b;
+use rust_h264::nal::{parse_annex_b, NalUnit};
 use rust_h264::sha256::sha256_hex;
 use std::alloc::{GlobalAlloc, Layout, System};
+#[cfg(not(feature = "profile"))]
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+#[cfg(not(feature = "profile"))]
+use std::time::Duration;
+use std::time::Instant;
 
 struct CountingAllocator;
 
@@ -26,6 +29,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static GLOBAL: CountingAllocator = CountingAllocator;
 
+#[cfg(not(feature = "profile"))]
 const STREAMS: &[&str] = &[
     "bench_720p_300f_ponly.h264",
     "bench_720p_300f_ponly_complex.h264",
@@ -36,6 +40,9 @@ const STREAMS: &[&str] = &[
     "bench_1080p_100f_ponly.h264",
 ];
 
+#[cfg(feature = "profile")]
+const PROFILE_STREAM: &str = "bench_1080p_100f_complex.h264";
+
 #[derive(Clone)]
 struct DecodeResult {
     frames: usize,
@@ -43,12 +50,17 @@ struct DecodeResult {
     allocs: usize,
 }
 
+#[cfg(not(feature = "profile"))]
 fn decode_once(data: &[u8]) -> DecodeResult {
     let nals = parse_annex_b(data);
+    decode_nals(&nals, true)
+}
+
+fn decode_nals(nals: &[NalUnit], compute_digest: bool) -> DecodeResult {
     let before_allocs = ALLOCATIONS.load(Ordering::Relaxed);
     let mut decoder = Decoder::new();
     let mut frames = Vec::new();
-    for nal in &nals {
+    for nal in nals {
         if let Some(frame) = decoder.decode_nal(nal).unwrap() {
             frames.push(frame);
         }
@@ -59,9 +71,14 @@ fn decode_once(data: &[u8]) -> DecodeResult {
     let allocs = ALLOCATIONS.load(Ordering::Relaxed) - before_allocs;
 
     frames.sort_by_key(|frame| frame.pic_order_cnt);
+    let digest = if compute_digest {
+        digest_frames(&frames)
+    } else {
+        String::new()
+    };
     DecodeResult {
         frames: frames.len(),
-        digest: digest_frames(&frames),
+        digest,
         allocs,
     }
 }
@@ -76,12 +93,14 @@ fn digest_frames(frames: &[Frame]) -> String {
     sha256_hex(&output)
 }
 
+#[cfg(not(feature = "profile"))]
 fn decode_timed(data: &[u8]) -> (DecodeResult, Duration) {
     let start = Instant::now();
     let result = decode_once(data);
     (result, start.elapsed())
 }
 
+#[cfg(not(feature = "profile"))]
 fn has_tool(name: &str) -> bool {
     Command::new("which")
         .arg(name)
@@ -90,6 +109,7 @@ fn has_tool(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(not(feature = "profile"))]
 fn generate_missing_1080p_ponly(path: &str) -> bool {
     if !has_tool("ffmpeg") {
         return false;
@@ -121,7 +141,18 @@ fn generate_missing_1080p_ponly(path: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(feature = "profile")]
 fn main() {
+    profile_main();
+}
+
+#[cfg(not(feature = "profile"))]
+fn main() {
+    bench_main();
+}
+
+#[cfg(not(feature = "profile"))]
+fn bench_main() {
     let args: Vec<String> = std::env::args().collect();
     let warmup = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(3usize);
     let measured = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(5usize);
@@ -169,5 +200,127 @@ fn main() {
             result.frames, decode_ms, fps, result.allocs
         );
         println!("golden {stream}: {}", result.digest);
+    }
+}
+
+#[cfg(feature = "profile")]
+fn profile_main() {
+    use std::collections::HashMap;
+    use std::fs::File;
+
+    let profile_iterations = std::env::args()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3usize);
+    let path = format!("{}/testdata/{PROFILE_STREAM}", env!("CARGO_MANIFEST_DIR"));
+    let data = std::fs::read(&path).unwrap_or_else(|err| panic!("failed to read {path}: {err}"));
+    let nals = parse_annex_b(&data);
+
+    println!("profile stream: {PROFILE_STREAM}");
+    println!("warmup decode...");
+    let warmup = decode_nals(&nals, true);
+    println!(
+        "warmup frames={} allocs={} sha256={}",
+        warmup.frames, warmup.allocs, warmup.digest
+    );
+
+    let guard = pprof::ProfilerGuardBuilder::default()
+        .frequency(1000)
+        .blocklist(&["libc", "libsystem", "pthread"])
+        .build()
+        .expect("failed to start pprof profiler");
+
+    rust_h264::profile::set_enabled(false);
+    rust_h264::profile::reset();
+    let start = Instant::now();
+    let mut profiled_frames = 0usize;
+    let mut profiled_allocs = 0usize;
+    for _ in 0..profile_iterations {
+        let profiled = decode_nals(&nals, false);
+        profiled_frames += profiled.frames;
+        profiled_allocs += profiled.allocs;
+    }
+    let elapsed = start.elapsed();
+
+    let report = guard
+        .report()
+        .build()
+        .expect("failed to build pprof report");
+    drop(guard);
+    let svg_path = format!(
+        "{}/target/profile-1080p-complex.svg",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let file =
+        File::create(&svg_path).unwrap_or_else(|err| panic!("failed to create {svg_path}: {err}"));
+    report
+        .flamegraph(file)
+        .unwrap_or_else(|err| panic!("failed to write flamegraph {svg_path}: {err}"));
+
+    let sample_total: isize = report.data.values().sum();
+    println!(
+        "profiled iterations={} frames={} decode_ms={:.3} fps={:.2} allocs={} sha256={}",
+        profile_iterations,
+        profiled_frames,
+        elapsed.as_secs_f64() * 1000.0,
+        profiled_frames as f64 / elapsed.as_secs_f64(),
+        profiled_allocs,
+        warmup.digest
+    );
+    println!("samples={} flamegraph={svg_path}", sample_total);
+
+    rust_h264::profile::reset();
+    rust_h264::profile::set_enabled(true);
+    let phase_start = Instant::now();
+    let mut phase_frames = 0usize;
+    for _ in 0..profile_iterations {
+        phase_frames += decode_nals(&nals, false).frames;
+    }
+    let phase_elapsed = phase_start.elapsed();
+    rust_h264::profile::set_enabled(false);
+    let phase_samples = rust_h264::profile::snapshot();
+
+    println!(
+        "phase iterations={} frames={} decode_ms={:.3} fps={:.2}",
+        profile_iterations,
+        phase_frames,
+        phase_elapsed.as_secs_f64() * 1000.0,
+        phase_frames as f64 / phase_elapsed.as_secs_f64()
+    );
+    println!("phase timing:");
+    println!("phase | us | percent_of_wall");
+    println!("--- | ---: | ---:");
+    let wall_us = phase_elapsed.as_micros() as f64;
+    for sample in phase_samples {
+        let percent = if wall_us > 0.0 {
+            sample.micros as f64 * 100.0 / wall_us
+        } else {
+            0.0
+        };
+        println!("{} | {} | {:.2}%", sample.name, sample.micros, percent);
+    }
+    println!("top self-time functions:");
+    println!("rank | samples | percent | function");
+    println!("---: | ---: | ---: | ---");
+
+    let mut self_counts: HashMap<String, isize> = HashMap::new();
+    for (frames, count) in &report.data {
+        let name = frames
+            .frames
+            .first()
+            .and_then(|frame| frame.first())
+            .map(|symbol| symbol.name().to_string())
+            .unwrap_or_else(|| "<unknown>".to_string());
+        *self_counts.entry(name).or_default() += *count;
+    }
+    let mut top: Vec<_> = self_counts.into_iter().collect();
+    top.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    for (idx, (name, count)) in top.into_iter().take(20).enumerate() {
+        let percent = if sample_total > 0 {
+            count as f64 * 100.0 / sample_total as f64
+        } else {
+            0.0
+        };
+        println!("{} | {} | {:.2}% | {}", idx + 1, count, percent, name);
     }
 }
