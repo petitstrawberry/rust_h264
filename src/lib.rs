@@ -87,6 +87,8 @@ pub mod pps;
 #[cfg(not(feature = "dev-internals"))]
 #[allow(dead_code)]
 mod pps;
+#[cfg(feature = "profile")]
+pub mod profile;
 pub mod sha256;
 
 #[allow(dead_code)]
