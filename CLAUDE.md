@@ -49,7 +49,7 @@ The decoder logic is split across several files for maintainability:
 The crate exposes a minimal surface area:
 
 - `decoder::Decoder` — low-level streaming decoder; `decode_nal` returns one frame at a time in **decode order**.
-- `decoder::OrderedDecoder` — wraps `Decoder` with a built-in reorder buffer; `decode_nal` returns 0+ frames in **display order** (sorted by `(gop_id, pic_order_cnt)`). Recommended for most users — handles GOP tracking and the IDR-count timing pitfall internally.
+- `decoder::OrderedDecoder` — wraps `Decoder` with a built-in reorder buffer; `decode_nal` returns 0+ frames in **display order** (sorted by `(gop_id, pic_order_cnt)`). Recommended for most users — handles GOP tracking and the IDR-count timing pitfall internally. It is generic as `OrderedDecoder<M = ()>`; `decode_nal_with_meta`/`flush_with_meta` return `(Frame, M)` pairs so callers can carry per-picture metadata such as PTS timestamps through B-frame reordering while existing `decode_nal`/`flush` callers remain unchanged.
 - `decoder::Frame` — decoded YUV 4:2:0 frame with `y`/`u`/`v` planes, `width`, `height`, `pic_order_cnt`.
 - `nal::parse_annex_b` — parser for start-code delimited bitstreams.
 - `nal::parse_avcc` + `nal::parse_avcc_config` + `nal::AvccConfig` — parser for length-prefixed bitstreams from MP4/MKV containers.
@@ -57,6 +57,13 @@ The crate exposes a minimal surface area:
 - `error::DecodeError` — `UnexpectedEof`, `InvalidSyntax(&'static str)`, `Unsupported(&'static str)`.
 
 Everything else is `pub(crate)` or behind the `dev-internals` feature flag.
+
+`Decoder::decode_nal` has a one-picture pipeline delay: a slice that starts a
+new picture finalizes and returns the previous picture. The metadata API on
+`OrderedDecoder` stores metadata for the picture currently being built and moves
+it to the delayed frame when finalization occurs. Metadata passed for non-slice
+NALs (SPS/PPS/SEI/etc.) is ignored, and continuation slices keep the metadata
+attached by the first slice of that picture.
 
 ## Status
 
