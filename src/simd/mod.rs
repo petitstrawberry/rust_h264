@@ -6,6 +6,7 @@
 
 #[cfg(feature = "portable-simd")]
 mod portable;
+#[cfg(not(feature = "portable-simd"))]
 pub(crate) mod scalar;
 
 #[cfg(feature = "portable-simd")]
@@ -88,6 +89,18 @@ mod tests {
                 decode_stream_digest(name),
                 expected,
                 "digest mismatch for {name}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "portable-simd")]
+    fn golden_portable_matches_scalar() {
+        for &(name, expected) in GOLDEN_STREAMS {
+            assert_eq!(
+                decode_stream_digest(name),
+                expected,
+                "portable digest mismatch for {name}"
             );
         }
     }
