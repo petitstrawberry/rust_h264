@@ -1,4 +1,24 @@
 //! CABAC macroblock decode — skip detection, mb_type dispatch, residual decode.
+//!
+//! TODO(perf): CABAC is the largest remaining decode cost (~30% of decode time
+//! on the 1080p CABAC B-frame stream: `decode_residual_cabac_field` ~18% plus
+//! `decode_cabac_mb` ~12.5%, measured via the `profile` feature). Arithmetic
+//! decoding (`get_cabac` renormalization) is bit-serial, so SIMD does not apply
+//! here — gains come from micro-optimizations, all of which MUST stay bit-exact
+//! (the test suite plus the scalar/portable golden corpus digests are the gate).
+//! Candidate micro-optimizations, in rough ROI order:
+//!   - inline the hot neighbor helpers (cabac_neighbor_*, nC, CBF/CBP lookup)
+//!     used inside the residual coefficient loop;
+//!   - hoist loop-invariant context base / table lookups out of the coeff loop;
+//!   - cache per-MB neighbor state (CBF/CBP/8x8dct/ref_idx/MVD) read more than
+//!     once into locals;
+//!   - eliminate redundant per-block small-array (re)initialization;
+//!   - reduce context-index branches (branchless/table only where provably
+//!     bit-identical).
+//! Measure with `cargo run --release --features profile --example bench_decode
+//! -- 10` and confirm the golden digests are unchanged after each change. If the
+//! arithmetic renormalization dominates (it is an inherent floor), report that
+//! rather than forcing noise-level changes.
 #![allow(clippy::needless_range_loop)]
 
 use crate::cabac::CabacReader;
