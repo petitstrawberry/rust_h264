@@ -1106,6 +1106,15 @@ impl Decoder {
 /// drained and returned. The buffer also has a maximum depth (16 frames)
 /// to bound latency for streams with infrequent IDRs.
 ///
+/// `OrderedDecoder<M>` can also carry per-picture metadata through the same
+/// reorder buffer with [`decode_nal_with_meta`](Self::decode_nal_with_meta) and
+/// [`flush_with_meta`](Self::flush_with_meta). This is useful for timestamps
+/// such as PTS values: metadata is attached to the picture being built and is
+/// moved to the frame when the inner decoder finalizes that picture one NAL
+/// later, so B-frame reordering does not break frame/timestamp association.
+/// The default metadata type is `()`, so existing `decode_nal` and `flush`
+/// callers are unchanged.
+///
 /// # Example
 ///
 /// ```no_run
@@ -1127,11 +1136,15 @@ impl Decoder {
 ///     println!("Final POC={}", frame.pic_order_cnt);
 /// }
 /// ```
-pub struct OrderedDecoder {
+pub struct OrderedDecoder<M = ()> {
     inner: Decoder,
     /// Buffered frames awaiting display-order release. Each entry is
-    /// `(gop_id, frame)` so frames from different GOPs don't interleave.
-    buffer: Vec<(u32, Frame)>,
+    /// `(gop_id, frame, meta)` so frames from different GOPs don't interleave.
+    buffer: Vec<(u32, Frame, Option<M>)>,
+    /// Metadata for the picture currently being assembled by the inner decoder.
+    /// When `Decoder::decode_nal` finalizes that picture one NAL later, this
+    /// value is moved into the reorder buffer with the returned frame.
+    building_meta: Option<M>,
     /// Monotonically incrementing GOP id, bumped on each IDR boundary.
     gop_id: u32,
     /// Maximum frames to keep in the buffer before forcing the lowest
@@ -1140,36 +1153,38 @@ pub struct OrderedDecoder {
     max_depth: usize,
 }
 
-impl Default for OrderedDecoder {
+impl<M> Default for OrderedDecoder<M> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl OrderedDecoder {
+impl<M> OrderedDecoder<M> {
     /// Create a new ordering decoder with a default reorder buffer depth of
-    /// 16 frames (sufficient for any practical bframes setting).
+    /// 16 frames (sufficient for any practical bframes setting). Existing
+    /// callers receive frames only; use [`decode_nal_with_meta`](OrderedDecoder::decode_nal_with_meta)
+    /// on `OrderedDecoder<M>` to carry per-picture metadata through reordering.
     pub fn new() -> Self {
-        Self {
-            inner: Decoder::new(),
-            buffer: Vec::new(),
-            gop_id: 0,
-            max_depth: 16,
-        }
+        Self::with_max_depth(16)
     }
 
     /// Create a new ordering decoder with a custom maximum buffer depth.
     /// Larger values give more reordering headroom for unusual bitstreams
-    /// but increase end-to-end latency.
+    /// but increase end-to-end latency. Existing callers receive frames only;
+    /// use [`decode_nal_with_meta`](OrderedDecoder::decode_nal_with_meta) on
+    /// `OrderedDecoder<M>` to carry per-picture metadata through reordering.
     pub fn with_max_depth(max_depth: usize) -> Self {
         Self {
             inner: Decoder::new(),
             buffer: Vec::new(),
+            building_meta: None,
             gop_id: 0,
             max_depth: max_depth.max(1),
         }
     }
+}
 
+impl OrderedDecoder<()> {
     /// Feed a single NAL unit and return any frames that are now ready
     /// for display, in display order.
     ///
@@ -1178,14 +1193,116 @@ impl OrderedDecoder {
     /// fills up or when an IDR boundary completes a GOP, one or more frames
     /// are released.
     pub fn decode_nal(&mut self, nal: &NalUnit) -> Result<Vec<Frame>, DecodeError> {
+        Ok(self
+            .decode_nal_with_meta(nal, ())?
+            .into_iter()
+            .map(|(frame, ())| frame)
+            .collect())
+    }
+
+    /// Flush all remaining buffered frames at end-of-stream, in display order.
+    /// Call this once after the last `decode_nal`.
+    pub fn flush(&mut self) -> Vec<Frame> {
+        self.flush_with_meta()
+            .into_iter()
+            .map(|(frame, ())| frame)
+            .collect()
+    }
+}
+
+impl<M> OrderedDecoder<M> {
+    /// Feed a single NAL unit with per-picture metadata and return any frames
+    /// that are now ready for display, in display order.
+    ///
+    /// # Arguments
+    ///
+    /// * `nal` - The NAL unit to decode.
+    /// * `meta` - Metadata for the access unit/picture that starts at this NAL.
+    ///   Metadata is consumed only for slice NALs (`Slice` or `SliceIdr`) that
+    ///   start or bootstrap a picture. Metadata passed for SPS, PPS, SEI, and
+    ///   other non-slice NALs is ignored. For continuation slices of the same
+    ///   picture, the metadata already attached to the first slice is kept.
+    ///
+    /// # Returns
+    ///
+    /// A vector of `(Frame, M)` pairs released from the reorder buffer in
+    /// display order. Most calls return an empty vector until the reorder buffer
+    /// has enough frames or an IDR boundary completes a GOP.
+    ///
+    /// # Pipeline delay and metadata association
+    ///
+    /// [`Decoder::decode_nal`] has a one-picture delay: when a slice NAL starts
+    /// a new picture, the inner decoder finalizes and returns the previous
+    /// picture before decoding the new slice. `OrderedDecoder` therefore stores
+    /// the metadata for the picture currently being built and moves it onto the
+    /// frame only when that delayed finalization happens. This keeps timestamps
+    /// such as PTS values associated with the correct frame through B-frame
+    /// reordering.
+    ///
+    /// A returned frame without stored metadata is treated as an internal logic
+    /// error and panics instead of silently corrupting PTS/frame association; for
+    /// well-formed slice input, every finalized frame must have been bootstrapped
+    /// from a prior slice NAL.
+    pub fn decode_nal_with_meta(
+        &mut self,
+        nal: &NalUnit,
+        meta: M,
+    ) -> Result<Vec<(Frame, M)>, DecodeError> {
+        Ok(self
+            .decode_nal_buffered(nal, Some(meta))?
+            .into_iter()
+            .map(Self::expect_meta)
+            .collect())
+    }
+
+    /// Flush all remaining buffered frames and metadata at end-of-stream, in
+    /// display order.
+    ///
+    /// # Returns
+    ///
+    /// A vector of `(Frame, M)` pairs for all frames still held by the inner
+    /// decoder or reorder buffer. The final pending picture is paired with the
+    /// metadata stored when that picture's first slice was decoded.
+    ///
+    /// # Pipeline delay and metadata association
+    ///
+    /// The inner [`Decoder::flush`] returns the last picture that never saw a
+    /// following new-picture trigger. `flush_with_meta` pairs that frame with
+    /// the currently stored `building_meta`, then drains the reorder buffer by
+    /// `(gop_id, pic_order_cnt)` just like [`flush`](OrderedDecoder::flush).
+    /// Missing metadata is treated as an internal logic error and panics rather
+    /// than returning a frame with the wrong caller metadata.
+    pub fn flush_with_meta(&mut self) -> Vec<(Frame, M)> {
+        self.flush_buffered()
+            .into_iter()
+            .map(Self::expect_meta)
+            .collect()
+    }
+
+    fn decode_nal_buffered(
+        &mut self,
+        nal: &NalUnit,
+        meta: Option<M>,
+    ) -> Result<Vec<(Frame, Option<M>)>, DecodeError> {
         let mut output = Vec::new();
         let is_idr = nal.nal_unit_type == NalUnitType::SliceIdr;
+        let is_slice = matches!(
+            nal.nal_unit_type,
+            NalUnitType::Slice | NalUnitType::SliceIdr
+        );
 
         // Decode the NAL. Note that decode_nal returns the PREVIOUS frame
         // (the picture that just got finalized when this NAL started a new
         // one), so the returned frame still belongs to the current gop_id.
+        let mut finalized_previous = false;
         if let Some(frame) = self.inner.decode_nal(nal)? {
-            self.buffer.push((self.gop_id, frame));
+            finalized_previous = true;
+            let frame_meta = self.building_meta.take();
+            self.buffer.push((self.gop_id, frame, frame_meta));
+        }
+
+        if is_slice && (finalized_previous || self.building_meta.is_none()) {
+            self.building_meta = meta;
         }
 
         // After pushing, advance the GOP if this NAL was an IDR start.
@@ -1206,16 +1323,15 @@ impl OrderedDecoder {
         Ok(output)
     }
 
-    /// Flush all remaining buffered frames at end-of-stream, in display order.
-    /// Call this once after the last `decode_nal`.
-    pub fn flush(&mut self) -> Vec<Frame> {
+    fn flush_buffered(&mut self) -> Vec<(Frame, Option<M>)> {
         // First, get any final pending frame from the inner decoder.
         if let Some(frame) = self.inner.flush() {
-            self.buffer.push((self.gop_id, frame));
+            let frame_meta = self.building_meta.take();
+            self.buffer.push((self.gop_id, frame, frame_meta));
         }
         // Drain everything in (gop, poc) order.
-        self.buffer.sort_by_key(|(g, f)| (*g, f.pic_order_cnt));
-        self.buffer.drain(..).map(|(_, f)| f).collect()
+        self.buffer.sort_by_key(|(g, f, _)| (*g, f.pic_order_cnt));
+        self.buffer.drain(..).map(|(_, f, m)| (f, m)).collect()
     }
 
     /// Frame rate from the most recently parsed SPS's VUI timing info,
@@ -1232,11 +1348,11 @@ impl OrderedDecoder {
 
     /// Drain all frames whose `gop_id < self.gop_id`, sorted by display order,
     /// into `output`.
-    fn drain_completed_gops(&mut self, output: &mut Vec<Frame>) {
+    fn drain_completed_gops(&mut self, output: &mut Vec<(Frame, Option<M>)>) {
         let cur = self.gop_id;
         // Stable partition: keep current-GOP frames, extract older ones.
-        let mut completed: Vec<(u32, Frame)> = Vec::new();
-        let mut remaining: Vec<(u32, Frame)> = Vec::with_capacity(self.buffer.len());
+        let mut completed: Vec<(u32, Frame, Option<M>)> = Vec::new();
+        let mut remaining: Vec<(u32, Frame, Option<M>)> = Vec::with_capacity(self.buffer.len());
         for entry in self.buffer.drain(..) {
             if entry.0 < cur {
                 completed.push(entry);
@@ -1244,21 +1360,29 @@ impl OrderedDecoder {
                 remaining.push(entry);
             }
         }
-        completed.sort_by_key(|(g, f)| (*g, f.pic_order_cnt));
-        output.extend(completed.into_iter().map(|(_, f)| f));
+        completed.sort_by_key(|(g, f, _)| (*g, f.pic_order_cnt));
+        output.extend(completed.into_iter().map(|(_, f, m)| (f, m)));
         self.buffer = remaining;
     }
 
     /// Remove and return the buffered frame with the lowest `(gop, poc)`.
-    fn pop_lowest(&mut self) -> Frame {
+    fn pop_lowest(&mut self) -> (Frame, Option<M>) {
         let idx = self
             .buffer
             .iter()
             .enumerate()
-            .min_by_key(|(_, (g, f))| (*g, f.pic_order_cnt))
+            .min_by_key(|(_, (g, f, _))| (*g, f.pic_order_cnt))
             .map(|(i, _)| i)
             .unwrap();
-        self.buffer.remove(idx).1
+        let (_, frame, meta) = self.buffer.remove(idx);
+        (frame, meta)
+    }
+
+    fn expect_meta((frame, meta): (Frame, Option<M>)) -> (Frame, M) {
+        let meta = meta.expect(
+            "OrderedDecoder finalized a frame before metadata was attached to its first slice",
+        );
+        (frame, meta)
     }
 }
 
@@ -1270,6 +1394,7 @@ impl OrderedDecoder {
 mod tests {
     use super::*;
     use crate::nal::parse_annex_b;
+    use std::collections::HashMap;
 
     #[test]
     fn test_decode_single_idr_frame() {
@@ -2368,6 +2493,132 @@ mod tests {
             ordered_yuv, manual_yuv,
             "OrderedDecoder output differs from manual sort"
         );
+    }
+
+    fn is_slice_nal(nal: &NalUnit) -> bool {
+        matches!(
+            nal.nal_unit_type,
+            NalUnitType::Slice | NalUnitType::SliceIdr
+        )
+    }
+
+    fn picture_meta_for_nal(
+        nal: &NalUnit,
+        current_picture_meta: &mut Option<u64>,
+        next_picture_meta: &mut u64,
+    ) -> u64 {
+        if is_slice_nal(nal) {
+            let mut peek = BitstreamReader::new(&nal.rbsp);
+            let first_mb = peek.read_ue().unwrap_or(0);
+            if first_mb == 0 || current_picture_meta.is_none() {
+                let meta = *next_picture_meta;
+                *next_picture_meta += 1;
+                *current_picture_meta = Some(meta);
+            }
+            current_picture_meta.expect("slice NAL should have picture metadata")
+        } else {
+            // Metadata passed for non-slice NALs is intentionally ignored.
+            u64::MAX
+        }
+    }
+
+    fn expected_metadata_by_poc(nals: &[NalUnit]) -> HashMap<i32, u64> {
+        let mut decoder = Decoder::new();
+        let mut expected = HashMap::new();
+        let mut building_meta = None;
+        let mut current_picture_meta = None;
+        let mut next_picture_meta = 0;
+
+        for nal in nals {
+            let input_meta =
+                picture_meta_for_nal(nal, &mut current_picture_meta, &mut next_picture_meta);
+            let decoded = decoder.decode_nal(nal).unwrap();
+            let finalized_previous = decoded.is_some();
+            if let Some(frame) = decoded {
+                let meta = building_meta
+                    .take()
+                    .expect("finalized frame should have delayed metadata");
+                expected.insert(frame.pic_order_cnt, meta);
+                current_picture_meta = if is_slice_nal(nal) {
+                    Some(input_meta)
+                } else {
+                    None
+                };
+            }
+            if is_slice_nal(nal) && (finalized_previous || building_meta.is_none()) {
+                building_meta = Some(input_meta);
+            }
+        }
+
+        if let Some(frame) = decoder.flush() {
+            let meta = building_meta
+                .take()
+                .expect("flushed frame should have delayed metadata");
+            expected.insert(frame.pic_order_cnt, meta);
+        }
+
+        expected
+    }
+
+    fn decode_ordered_with_metadata(h264_name: &str) -> Vec<(Frame, u64)> {
+        let h264_path = format!("{}/testdata/{}.h264", env!("CARGO_MANIFEST_DIR"), h264_name);
+        let h264_data = std::fs::read(&h264_path).unwrap();
+        let nals = parse_annex_b(&h264_data);
+
+        let mut decoder = OrderedDecoder::<u64>::new();
+        let mut current_picture_meta = None;
+        let mut next_picture_meta = 0;
+        let mut frames = Vec::new();
+
+        for nal in &nals {
+            let meta = picture_meta_for_nal(nal, &mut current_picture_meta, &mut next_picture_meta);
+            frames.extend(decoder.decode_nal_with_meta(nal, meta).unwrap());
+        }
+        frames.extend(decoder.flush_with_meta());
+
+        let expected = expected_metadata_by_poc(&nals);
+        assert_eq!(
+            frames.len(),
+            expected.len(),
+            "metadata frame count mismatch"
+        );
+        for (frame, meta) in &frames {
+            assert_eq!(
+                Some(meta),
+                expected.get(&frame.pic_order_cnt),
+                "metadata mismatch for POC {}",
+                frame.pic_order_cnt
+            );
+        }
+
+        frames
+    }
+
+    #[test]
+    fn test_ordered_decoder_metadata_p_only() {
+        let frames = decode_ordered_with_metadata("p_multi_frame");
+        let pocs: Vec<i32> = frames
+            .iter()
+            .map(|(frame, _)| frame.pic_order_cnt)
+            .collect();
+        let metas: Vec<u64> = frames.iter().map(|(_, meta)| *meta).collect();
+
+        assert_eq!(pocs, vec![0, 2, 4, 6]);
+        assert_eq!(metas, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn test_ordered_decoder_metadata_b_frames_not_off_by_one() {
+        let frames = decode_ordered_with_metadata("b_l0_l1_test");
+        let pocs: Vec<i32> = frames
+            .iter()
+            .map(|(frame, _)| frame.pic_order_cnt)
+            .collect();
+        let metas: Vec<u64> = frames.iter().map(|(_, meta)| *meta).collect();
+
+        assert_eq!(pocs, vec![0, 2, 4, 6, 8]);
+        assert_eq!(metas, vec![0, 2, 1, 4, 3]);
+        assert_ne!(metas, vec![0, 1, 2, 3, 4]);
     }
 
     /// Decode an Annex B fuzz regression file. Must not panic.
