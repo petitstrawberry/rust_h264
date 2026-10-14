@@ -497,6 +497,7 @@ pub struct SpsInfo {
     pub bit_depth_luma: u32,
     pub bit_depth_chroma: u32,
     pub reference_frames: u32,
+    pub progressive: bool,
     pub full_range: bool,
     pub primaries: u8,
     pub transfer: u8,
@@ -537,6 +538,7 @@ pub fn parse_sps_info(nal: &NalUnit<'_>) -> Result<SpsInfo, &'static str> {
             .checked_add(8)
             .ok_or("SPS depth overflow")?,
         reference_frames: sps.max_num_ref_frames,
+        progressive: sps.frame_mbs_only_flag,
         full_range: sps.video_full_range_flag,
         primaries: sps.colour_primaries,
         transfer: sps.transfer_characteristics,
